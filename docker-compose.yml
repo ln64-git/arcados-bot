@@ -1,0 +1,15 @@
+services:
+  memgraph:
+    image: memgraph/memgraph
+    container_name: memgraph
+    ports:
+      - "7687:7687"  # Bolt protocol
+      - "7444:7444"  # HTTP API (optional)
+  
+  memgraph-lab:
+    image: memgraph/lab
+    container_name: memgraph-lab
+    ports:
+      - "3000:3000"  # Memgraph Lab UI
+    environment:
+      - QUICK_CONNECT_MG_HOST=memgraph  # Connects Memgraph Lab to Memgraph DB service
