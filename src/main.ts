@@ -1,13 +1,38 @@
-import dotenv from "dotenv";
 import { Bot } from "./Bot";
+import { config } from "./config";
 
-dotenv.config();
-
-const botToken = process.env.BOT_TOKEN!;
-
-if (!botToken) {
-  throw new Error("BOT_TOKEN is missing in the environment.");
+async function main() {
+  try {
+    console.log('🔹 Starting Discord bot...');
+    const bot = new Bot();
+    await bot.init();
+  } catch (error) {
+    console.error('🔸 Failed to start bot:', error);
+    process.exit(1);
+  }
 }
 
-const bot = new Bot(botToken);
-bot.init().catch((err) => console.error("🔸 Failed to initialize bot:", err));
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('🔸 Uncaught Exception:', error);
+  process.exit(1);
+});
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🔸 Unhandled Rejection:', { reason, promise });
+  process.exit(1);
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('🔹 Received SIGINT, shutting down gracefully...');
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('🔹 Received SIGTERM, shutting down gracefully...');
+  process.exit(0);
+});
+
+main();
