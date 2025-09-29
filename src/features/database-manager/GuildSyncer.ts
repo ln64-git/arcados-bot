@@ -1,17 +1,11 @@
 import type { Guild } from "discord.js";
-import type {
-	Message as DBMessage,
-	GuildSync,
-	Role,
-	User,
-} from "../../types/database";
-import type { DatabaseService } from "./DatabaseService";
+import type { DatabaseCore } from "./DatabaseCore";
 
-export class GuildSyncService {
-	private dbService: DatabaseService;
+export class GuildSyncer {
+	private core: DatabaseCore;
 
-	constructor(dbService: DatabaseService) {
-		this.dbService = dbService;
+	constructor(core: DatabaseCore) {
+		this.core = core;
 	}
 
 	async checkGuildSyncStatus(guildId: string): Promise<{
@@ -25,8 +19,8 @@ export class GuildSyncService {
 			totalVoiceSessions: number;
 		};
 	}> {
-		const guildSync = await this.dbService.getGuildSync(guildId);
-		const stats = await this.dbService.getGuildStats(guildId);
+		const guildSync = await this.core.getGuildSync(guildId);
+		const stats = await this.core.getGuildStats(guildId);
 
 		return {
 			isSynced: guildSync?.isFullySynced || false,
@@ -77,25 +71,16 @@ export class GuildSyncService {
 				errors.push(...usersResult.errors);
 				console.log(`🔹 Users synced: ${syncedUsers}`);
 
-				// Sync messages (this might take a while for large guilds)
+				// Sync messages
 				console.log(`🔹 Syncing messages (limit: ${messageLimit})...`);
 				const messagesResult = await this.syncMessages(guild, messageLimit);
 				syncedMessages = messagesResult.synced;
 				errors.push(...messagesResult.errors);
 
-				// Sync interactions from historical messages
-				console.log("🔹 Syncing interactions from historical messages...");
-				const interactionsResult =
-					await this.syncInteractionsFromMessages(guild);
-				errors.push(...interactionsResult.errors);
-				console.log(`🔹 Interactions synced: ${interactionsResult.synced}`);
-
 				const totalTime = (Date.now() - syncStartTime) / 1000;
 				console.log(`🔹 Full sync completed in ${totalTime.toFixed(1)}s`);
 			} else {
 				console.log("🔹 Performing incremental sync...");
-
-				// Only sync new/updated data
 				const incrementalResult = await this.performIncrementalSync(guild);
 				syncedUsers = incrementalResult.syncedUsers;
 				syncedRoles = incrementalResult.syncedRoles;
@@ -104,7 +89,8 @@ export class GuildSyncService {
 			}
 
 			// Update guild sync status
-			await this.updateGuildSyncStatus(guild.id, {
+			await this.core.updateGuildSync({
+				guildId: guild.id,
 				lastSyncAt: new Date(),
 				totalUsers: syncedUsers,
 				totalMessages: syncedMessages,
@@ -140,6 +126,8 @@ export class GuildSyncService {
 		}
 	}
 
+	// ==================== PRIVATE SYNC METHODS ====================
+
 	private async syncRoles(
 		guild: Guild,
 	): Promise<{ synced: number; errors: string[] }> {
@@ -149,7 +137,10 @@ export class GuildSyncService {
 		try {
 			for (const [, discordRole] of guild.roles.cache) {
 				try {
-					const role: Omit<Role, "_id" | "createdAt" | "updatedAt"> = {
+					const role: Omit<
+						import("../../types/database").Role,
+						"_id" | "createdAt" | "updatedAt"
+					> = {
 						discordId: discordRole.id,
 						name: discordRole.name,
 						color: discordRole.color,
@@ -161,7 +152,7 @@ export class GuildSyncService {
 						guildId: guild.id,
 					};
 
-					await this.dbService.upsertRole(role);
+					await this.core.upsertRole(role);
 					synced++;
 				} catch (error) {
 					errors.push(
@@ -190,7 +181,10 @@ export class GuildSyncService {
 
 			for (const [, member] of guild.members.cache) {
 				try {
-					const user: Omit<User, "_id" | "createdAt" | "updatedAt"> = {
+					const user: Omit<
+						import("../../types/database").User,
+						"_id" | "createdAt" | "updatedAt"
+					> = {
 						discordId: member.id,
 						username: member.user.username,
 						displayName: member.displayName,
@@ -206,7 +200,7 @@ export class GuildSyncService {
 						guildId: guild.id,
 					};
 
-					await this.dbService.upsertUser(user);
+					await this.core.upsertUser(user);
 					synced++;
 				} catch (error) {
 					errors.push(
@@ -229,13 +223,9 @@ export class GuildSyncService {
 	): Promise<{ synced: number; errors: string[] }> {
 		const errors: string[] = [];
 		let synced = 0;
-		const startTime = Date.now();
 
 		try {
-			// Get the last synced message ID
-			const lastMessageId = await this.dbService.getLastMessageId(guild.id);
-
-			// Fetch messages from all text channels
+			// Get text channels
 			const channels = guild.channels.cache.filter((channel) =>
 				channel.isTextBased(),
 			);
@@ -249,10 +239,10 @@ export class GuildSyncService {
 					}
 
 					console.log(`🔹 Syncing channel: ${channel.name}`);
-					let lastMessage: string | undefined = lastMessageId ?? undefined;
+					let lastMessage: string | undefined;
 					let hasMore = true;
 					let batchCount = 0;
-					const maxBatches = Math.ceil(limit / 100); // Calculate batches based on limit
+					const maxBatches = Math.ceil(limit / 100);
 					let channelSynced = 0;
 
 					while (hasMore && batchCount < maxBatches) {
@@ -266,9 +256,9 @@ export class GuildSyncService {
 							break;
 						}
 
-						// Process messages in batches for better performance
+						// Process messages in batches
 						const messageBatch: Omit<
-							DBMessage,
+							import("../../types/database").Message,
 							"_id" | "createdAt" | "updatedAt"
 						>[] = [];
 
@@ -297,93 +287,7 @@ export class GuildSyncService {
 									continue;
 								}
 
-								const dbMessage: Omit<
-									DBMessage,
-									"_id" | "createdAt" | "updatedAt"
-								> = {
-									discordId: message.id,
-									content: message.content,
-									authorId: message.author.id,
-									channelId: message.channelId,
-									guildId: guild.id,
-									timestamp: message.createdAt,
-									editedAt: message.editedAt || undefined,
-									mentions: message.mentions.users.map((user) => user.id),
-									reactions: message.reactions.cache.map((reaction) => ({
-										emoji: reaction.emoji.name || reaction.emoji.toString(),
-										count: reaction.count,
-										users: [], // We'll populate this separately if needed
-									})),
-									replyTo: message.reference?.messageId || undefined,
-									attachments: message.attachments.map((attachment) => ({
-										id: attachment.id,
-										filename: attachment.name,
-										size: attachment.size,
-										url: attachment.url,
-										contentType: attachment.contentType || undefined,
-									})),
-									embeds: message.embeds.map((embed) => ({
-										title: embed.title || undefined,
-										description: embed.description || undefined,
-										url: embed.url || undefined,
-										color: embed.color || undefined,
-										timestamp: embed.timestamp || undefined,
-										footer: embed.footer
-											? {
-													text: embed.footer.text,
-													icon_url: embed.footer.iconURL || undefined,
-													proxy_icon_url:
-														embed.footer.proxyIconURL || undefined,
-												}
-											: undefined,
-										image: embed.image
-											? {
-													url: embed.image.url,
-													proxy_url: embed.image.proxyURL || undefined,
-													height: embed.image.height || undefined,
-													width: embed.image.width || undefined,
-												}
-											: undefined,
-										thumbnail: embed.thumbnail
-											? {
-													url: embed.thumbnail.url,
-													proxy_url: embed.thumbnail.proxyURL || undefined,
-													height: embed.thumbnail.height || undefined,
-													width: embed.thumbnail.width || undefined,
-												}
-											: undefined,
-										video: embed.video
-											? {
-													url: embed.video.url,
-													proxy_url: embed.video.proxyURL || undefined,
-													height: embed.video.height || undefined,
-													width: embed.video.width || undefined,
-												}
-											: undefined,
-										provider: embed.provider
-											? {
-													name: embed.provider.name || undefined,
-													url: embed.provider.url || undefined,
-												}
-											: undefined,
-										author: embed.author
-											? {
-													name: embed.author.name,
-													url: embed.author.url || undefined,
-													icon_url: embed.author.iconURL || undefined,
-													proxy_icon_url:
-														embed.author.proxyIconURL || undefined,
-												}
-											: undefined,
-										fields:
-											embed.fields?.map((field) => ({
-												name: field.name,
-												value: field.value,
-												inline: field.inline || false,
-											})) || undefined,
-									})),
-								};
-
+								const dbMessage = this.convertMessageToDB(message);
 								messageBatch.push(dbMessage);
 								lastMessage = messageId;
 							} catch (error) {
@@ -393,21 +297,12 @@ export class GuildSyncService {
 							}
 						}
 
-						// Batch insert messages for better performance
+						// Batch insert messages
 						if (messageBatch.length > 0) {
 							try {
-								await this.dbService.batchInsertMessages(messageBatch);
+								await this.core.batchInsertMessages(messageBatch);
 								channelSynced += messageBatch.length;
 								synced += messageBatch.length;
-
-								// Progress logging every 100 messages
-								if (synced % 100 === 0) {
-									const elapsed = (Date.now() - startTime) / 1000;
-									const rate = Math.round(synced / elapsed);
-									console.log(
-										`🔹 Synced ${synced} messages (${rate}/s) - Channel: ${channel.name}`,
-									);
-								}
 							} catch (error) {
 								errors.push(
 									`Failed to batch insert messages: ${error instanceof Error ? error.message : "Unknown error"}`,
@@ -434,111 +329,10 @@ export class GuildSyncService {
 				}
 			}
 
-			const elapsed = (Date.now() - startTime) / 1000;
-			const rate = Math.round(synced / elapsed);
-			console.log(
-				`🔹 Message sync completed: ${synced} messages in ${elapsed.toFixed(1)}s (${rate}/s)`,
-			);
+			console.log(`🔹 Message sync completed: ${synced} messages`);
 		} catch (error) {
 			errors.push(
 				`Failed to sync messages: ${error instanceof Error ? error.message : "Unknown error"}`,
-			);
-		}
-
-		return { synced, errors };
-	}
-
-	private async syncInteractionsFromMessages(
-		guild: Guild,
-	): Promise<{ synced: number; errors: string[] }> {
-		const errors: string[] = [];
-		let synced = 0;
-
-		try {
-			console.log("🔹 Syncing interactions from historical messages...");
-
-			const collections = this.dbService.getCollections();
-
-			// Get all messages that have mentions or replies
-			const messagesWithInteractions = await collections.messages
-				.find({
-					guildId: guild.id,
-					$or: [
-						{ mentions: { $exists: true, $not: { $size: 0 } } },
-						{ replyTo: { $exists: true } },
-					],
-				})
-				.sort({ timestamp: -1 })
-				.toArray();
-
-			console.log(
-				`🔹 Found ${messagesWithInteractions.length} messages with potential interactions`,
-			);
-
-			for (const message of messagesWithInteractions) {
-				try {
-					// Track mentions
-					if (message.mentions && message.mentions.length > 0) {
-						for (const mentionedUserId of message.mentions) {
-							if (mentionedUserId !== message.authorId) {
-								await this.dbService.recordInteraction({
-									fromUserId: message.authorId,
-									toUserId: mentionedUserId,
-									guildId: message.guildId,
-									interactionType: "mention",
-									messageId: message.discordId,
-									channelId: message.channelId,
-									timestamp: message.timestamp,
-								});
-								synced++;
-							}
-						}
-					}
-
-					// Track replies
-					if (message.replyTo) {
-						try {
-							// Find the replied-to message
-							const repliedMessage = await collections.messages.findOne({
-								discordId: message.replyTo,
-								guildId: message.guildId,
-							});
-
-							if (
-								repliedMessage &&
-								repliedMessage.authorId !== message.authorId
-							) {
-								await this.dbService.recordInteraction({
-									fromUserId: message.authorId,
-									toUserId: repliedMessage.authorId,
-									guildId: message.guildId,
-									interactionType: "reply",
-									messageId: message.discordId,
-									channelId: message.channelId,
-									timestamp: message.timestamp,
-									metadata: {
-										repliedToMessageId: message.replyTo,
-									},
-								});
-								synced++;
-							}
-						} catch {
-							// Ignore errors when finding replied-to message
-						}
-					}
-				} catch (error) {
-					errors.push(
-						`Failed to process interactions for message ${message.discordId}: ${error instanceof Error ? error.message : "Unknown error"}`,
-					);
-				}
-			}
-
-			console.log(
-				`🔹 Successfully synced ${synced} interactions from historical messages`,
-			);
-		} catch (error) {
-			errors.push(
-				`Failed to sync interactions: ${error instanceof Error ? error.message : "Unknown error"}`,
 			);
 		}
 
@@ -580,20 +374,92 @@ export class GuildSyncService {
 		return { syncedUsers, syncedRoles, syncedMessages, errors };
 	}
 
-	private async updateGuildSyncStatus(
-		guildId: string,
-		data: Partial<Omit<GuildSync, "_id" | "createdAt" | "updatedAt">>,
-	): Promise<void> {
-		const guildSync: Omit<GuildSync, "_id" | "createdAt" | "updatedAt"> = {
-			guildId,
-			lastSyncAt: data.lastSyncAt || new Date(),
-			lastMessageId: data.lastMessageId ?? undefined,
-			totalUsers: data.totalUsers || 0,
-			totalMessages: data.totalMessages || 0,
-			totalRoles: data.totalRoles || 0,
-			isFullySynced: data.isFullySynced || false,
+	private convertMessageToDB(
+		message: import("discord.js").Message,
+	): Omit<
+		import("../../types/database").Message,
+		"_id" | "createdAt" | "updatedAt"
+	> {
+		return {
+			discordId: message.id,
+			content: message.content,
+			authorId: message.author.id,
+			channelId: message.channelId,
+			guildId: message.guild?.id || "",
+			timestamp: message.createdAt,
+			editedAt: message.editedAt || undefined,
+			mentions: message.mentions.users.map((user) => user.id),
+			reactions: message.reactions.cache.map((reaction) => ({
+				emoji: reaction.emoji.name || reaction.emoji.toString(),
+				count: reaction.count,
+				users: [],
+			})),
+			replyTo: message.reference?.messageId || undefined,
+			attachments: message.attachments.map((attachment) => ({
+				id: attachment.id,
+				filename: attachment.name,
+				size: attachment.size,
+				url: attachment.url,
+				contentType: attachment.contentType || undefined,
+			})),
+			embeds: message.embeds.map((embed) => ({
+				title: embed.title || undefined,
+				description: embed.description || undefined,
+				url: embed.url || undefined,
+				color: embed.color || undefined,
+				timestamp: embed.timestamp || undefined,
+				footer: embed.footer
+					? {
+							text: embed.footer.text,
+							icon_url: embed.footer.iconURL || undefined,
+							proxy_icon_url: embed.footer.proxyIconURL || undefined,
+						}
+					: undefined,
+				image: embed.image
+					? {
+							url: embed.image.url,
+							proxy_url: embed.image.proxyURL || undefined,
+							height: embed.image.height || undefined,
+							width: embed.image.width || undefined,
+						}
+					: undefined,
+				thumbnail: embed.thumbnail
+					? {
+							url: embed.thumbnail.url,
+							proxy_url: embed.thumbnail.proxyURL || undefined,
+							height: embed.thumbnail.height || undefined,
+							width: embed.thumbnail.width || undefined,
+						}
+					: undefined,
+				video: embed.video
+					? {
+							url: embed.video.url,
+							proxy_url: embed.video.proxyURL || undefined,
+							height: embed.video.height || undefined,
+							width: embed.video.width || undefined,
+						}
+					: undefined,
+				provider: embed.provider
+					? {
+							name: embed.provider.name || undefined,
+							url: embed.provider.url || undefined,
+						}
+					: undefined,
+				author: embed.author
+					? {
+							name: embed.author.name,
+							url: embed.author.url || undefined,
+							icon_url: embed.author.iconURL || undefined,
+							proxy_icon_url: embed.author.proxyIconURL || undefined,
+						}
+					: undefined,
+				fields:
+					embed.fields?.map((field) => ({
+						name: field.name,
+						value: field.value,
+						inline: field.inline || false,
+					})) || undefined,
+			})),
 		};
-
-		await this.dbService.updateGuildSync(guildSync);
 	}
 }

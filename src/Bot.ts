@@ -7,7 +7,7 @@ import {
 	Routes,
 } from "discord.js";
 import { config } from "./config";
-import { DatabaseManagementService } from "./features/database-manager/DatabaseManagementService";
+import { DatabaseManager } from "./features/database-manager/DatabaseManager";
 import { speakVoiceCall } from "./features/speak-voice-call/speakVoiceCall";
 import { voiceManager } from "./features/vocie-manager/VoiceManager";
 import type { ClientWithVoiceManager, Command } from "./types";
@@ -17,7 +17,7 @@ import { getRedisClient } from "./utils/redis";
 export class Bot {
 	public client: Client;
 	public commands = new Collection<string, Command>();
-	private databaseManagementService: DatabaseManagementService;
+	private databaseManager: DatabaseManager;
 
 	constructor() {
 		this.client = new Client({
@@ -29,7 +29,7 @@ export class Bot {
 			],
 		});
 		// Initialize services
-		this.databaseManagementService = new DatabaseManagementService(this.client);
+		this.databaseManager = new DatabaseManager(this.client);
 	}
 
 	async init() {
@@ -37,8 +37,8 @@ export class Bot {
 		await this.client.login(config.botToken);
 		await this.deployCommands();
 
-		// Initialize database management service
-		await this.databaseManagementService.initialize();
+		// Initialize database manager
+		await this.databaseManager.initialize();
 
 		// Initialize Redis connection
 		try {
