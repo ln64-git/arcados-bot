@@ -5,11 +5,11 @@ import type {
 	UserModerationPreferences,
 	VoiceChannelConfig,
 	VoiceChannelOwner,
-} from "../types";
-import { getDatabase } from "./database";
-import { getRedisClient, RedisCache } from "./redis";
+} from "../../types";
+import { getDatabase } from "../database-manager/DatabaseConnection";
+import { getRedisClient, RedisCache } from "./RedisManager";
 
-export class HybridCacheManager {
+export class DiscordDataCache {
 	private redisCache: RedisCache | null = null;
 	private redisAvailable = false;
 
@@ -22,7 +22,7 @@ export class HybridCacheManager {
 			const redisClient = await getRedisClient();
 			this.redisCache = new RedisCache(redisClient);
 			this.redisAvailable = true;
-			console.log("🔹 Hybrid cache manager initialized with Redis");
+			// console.log("🔹 Discord data cache initialized with Redis");
 		} catch (error) {
 			console.warn(`🔸 Redis not available, using MongoDB fallback: ${error}`);
 			this.redisAvailable = false;
@@ -304,7 +304,6 @@ export class HybridCacheManager {
 			try {
 				const redisClient = await getRedisClient();
 				await redisClient.flushAll();
-				console.log("🔹 Redis cache flushed");
 			} catch (error) {
 				console.warn(`🔸 Failed to flush Redis cache: ${error}`);
 			}
@@ -313,11 +312,11 @@ export class HybridCacheManager {
 }
 
 // Singleton instance
-let cacheManager: HybridCacheManager | null = null;
+let cacheManager: DiscordDataCache | null = null;
 
-export function getCacheManager(): HybridCacheManager {
+export function getCacheManager(): DiscordDataCache {
 	if (!cacheManager) {
-		cacheManager = new HybridCacheManager();
+		cacheManager = new DiscordDataCache();
 	}
 	return cacheManager;
 }

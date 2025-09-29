@@ -1,7 +1,14 @@
 import { Bot } from "./Bot";
+import { memoryManager } from "./features/performance-monitoring/MemoryManager";
+import { performanceTest } from "./features/performance-monitoring/PerformanceTest";
 
 async function main() {
 	try {
+		// Run performance tests in development
+		if (process.env.NODE_ENV === "development") {
+			await performanceTest.runAllTests();
+		}
+
 		const bot = new Bot();
 		await bot.init();
 	} catch (error) {
@@ -23,11 +30,15 @@ process.on("unhandledRejection", (reason, promise) => {
 });
 
 // Graceful shutdown
-process.on("SIGINT", () => {
+process.on("SIGINT", async () => {
+	console.log("🔹 Received SIGINT, shutting down gracefully...");
+	await memoryManager.destroy();
 	process.exit(0);
 });
 
-process.on("SIGTERM", () => {
+process.on("SIGTERM", async () => {
+	console.log("🔹 Received SIGTERM, shutting down gracefully...");
+	await memoryManager.destroy();
 	process.exit(0);
 });
 

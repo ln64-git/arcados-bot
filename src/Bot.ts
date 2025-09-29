@@ -7,12 +7,13 @@ import {
 	Routes,
 } from "discord.js";
 import { config } from "./config";
+import { getRedisClient } from "./features/cache-management/RedisManager";
 import { DatabaseManager } from "./features/database-manager/DatabaseManager";
+import { memoryManager } from "./features/performance-monitoring/MemoryManager";
 import { speakVoiceCall } from "./features/speak-voice-call/speakVoiceCall";
-import { voiceManager } from "./features/vocie-manager/VoiceManager";
+import { voiceManager } from "./features/voice-manager/VoiceManager";
 import type { ClientWithVoiceManager, Command } from "./types";
 import { loadCommands } from "./utils/loadCommands";
-import { getRedisClient } from "./utils/redis";
 
 export class Bot {
 	public client: Client;
@@ -33,6 +34,8 @@ export class Bot {
 	}
 
 	async init() {
+		const initStartTime = memoryManager.startTimer();
+
 		this.setupEventHandlers();
 		await this.client.login(config.botToken);
 		await this.deployCommands();
@@ -43,7 +46,7 @@ export class Bot {
 		// Initialize Redis connection
 		try {
 			await getRedisClient();
-			console.log("🔹 Redis connection established");
+			// console.log("🔹 Redis connection established");
 		} catch (error) {
 			console.warn(
 				`🔸 Redis connection failed, using MongoDB fallback: ${error}`,
@@ -55,11 +58,14 @@ export class Bot {
 		(this.client as ClientWithVoiceManager).voiceManager = voiceManager(
 			this.client,
 		);
+
+		memoryManager.endTimer(initStartTime);
 	}
 
 	private setupEventHandlers() {
 		// Ready event
 		this.client.once("ready", async () => {
+			console.log("🔹 Bot is ready");
 			// Check guild sync status after bot is ready
 		});
 
@@ -72,11 +78,24 @@ export class Bot {
 				return;
 			}
 
+			const commandStartTime = memoryManager.startTimer();
+
 			try {
 				await command.execute(interaction);
+
+				const commandTime = memoryManager.endTimer(commandStartTime);
+				memoryManager.recordCommandExecutionTime(commandTime);
+
+				// Log slow commands (>1 second)
+				if (commandTime > 1000) {
+					console.warn(
+						`🔸 Slow command detected: ${interaction.commandName} took ${commandTime.toFixed(2)}ms`,
+					);
+				}
 			} catch (error) {
+				const commandTime = memoryManager.endTimer(commandStartTime);
 				console.error(
-					`🔸 Error executing command ${interaction.commandName}:`,
+					`🔸 Error executing command ${interaction.commandName} (${commandTime.toFixed(2)}ms):`,
 					error,
 				);
 				const errorMessage = "There was an error while executing this command!";

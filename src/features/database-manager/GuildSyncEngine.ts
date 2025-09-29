@@ -1,7 +1,7 @@
 import type { Guild } from "discord.js";
 import type { DatabaseCore } from "./DatabaseCore";
 
-export class GuildSyncer {
+export class GuildSyncEngine {
 	private core: DatabaseCore;
 
 	constructor(core: DatabaseCore) {
@@ -47,40 +47,26 @@ export class GuildSyncer {
 		let syncedMessages = 0;
 
 		try {
-			console.log(`🔹 Starting guild sync for ${guild.name} (${guild.id})`);
-
 			// Check if we need a full sync
 			const syncStatus = await this.checkGuildSyncStatus(guild.id);
 			const needsFullSync = forceFullSync || syncStatus.needsFullSync;
 
 			if (needsFullSync) {
-				console.log("🔹 Performing full guild sync...");
-				const syncStartTime = Date.now();
-
 				// Sync roles first
-				console.log("🔹 Syncing roles...");
 				const rolesResult = await this.syncRoles(guild);
 				syncedRoles = rolesResult.synced;
 				errors.push(...rolesResult.errors);
-				console.log(`🔹 Roles synced: ${syncedRoles}`);
 
 				// Sync users
-				console.log("🔹 Syncing users...");
 				const usersResult = await this.syncUsers(guild);
 				syncedUsers = usersResult.synced;
 				errors.push(...usersResult.errors);
-				console.log(`🔹 Users synced: ${syncedUsers}`);
 
 				// Sync messages
-				console.log(`🔹 Syncing messages (limit: ${messageLimit})...`);
 				const messagesResult = await this.syncMessages(guild, messageLimit);
 				syncedMessages = messagesResult.synced;
 				errors.push(...messagesResult.errors);
-
-				const totalTime = (Date.now() - syncStartTime) / 1000;
-				console.log(`🔹 Full sync completed in ${totalTime.toFixed(1)}s`);
 			} else {
-				console.log("🔹 Performing incremental sync...");
 				const incrementalResult = await this.performIncrementalSync(guild);
 				syncedUsers = incrementalResult.syncedUsers;
 				syncedRoles = incrementalResult.syncedRoles;
@@ -97,11 +83,6 @@ export class GuildSyncer {
 				totalRoles: syncedRoles,
 				isFullySynced: true,
 			});
-
-			console.log(`🔹 Guild sync completed for ${guild.name}`);
-			console.log(
-				`🔹 Synced: ${syncedUsers} users, ${syncedRoles} roles, ${syncedMessages} messages`,
-			);
 
 			return {
 				success: errors.length === 0,
@@ -229,7 +210,6 @@ export class GuildSyncer {
 			const channels = guild.channels.cache.filter((channel) =>
 				channel.isTextBased(),
 			);
-			console.log(`🔹 Processing ${channels.size} text channels...`);
 
 			for (const [, channel] of channels) {
 				try {
@@ -238,7 +218,6 @@ export class GuildSyncer {
 						continue;
 					}
 
-					console.log(`🔹 Syncing channel: ${channel.name}`);
 					let lastMessage: string | undefined;
 					let hasMore = true;
 					let batchCount = 0;
@@ -328,8 +307,6 @@ export class GuildSyncer {
 					);
 				}
 			}
-
-			console.log(`🔹 Message sync completed: ${synced} messages`);
 		} catch (error) {
 			errors.push(
 				`Failed to sync messages: ${error instanceof Error ? error.message : "Unknown error"}`,

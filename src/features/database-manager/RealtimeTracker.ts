@@ -1,12 +1,16 @@
-import type {
-	Client,
-	GuildMember,
-	Message,
-	MessageReaction,
-	PartialMessage,
-	VoiceState,
+import {
+	type Client,
+	Message as DiscordMessage,
+	type User as DiscordUser,
+	type GuildMember,
+	type MessageReaction,
+	type PartialMessage,
+	type PartialMessageReaction,
+	type PartialUser,
+	type VoiceState,
 } from "discord.js";
 import type { VoiceSession } from "../../types/database";
+import { getEventQueue } from "../event-system/EventQueue";
 import type { DatabaseCore } from "./DatabaseCore";
 
 export class RealtimeTracker {
@@ -18,23 +22,58 @@ export class RealtimeTracker {
 	}
 
 	setupEventHandlers(client: Client): void {
-		// Message events
-		client.on("messageCreate", async (message) => {
+		const eventQueue = getEventQueue();
+
+		// Message events - Non-blocking queue
+		client.on("messageCreate", (message) => {
+			eventQueue.enqueueMessage(message);
+		});
+
+		client.on("messageUpdate", (_, newMessage) => {
+			if (newMessage instanceof DiscordMessage) {
+				eventQueue.enqueueMessageUpdate(_, newMessage);
+			}
+		});
+
+		client.on("messageDelete", (message) => {
+			eventQueue.enqueueMessageDelete(message);
+		});
+
+		// Reaction events - Non-blocking queue
+		client.on("messageReactionAdd", (reaction, user) => {
+			eventQueue.enqueueReactionAdd(reaction, user);
+		});
+
+		client.on("messageReactionRemove", (reaction, user) => {
+			eventQueue.enqueueReactionRemove(reaction, user);
+		});
+
+		// Voice state events - Non-blocking queue
+		client.on("voiceStateUpdate", (oldState, newState) => {
+			eventQueue.enqueueVoiceStateUpdate(oldState, newState);
+		});
+
+		// Guild member events - Non-blocking queue
+		client.on("guildMemberUpdate", (oldMember, newMember) => {
+			eventQueue.enqueueGuildMemberUpdate(oldMember as GuildMember, newMember);
+		});
+
+		// Process queued events
+		eventQueue.on("messageCreate", async (message) => {
 			await this.trackMessage(message);
 		});
 
-		client.on("messageUpdate", async (_, newMessage) => {
-			if (newMessage instanceof Message) {
+		eventQueue.on("messageUpdate", async ({ newMessage }) => {
+			if (newMessage instanceof DiscordMessage) {
 				await this.trackMessageUpdate(newMessage);
 			}
 		});
 
-		client.on("messageDelete", async (message) => {
+		eventQueue.on("messageDelete", async (message) => {
 			await this.trackMessageDelete(message);
 		});
 
-		// Reaction events
-		client.on("messageReactionAdd", async (reaction, user) => {
+		eventQueue.on("messageReactionAdd", async ({ reaction, user }) => {
 			if (reaction.partial) {
 				try {
 					await reaction.fetch();
@@ -46,7 +85,7 @@ export class RealtimeTracker {
 			await this.trackReactionAdd(reaction, user);
 		});
 
-		client.on("messageReactionRemove", async (reaction, user) => {
+		eventQueue.on("messageReactionRemove", async ({ reaction, user }) => {
 			if (reaction.partial) {
 				try {
 					await reaction.fetch();
@@ -58,13 +97,11 @@ export class RealtimeTracker {
 			await this.trackReactionRemove(reaction, user);
 		});
 
-		// Voice state events
-		client.on("voiceStateUpdate", async (oldState, newState) => {
+		eventQueue.on("voiceStateUpdate", async ({ oldState, newState }) => {
 			await this.trackVoiceStateUpdate(oldState, newState);
 		});
 
-		// Guild member events
-		client.on("guildMemberUpdate", async (_, newMember) => {
+		eventQueue.on("guildMemberUpdate", async ({ newMember }) => {
 			if (newMember.partial) {
 				try {
 					await newMember.fetch();
@@ -79,7 +116,7 @@ export class RealtimeTracker {
 
 	// ==================== MESSAGE TRACKING ====================
 
-	private async trackMessage(message: Message): Promise<void> {
+	private async trackMessage(message: DiscordMessage): Promise<void> {
 		try {
 			if (!message.guild || !message.author || message.author.bot) return;
 
@@ -103,16 +140,12 @@ export class RealtimeTracker {
 			if (message.guild) {
 				await this.trackMessageInteractions(message);
 			}
-
-			console.log(
-				`🔹 Tracked message from ${message.author.username} in ${message.guild.name}`,
-			);
 		} catch (error) {
 			console.error("🔸 Error tracking message:", error);
 		}
 	}
 
-	private async trackMessageUpdate(newMessage: Message): Promise<void> {
+	private async trackMessageUpdate(newMessage: DiscordMessage): Promise<void> {
 		try {
 			if (!newMessage.guild || newMessage.author.bot) return;
 
@@ -131,22 +164,19 @@ export class RealtimeTracker {
 
 			const dbMessage = this.convertMessageToDB(newMessage);
 			await this.core.upsertMessage(dbMessage);
-
-			console.log(`🔹 Updated message from ${newMessage.author.username}`);
 		} catch (error) {
 			console.error("🔸 Error tracking message update:", error);
 		}
 	}
 
 	private async trackMessageDelete(
-		message: PartialMessage | Message,
+		message: PartialMessage | DiscordMessage,
 	): Promise<void> {
 		try {
 			if (!message.guild || !message.author) return;
 
 			// Mark message as deleted in database
 			// Note: This would need a new method in DatabaseCore for updating messages
-			console.log(`🔹 Message deleted from ${message.author.username}`);
 		} catch (error) {
 			console.error("🔸 Error tracking message delete:", error);
 		}
@@ -155,8 +185,8 @@ export class RealtimeTracker {
 	// ==================== REACTION TRACKING ====================
 
 	private async trackReactionAdd(
-		reaction: MessageReaction,
-		user: { id: string; username: string; bot: boolean },
+		reaction: MessageReaction | PartialMessageReaction,
+		user: DiscordUser | PartialUser,
 	): Promise<void> {
 		try {
 			if (user.bot || !reaction.message.guild) return;
@@ -169,29 +199,26 @@ export class RealtimeTracker {
 			// Record interaction
 			await this.core.recordInteraction({
 				fromUserId: user.id,
-				toUserId: message.author.id,
+				toUserId: message.author?.id || "",
 				guildId: message.guild?.id || "",
 				interactionType: "reaction",
 				messageId: message.id,
 				channelId: message.channelId,
 				timestamp: new Date(),
 			});
-
-			console.log(`🔹 Reaction added by ${user.username}`);
 		} catch (error) {
 			console.error("🔸 Error tracking reaction add:", error);
 		}
 	}
 
 	private async trackReactionRemove(
-		reaction: MessageReaction,
-		user: { id: string; username: string; bot: boolean },
+		reaction: MessageReaction | PartialMessageReaction,
+		user: DiscordUser | PartialUser,
 	): Promise<void> {
 		try {
 			if (user.bot || !reaction.message.guild) return;
 
 			// Note: We don't remove the interaction record, just track the removal
-			console.log(`🔹 Reaction removed by ${user.username}`);
 		} catch (error) {
 			console.error("🔸 Error tracking reaction removal:", error);
 		}
@@ -242,10 +269,6 @@ export class RealtimeTracker {
 						channelName: channel?.name,
 					},
 				});
-
-				console.log(
-					`🔹 ${newState.member.displayName} joined voice channel ${channel?.name}`,
-				);
 			}
 
 			// User left a voice channel
@@ -269,8 +292,6 @@ export class RealtimeTracker {
 							channelName: oldState.channel?.name,
 						},
 					});
-
-					console.log(`🔹 ${newState.member.displayName} left voice channel`);
 				}
 			}
 		} catch (error) {
@@ -285,7 +306,10 @@ export class RealtimeTracker {
 			if (!newMember.guild) return;
 
 			// Update user data
-			const user: Omit<any, "_id" | "createdAt" | "updatedAt"> = {
+			const user: Omit<
+				import("../../types/database").User,
+				"_id" | "createdAt" | "updatedAt"
+			> = {
 				discordId: newMember.id,
 				username: newMember.user.username,
 				displayName: newMember.displayName,
@@ -302,7 +326,6 @@ export class RealtimeTracker {
 			};
 
 			await this.core.upsertUser(user);
-			console.log(`🔹 Updated member data for ${newMember.user.username}`);
 		} catch (error) {
 			console.error("🔸 Error tracking guild member update:", error);
 		}
@@ -332,7 +355,7 @@ export class RealtimeTracker {
 	}
 
 	private convertMessageToDB(
-		message: Message,
+		message: DiscordMessage,
 	): Omit<
 		import("../../types/database").Message,
 		"_id" | "createdAt" | "updatedAt"
@@ -420,7 +443,9 @@ export class RealtimeTracker {
 		};
 	}
 
-	private async trackMessageInteractions(message: Message): Promise<void> {
+	private async trackMessageInteractions(
+		message: DiscordMessage,
+	): Promise<void> {
 		// Track mentions
 		if (message.mentions && message.mentions.users.size > 0) {
 			for (const [, mentionedUser] of message.mentions.users) {

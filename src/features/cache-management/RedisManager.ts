@@ -1,5 +1,5 @@
 import { createClient, type RedisClientType } from "redis";
-import { config } from "../config";
+import { config } from "../../config";
 import type {
 	CallState,
 	CoupSession,
@@ -7,13 +7,23 @@ import type {
 	UserModerationPreferences,
 	VoiceChannelConfig,
 	VoiceChannelOwner,
-} from "../types";
+} from "../../types";
 
 let client: RedisClientType | null = null;
+let isConnecting = false;
+let connectionRetries = 0;
+const MAX_RETRIES = 5;
+const RETRY_DELAY = 1000; // 1 second
 
 export async function getRedisClient(): Promise<RedisClientType> {
 	if (client?.isOpen) {
 		return client;
+	}
+
+	if (isConnecting) {
+		// Wait for existing connection attempt
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		return getRedisClient();
 	}
 
 	if (!config.redisUrl) {
@@ -21,6 +31,8 @@ export async function getRedisClient(): Promise<RedisClientType> {
 			"🔸 Redis URL is not configured. Please set REDIS_URL in your .env file.",
 		);
 	}
+
+	isConnecting = true;
 
 	try {
 		client = createClient({
@@ -33,15 +45,14 @@ export async function getRedisClient(): Promise<RedisClientType> {
 					}
 					return Math.min(retries * 100, 3000);
 				},
+				connectTimeout: 10000, // 10 seconds
 			},
+			// Connection pool settings
+			legacyMode: false,
 		});
 
 		client.on("error", (error) => {
 			console.warn(`🔸 Redis client error: ${error}`);
-		});
-
-		client.on("connect", () => {
-			console.log("🔹 Redis client connected");
 		});
 
 		client.on("reconnecting", () => {
@@ -50,12 +61,36 @@ export async function getRedisClient(): Promise<RedisClientType> {
 
 		await client.connect();
 
-		// Test the connection
-		await client.ping();
+		// Test the connection with timeout
+		await Promise.race([
+			client.ping(),
+			new Promise((_, reject) =>
+				setTimeout(() => reject(new Error("Redis connection timeout")), 5000),
+			),
+		]);
 
+		connectionRetries = 0; // Reset retry counter on successful connection
 		return client;
 	} catch (error) {
-		throw new Error(`🔸 Failed to connect to Redis: ${error}`);
+		connectionRetries++;
+		console.error(
+			`🔸 Redis connection failed (attempt ${connectionRetries}/${MAX_RETRIES}):`,
+			error,
+		);
+
+		if (connectionRetries < MAX_RETRIES) {
+			// Exponential backoff retry
+			const delay = RETRY_DELAY * 2 ** (connectionRetries - 1);
+			await new Promise((resolve) => setTimeout(resolve, delay));
+			isConnecting = false;
+			return getRedisClient();
+		}
+
+		throw new Error(
+			`🔸 Failed to connect to Redis after ${MAX_RETRIES} attempts: ${error}`,
+		);
+	} finally {
+		isConnecting = false;
 	}
 }
 

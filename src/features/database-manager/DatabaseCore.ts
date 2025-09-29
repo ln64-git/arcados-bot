@@ -8,7 +8,8 @@ import type {
 	UserInteraction,
 	VoiceSession,
 } from "../../types/database";
-import { getDatabase } from "../../utils/database";
+import { memoryManager } from "../performance-monitoring/MemoryManager";
+import { getDatabase } from "./DatabaseConnection";
 
 export class DatabaseCore {
 	private db: Db | null = null;
@@ -89,8 +90,6 @@ export class DatabaseCore {
 			await this.collections.userInteractions.createIndex({
 				interactionType: 1,
 			});
-
-			console.log("🔹 Database indexes created successfully");
 		} catch (error) {
 			console.error("🔸 Error creating database indexes:", error);
 		}
@@ -103,26 +102,49 @@ export class DatabaseCore {
 		return this.collections;
 	}
 
-	// ==================== USER OPERATIONS ====================
-
-	async getUser(discordId: string, guildId: string): Promise<User | null> {
+	// Performance wrapper for database operations
+	private async withPerformanceTracking<T>(
+		operation: () => Promise<T>,
+		operationName: string,
+	): Promise<T> {
+		const startTime = memoryManager.startTimer();
 		try {
-			const collections = this.getCollections();
-			return await collections.users.findOne({ discordId, guildId });
+			const result = await operation();
+			const duration = memoryManager.endTimer(startTime);
+			memoryManager.recordDatabaseQueryTime(duration);
+
+			// Log slow queries (>500ms)
+			if (duration > 500) {
+				console.warn(
+					`🔸 Slow database query: ${operationName} took ${duration.toFixed(2)}ms`,
+				);
+			}
+
+			return result;
 		} catch (error) {
-			console.error("🔸 Error getting user:", error);
-			return null;
+			const duration = memoryManager.endTimer(startTime);
+			console.error(
+				`🔸 Database error in ${operationName} (${duration.toFixed(2)}ms):`,
+				error,
+			);
+			throw error;
 		}
 	}
 
+	// ==================== USER OPERATIONS ====================
+
+	async getUser(discordId: string, guildId: string): Promise<User | null> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			return await collections.users.findOne({ discordId, guildId });
+		}, `getUser(${discordId}, ${guildId})`);
+	}
+
 	async getUsersByGuild(guildId: string): Promise<User[]> {
-		try {
+		return this.withPerformanceTracking(async () => {
 			const collections = this.getCollections();
 			return await collections.users.find({ guildId }).toArray();
-		} catch (error) {
-			console.error("🔸 Error getting users by guild:", error);
-			return [];
-		}
+		}, `getUsersByGuild(${guildId})`);
 	}
 
 	async upsertUser(
@@ -475,8 +497,6 @@ export class DatabaseCore {
 	async wipeDatabase(): Promise<void> {
 		const collections = this.getCollections();
 
-		console.log("🔹 Wiping database...");
-
 		// Drop all collections
 		await Promise.all([
 			collections.users
@@ -491,7 +511,5 @@ export class DatabaseCore {
 
 		// Recreate indexes
 		await this.createIndexes();
-
-		console.log("🔹 Database wiped successfully");
 	}
 }

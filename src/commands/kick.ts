@@ -136,7 +136,7 @@ export const kickCommand: Command = {
 				.setTimestamp();
 
 			await interaction.reply({ embeds: [embed] });
-		} catch (error) {
+		} catch (_error) {
 			await interaction.reply({
 				content:
 					"🔸 Failed to kick the user. Make sure I have the necessary permissions.",

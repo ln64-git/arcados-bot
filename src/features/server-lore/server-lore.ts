@@ -1,11 +1,11 @@
 import {
 	AttachmentBuilder,
-	ChatInputCommandInteraction,
+	type ChatInputCommandInteraction,
 	EmbedBuilder,
-	TextChannel,
+	type TextChannel,
 } from "discord.js";
 
-export function createServerLoreEmbed(): EmbedBuilder {
+export function getServerLoreEmbed(): EmbedBuilder {
 	return new EmbedBuilder()
 		.setTitle("hello and welcome to my server")
 		.setColor("#A03232")
@@ -43,12 +43,12 @@ export async function setupServerLore(
 		const imageAttachment = new AttachmentBuilder(imagePath);
 		await loreChannel.send({ content: "\u200B", files: [imageAttachment] });
 		await new Promise((resolve) => setTimeout(resolve, 500));
-		await loreChannel.send({ embeds: [createServerLoreEmbed()] });
+		await loreChannel.send({ embeds: [getServerLoreEmbed()] });
 		await interaction.followUp({
 			content: "Setup complete. Messages have been sent to #lore.",
 			ephemeral: true,
 		});
-	} catch (error) {
+	} catch (_error) {
 		await interaction.followUp({
 			content: "Failed to send messages in the lore channel.",
 			ephemeral: true,

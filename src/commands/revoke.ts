@@ -9,7 +9,7 @@ import { isGuildMember } from "../types";
 
 export const revokeThisRoomCommand: Command = {
 	data: new SlashCommandBuilder()
-		.setName("revoke-this-room")
+		.setName("revoke-channel")
 		.setDescription("Admin: Revoke ownership of the current voice channel")
 		.addStringOption((option) =>
 			option
@@ -61,10 +61,7 @@ export const revokeThisRoomCommand: Command = {
 		}
 
 		try {
-			const success = await voiceManager.revokeChannelOwnership(
-				channel.id,
-				interaction.user.id,
-			);
+			const success = await voiceManager.revokeChannelOwnership(channel.id);
 
 			if (success) {
 				const embed = new EmbedBuilder()
@@ -89,7 +86,7 @@ export const revokeThisRoomCommand: Command = {
 					ephemeral: true,
 				});
 			}
-		} catch (error) {
+		} catch (_error) {
 			await interaction.reply({
 				content: "🔸 Failed to revoke ownership. Please try again.",
 				ephemeral: true,

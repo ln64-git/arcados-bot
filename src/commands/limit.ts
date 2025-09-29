@@ -117,7 +117,7 @@ export const limitCommand: Command = {
 				.setTimestamp();
 
 			await interaction.reply({ embeds: [embed] });
-		} catch (error) {
+		} catch (_error) {
 			await interaction.reply({
 				content:
 					"🔸 Failed to change the user limit. Make sure I have the necessary permissions.",

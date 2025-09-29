@@ -1,15 +1,15 @@
 import {
 	type ChatInputCommandInteraction,
-	type Client,
 	EmbedBuilder,
 	SlashCommandBuilder,
 } from "discord.js";
 import type {
 	ClientWithVoiceManager,
+	Command,
 	VoiceManager as IVoiceManager,
 } from "../types";
 
-export = {
+export const disconnectCommand: Command = {
 	data: new SlashCommandBuilder()
 		.setName("disconnect")
 		.setDescription("Disconnect a user from your voice channel")
@@ -117,7 +117,7 @@ export = {
 				.setTimestamp();
 
 			await interaction.reply({ embeds: [embed] });
-		} catch (error) {
+		} catch (_error) {
 			// Check if interaction was already replied to
 			if (!interaction.replied && !interaction.deferred) {
 				await interaction.reply({

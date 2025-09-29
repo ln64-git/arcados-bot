@@ -5,11 +5,28 @@
 	"main": "src/main.ts",
 	"type": "module",
 	"scripts": {
-		"start": "npx tsx src/main.ts",
-		"dev": "npx tsx src/main.ts --watch",
+		"start": "npx tsx --expose-gc --max-old-space-size=512 src/main.ts",
+		"start:dev": "npx tsx src/main.ts",
+		"dev": "npx tsx --watch src/main.ts",
+		"dev:gc": "npx tsx --expose-gc --max-old-space-size=512 --watch src/main.ts",
 		"build": "tsc",
+		"build:prod": "tsc && npm run clean:build",
 		"clean": "rm -rf dist",
-		"format": "biome format --write ."
+		"clean:build": "rm -rf dist && rm -rf node_modules/.cache",
+		"format": "biome format --write .",
+		"lint": "biome check .",
+		"lint:fix": "biome check --write .",
+		"test:perf": "NODE_ENV=development npx tsx src/utils/performanceTest.ts",
+		"health": "NODE_ENV=development npx tsx -e \"import { healthChecker } from './src/utils/healthCheck.js'; healthChecker.getDetailedReport().then(console.log);\"",
+		"memory": "NODE_ENV=development npx tsx -e \"import { memoryManager } from './src/utils/memoryManager.js'; console.log('Memory Stats:', memoryManager.getCurrentMemoryUsage());\"",
+		"monitor": "NODE_ENV=development npx tsx -e \"import { performanceTest } from './src/utils/performanceTest.js'; performanceTest.runAllTests();\"",
+		"start:prod": "NODE_ENV=production node --expose-gc --max-old-space-size=1024 dist/main.js",
+		"start:debug": "NODE_ENV=development npx tsx --inspect --expose-gc src/main.ts",
+		"benchmark": "NODE_ENV=development npx tsx -e \"import { performanceTest } from './src/utils/performanceTest.js'; performanceTest.runAllTests().then(() => process.exit(0));\"",
+		"dev:monitor": "concurrently \"npm run dev\" \"npm run monitor\"",
+		"dev:full": "concurrently \"npm run dev:gc\" \"npm run monitor\"",
+		"stats": "NODE_ENV=development npx tsx -e \"import { getCommandStats } from './src/utils/loadCommands.js'; console.log('Command Stats:', getCommandStats());\"",
+		"gc": "NODE_ENV=development npx tsx -e \"if (global.gc) { global.gc(); console.log('Garbage collection triggered'); } else { console.log('GC not available'); }\""
 	},
 	"keywords": [
 		"discord",
@@ -21,8 +38,11 @@
 	"license": "MIT",
 	"devDependencies": {
 		"@types/node": "^20.0.0",
+		"@biomejs/biome": "^1.8.0",
 		"tsx": "^4.20.3",
-		"typescript": "^5.0.0"
+		"typescript": "^5.0.0",
+		"nodemon": "^3.0.0",
+		"concurrently": "^8.0.0"
 	},
 	"dependencies": {
 		"discord.js": "^14.16.3",
@@ -30,5 +50,46 @@
 		"install": "^0.13.0",
 		"mongodb": "^6.20.0",
 		"redis": "^4.6.0"
+	},
+	"engines": {
+		"node": ">=18.0.0",
+		"npm": ">=8.0.0"
+	},
+	"biome": {
+		"$schema": "https://biomejs.dev/schemas/1.8.0/schema.json",
+		"vcs": {
+			"enabled": true,
+			"clientKind": "git",
+			"useIgnoreFile": true
+		},
+		"files": {
+			"ignoreUnknown": false,
+			"ignore": ["node_modules", "dist", "*.min.js"]
+		},
+		"formatter": {
+			"enabled": true,
+			"indentStyle": "tab",
+			"indentWidth": 2,
+			"lineWidth": 100
+		},
+		"linter": {
+			"enabled": true,
+			"rules": {
+				"recommended": true,
+				"complexity": {
+					"noExcessiveCognitiveComplexity": "warn"
+				},
+				"performance": {
+					"noAccumulatingSpread": "warn"
+				}
+			}
+		},
+		"javascript": {
+			"formatter": {
+				"quoteStyle": "double",
+				"semicolons": "always",
+				"trailingCommas": "es5"
+			}
+		}
 	}
 }

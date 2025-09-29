@@ -19,8 +19,8 @@ import type {
 	VoiceChannelConfig,
 	VoiceChannelOwner,
 } from "../../types";
-import { getCacheManager } from "../../utils/cache";
-import { getDatabase } from "../../utils/database";
+import { getCacheManager } from "../cache-management/DiscordDataCache";
+import { getDatabase } from "../database-manager/DatabaseConnection";
 
 export class VoiceManager implements IVoiceManager {
 	private client: Client;
@@ -1290,7 +1290,6 @@ export class VoiceManager implements IVoiceManager {
 					console.log(
 						`🔹 Found collection "${collectionName}" with ${count} documents`,
 					);
-					console.log(`🔹 Sample document structure:`, Object.keys(sample));
 					console.log(
 						`🔹 Looking for voice activity in channel: ${channel.id} (${channel.name})`,
 					);

@@ -121,7 +121,7 @@ export const renameCommand: Command = {
 			if (!interaction.replied && !interaction.deferred) {
 				await interaction.reply({ embeds: [embed] });
 			}
-		} catch (error) {
+		} catch (_error) {
 			// Check if interaction was already replied to
 			if (!interaction.replied && !interaction.deferred) {
 				await interaction.reply({

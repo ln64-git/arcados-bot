@@ -5,8 +5,8 @@ import {
 	PermissionFlagsBits,
 	SlashCommandBuilder,
 } from "discord.js";
+import { getDatabase } from "../features/database-manager/DatabaseConnection";
 import type { Command } from "../types";
-import { getDatabase } from "../utils/database";
 
 export const setupVoiceCommand: Command = {
 	data: new SlashCommandBuilder()
@@ -107,7 +107,7 @@ export const setupVoiceCommand: Command = {
 				.setTimestamp();
 
 			await interaction.reply({ embeds: [embed] });
-		} catch (error) {
+		} catch (_error) {
 			await interaction.reply({
 				content: "🔸 Failed to setup voice channels. Please try again.",
 				ephemeral: true,

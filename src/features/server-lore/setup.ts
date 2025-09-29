@@ -1,4 +1,7 @@
-import { SlashCommandBuilder, ChatInputCommandInteraction } from "discord.js";
+import {
+	type ChatInputCommandInteraction,
+	SlashCommandBuilder,
+} from "discord.js";
 import { setupServerLore } from "./server-lore";
 
 export const data = new SlashCommandBuilder()

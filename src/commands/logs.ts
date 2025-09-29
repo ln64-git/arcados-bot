@@ -84,7 +84,7 @@ export const logsCommand: Command = {
 			embed.addFields(logFields);
 
 			await interaction.reply({ embeds: [embed], ephemeral: true });
-		} catch (error) {
+		} catch (_error) {
 			await interaction.reply({
 				content: "🔸 Failed to fetch moderation logs. Please try again.",
 				ephemeral: true,

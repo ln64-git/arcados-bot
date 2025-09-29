@@ -8,14 +8,14 @@ import type {
 	VoiceSession,
 } from "../../types/database";
 import { DatabaseCore } from "./DatabaseCore";
-import { GuildSyncer } from "./GuildSyncer";
+import { GuildSyncEngine } from "./GuildSyncEngine";
 import { RealtimeTracker } from "./RealtimeTracker";
 
 export class DatabaseManager {
 	private client: Client;
 	private core: DatabaseCore;
 	private tracker: RealtimeTracker;
-	private syncer: GuildSyncer;
+	private syncer: GuildSyncEngine;
 	private watchInterval: NodeJS.Timeout | null = null;
 	private isWatching: boolean = false;
 
@@ -23,14 +23,12 @@ export class DatabaseManager {
 		this.client = client;
 		this.core = new DatabaseCore();
 		this.tracker = new RealtimeTracker(this.core);
-		this.syncer = new GuildSyncer(this.core);
+		this.syncer = new GuildSyncEngine(this.core);
 	}
 
 	// ==================== INITIALIZATION ====================
 
 	async initialize(): Promise<void> {
-		console.log("🔹 Initializing database manager...");
-
 		// Initialize core database
 		await this.core.initialize();
 
@@ -39,20 +37,16 @@ export class DatabaseManager {
 
 		// Start autonomous watching
 		await this.startAutonomousWatching();
-
-		console.log("🔹 Database manager initialized and watching");
 	}
 
 	// ==================== AUTONOMOUS WATCHING ====================
 
 	private async startAutonomousWatching(): Promise<void> {
 		if (this.isWatching) {
-			console.log("🔹 Database watching already active");
 			return;
 		}
 
 		this.isWatching = true;
-		console.log("🔹 Starting autonomous database watching...");
 
 		// Initial health check and sync
 		await this.performAutonomousHealthCheck();
@@ -64,8 +58,6 @@ export class DatabaseManager {
 			},
 			5 * 60 * 1000, // 5 minutes
 		);
-
-		console.log("🔹 Autonomous database watching started (every 5 minutes)");
 	}
 
 	private async performAutonomousHealthCheck(): Promise<void> {
@@ -75,10 +67,6 @@ export class DatabaseManager {
 				console.warn("⚠️ No target guild found for autonomous health check");
 				return;
 			}
-
-			console.log(
-				`🔍 Performing autonomous database health check for guild: ${guild.name}`,
-			);
 
 			// Perform health check
 			const healthCheck = await this.performDatabaseHealthCheck(guild);
@@ -93,8 +81,6 @@ export class DatabaseManager {
 				} else {
 					console.log(`ℹ️ Autonomous sync not needed: ${autoSyncResult.reason}`);
 				}
-			} else {
-				console.log(`✅ Database is healthy, no action needed`);
 			}
 
 			// Perform periodic maintenance (every 30 minutes)
@@ -263,10 +249,6 @@ export class DatabaseManager {
 		};
 	}> {
 		try {
-			console.log(
-				`🔍 Performing comprehensive database health check for guild: ${guild.name}`,
-			);
-
 			const syncStatus = await this.checkGuildSyncStatus(guild.id);
 			const stats = await this.getGuildStats(guild.id);
 
@@ -418,8 +400,6 @@ export class DatabaseManager {
 	// ==================== CLEANUP ====================
 
 	async cleanup(): Promise<void> {
-		console.log("🔹 Cleaning up database manager...");
-
 		// Stop autonomous watching
 		if (this.watchInterval) {
 			clearInterval(this.watchInterval);
@@ -429,7 +409,5 @@ export class DatabaseManager {
 
 		// Cleanup active sessions
 		await this.cleanupActiveSessions();
-
-		console.log("🔹 Database manager cleanup completed");
 	}
 }
