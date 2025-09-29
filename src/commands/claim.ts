@@ -72,7 +72,11 @@ export const claimCommand: Command = {
 			}
 
 			// Claim the channel
-			await voiceManager.setChannelOwner(voiceChannel.id, member.id, reason);
+			await voiceManager.setChannelOwner(
+				voiceChannel.id,
+				member.id,
+				voiceChannel.guild.id,
+			);
 
 			const embed = new EmbedBuilder()
 				.setColor(0x51cf66)

@@ -86,10 +86,6 @@ export class VoiceManager implements IVoiceManager {
 			return;
 		}
 
-		console.log(
-			`🔹 Spawn channel detected! Creating/moving user to temporary channel`,
-		);
-
 		// Check if user is already in a temporary channel
 		const existingChannel = newState.guild.channels.cache.find(
 			(c) =>
@@ -106,10 +102,6 @@ export class VoiceManager implements IVoiceManager {
 			await newState.member.voice.setChannel(existingChannel);
 			return;
 		}
-
-		console.log(
-			`🔹 Creating new temporary channel for ${newState.member.user.tag}`,
-		);
 
 		// Create default config for channel creation
 		const defaultConfig: VoiceChannelConfig = {
@@ -331,6 +323,46 @@ export class VoiceManager implements IVoiceManager {
 		};
 
 		await this.cache.setChannelOwner(channelId, owner);
+
+		// Apply only channel-level preferences immediately (name, limit, lock)
+		// User-specific preferences (mutes, blocks) will only affect incoming users
+		const channel = this.client.channels.cache.get(channelId);
+		if (channel?.isVoiceBased()) {
+			const preferences = await this.getUserPreferences(userId, guildId);
+			if (preferences) {
+				// Channel name - changes immediately for everyone to see
+				if (preferences.preferredChannelName) {
+					try {
+						await channel.setName(preferences.preferredChannelName);
+					} catch (_error) {
+						// Insufficient permissions to change channel name
+					}
+				}
+				// User limit - applies immediately to channel capacity
+				if (preferences.preferredUserLimit) {
+					try {
+						await channel.setUserLimit(preferences.preferredUserLimit);
+					} catch (_error) {
+						// Insufficient permissions to change user limit
+					}
+				}
+				// Lock status - applies immediately to channel access
+				if (preferences.preferredLocked !== undefined) {
+					try {
+						await channel.permissionOverwrites.edit(
+							channel.guild.roles.everyone,
+							{
+								Connect: !preferences.preferredLocked,
+							},
+						);
+					} catch (_error) {
+						// Insufficient permissions to change channel lock
+					}
+				}
+				// Note: User-specific preferences (mutes, blocks, etc.) are handled
+				// by the existing user management logic and only affect incoming users
+			}
+		}
 	}
 
 	async getChannelOwner(channelId: string): Promise<VoiceChannelOwner | null> {
