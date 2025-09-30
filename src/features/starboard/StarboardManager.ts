@@ -173,8 +173,14 @@ export class StarboardManager {
 	): Promise<void> {
 		try {
 			// Fetch the original message that this is replying to
+			if (!message.reference?.messageId) {
+				// If no reference message ID, treat as regular starboard
+				await this.handleRegularStarboard(message, starCount, starboardChannel);
+				return;
+			}
+
 			const originalMessage = await message.channel.messages.fetch(
-				message.reference?.messageId!,
+				message.reference.messageId,
 			);
 
 			if (!originalMessage) {
@@ -196,12 +202,17 @@ export class StarboardManager {
 			});
 
 			// Store starboard entry for the reply message
+			if (!message.guild) {
+				console.warn("🔸 Message has no guild, cannot create starboard entry");
+				return;
+			}
+
 			const entry: StarboardEntry = {
 				originalMessageId: message.id,
 				originalChannelId: message.channel.id,
 				starboardMessageId: starboardMessage.id,
 				starboardChannelId: starboardChannel.id,
-				guildId: message.guild!.id,
+				guildId: message.guild.id,
 				starCount,
 				createdAt: new Date(),
 				lastUpdated: new Date(),
@@ -234,12 +245,17 @@ export class StarboardManager {
 		const starboardMessage = await starboardChannel.send({ embeds: [embed] });
 
 		// Store starboard entry
+		if (!message.guild) {
+			console.warn("🔸 Message has no guild, cannot create starboard entry");
+			return;
+		}
+
 		const entry: StarboardEntry = {
 			originalMessageId: message.id,
 			originalChannelId: message.channel.id,
 			starboardMessageId: starboardMessage.id,
 			starboardChannelId: starboardChannel.id,
-			guildId: message.guild!.id,
+			guildId: message.guild.id,
 			starCount,
 			createdAt: new Date(),
 			lastUpdated: new Date(),
@@ -317,8 +333,19 @@ export class StarboardManager {
 	): Promise<void> {
 		try {
 			// Fetch the context message (the message being replied to)
+			if (!originalMessage.reference?.messageId) {
+				// If no reference message ID, treat as regular update
+				await this.updateRegularStarboardMessage(
+					entry,
+					originalMessage,
+					newStarCount,
+					starboardChannel,
+				);
+				return;
+			}
+
 			const contextMessage = await originalMessage.channel.messages.fetch(
-				originalMessage.reference?.messageId!,
+				originalMessage.reference.messageId,
 			);
 
 			if (!contextMessage) {
