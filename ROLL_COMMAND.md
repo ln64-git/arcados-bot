@@ -6,7 +6,11 @@ The roll command allows users to gamble for their freedom from voice channel ban
 
 1. **Daily Limit**: Each user can only roll once per day (resets at midnight)
 2. **Dice Roll**: Rolls a 20-sided die (1-20)
-3. **Natural 20**: If you roll a 20, you get unbanned from ALL voice channels you were banned from
+3. **Natural 20**: If you roll a 20, you get:
+   - Unbanned from ALL voice channels you were banned from
+   - All mutes and deafens cleared
+   - All custom nicknames reset
+4. **Banned Channel Display**: Shows which channels you're banned from
 
 ## Command
 
@@ -15,13 +19,16 @@ The roll command allows users to gamble for their freedom from voice channel ban
 Roll the dice and see your fate!
 
 - **Daily Limit**: Only works once per day per user
-- **Natural 20**: Automatically unbans you from all channels you were banned from
-- **Results**: Shows your roll value and any unbans that occurred
+- **Natural 20**: Automatically unbans you from all channels, clears mutes/deafens/nicknames
+- **Banned Channels**: Shows which channels you're currently banned from
+- **Results**: Shows your roll value, unbans, and banned channel list
 
 ## Features
 
 - **Daily Reset**: Rolls reset at midnight (server time)
 - **Automatic Unbanning**: Natural 20s instantly unban you from all channels
+- **Moderation Clearing**: Natural 20s clear all mutes, deafens, and custom nicknames
+- **Banned Channel Display**: Shows which channels you're banned from
 - **Persistent Storage**: Uses Redis (cache) and MongoDB (persistence)
 - **Rich Embeds**: Beautiful visual feedback for all results
 
@@ -59,13 +66,16 @@ The bot needs the following permissions:
 
 ```
 /roll
-🎲 You rolled a 20! You've been unbanned from 3 channel(s)! You're free!
+🎲 You rolled a 20! You've been unbanned from 3 channel(s) and all mutes/deafens/nicknames cleared! You're free!
 
 /roll
 🔸 You've already rolled today! Your last roll was 15. Try again tomorrow!
 
 /roll
-🔹 18 - Good roll! But not quite enough for freedom...
+🔹 18 - Good roll! But not quite enough for freedom... You're banned from: General VC, Gaming Room
+
+/roll
+🔸 3 - Ouch! Better luck next time! You're banned from: General VC, Gaming Room, Music Channel
 ```
 
 ## Strategy Tips

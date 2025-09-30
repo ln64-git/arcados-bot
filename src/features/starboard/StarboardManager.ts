@@ -152,7 +152,7 @@ export class StarboardManager {
 			}
 
 			// Check if this message is a reply to another message
-			if (message.reference && message.reference.messageId) {
+			if (message.reference?.messageId) {
 				await this.handleReplyStarboard(message, starCount, starboardChannel);
 			} else {
 				// Regular starboard entry for non-reply messages
@@ -174,7 +174,7 @@ export class StarboardManager {
 		try {
 			// Fetch the original message that this is replying to
 			const originalMessage = await message.channel.messages.fetch(
-				message.reference!.messageId!,
+				message.reference?.messageId!,
 			);
 
 			if (!originalMessage) {
@@ -285,7 +285,7 @@ export class StarboardManager {
 			if (!originalMessage) return;
 
 			// Check if this is a reply message
-			if (originalMessage.reference && originalMessage.reference.messageId) {
+			if (originalMessage.reference?.messageId) {
 				await this.updateReplyStarboardMessage(
 					entry,
 					originalMessage,
@@ -318,7 +318,7 @@ export class StarboardManager {
 		try {
 			// Fetch the context message (the message being replied to)
 			const contextMessage = await originalMessage.channel.messages.fetch(
-				originalMessage.reference!.messageId!,
+				originalMessage.reference?.messageId!,
 			);
 
 			if (!contextMessage) {

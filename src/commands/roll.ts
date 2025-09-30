@@ -59,6 +59,12 @@ async function handleDiceRoll(
 	// Save updated data
 	await cache.setRollData(userId, guildId, currentRollData);
 
+	// Get banned channels info for display
+	const bannedChannels = await getBannedChannels(
+		interaction,
+		client.voiceManager,
+	);
+
 	// Handle unbanning if they rolled a 20
 	let unbannedFrom: string[] = [];
 	if (isTwenty && client.voiceManager) {
@@ -71,13 +77,51 @@ async function handleDiceRoll(
 		isTwenty,
 		isDailyLimit: false,
 		unbannedFrom,
-		message: getRollMessage(rollValue, unbannedFrom),
+		message: getRollMessage(rollValue, unbannedFrom, bannedChannels),
 	};
 
 	// Create embed
-	const embed = createRollEmbed(interaction.user, result, currentRollData);
+	const embed = createRollEmbed(
+		interaction.user,
+		result,
+		currentRollData,
+		bannedChannels,
+	);
 
 	await interaction.reply({ embeds: [embed] });
+}
+
+async function getBannedChannels(
+	interaction: ChatInputCommandInteraction,
+	voiceManager: any,
+): Promise<{ channelId: string; channelName: string }[]> {
+	const userId = interaction.user.id;
+	const guild = interaction.guild;
+	const bannedChannels: { channelId: string; channelName: string }[] = [];
+
+	if (!guild || !voiceManager) return bannedChannels;
+
+	try {
+		for (const channel of guild.channels.cache.values()) {
+			if (channel.isVoiceBased()) {
+				const isBanned = await voiceManager.isUserBannedFromChannel(
+					channel.id,
+					userId,
+				);
+
+				if (isBanned) {
+					bannedChannels.push({
+						channelId: channel.id,
+						channelName: channel.name,
+					});
+				}
+			}
+		}
+	} catch (error) {
+		console.error("🔸 Error getting banned channels:", error);
+	}
+
+	return bannedChannels;
 }
 
 async function handleUnban(
@@ -93,6 +137,7 @@ async function handleUnban(
 		const guild = interaction.guild;
 		if (!guild) return unbannedFrom;
 
+		// First, unban from all channels
 		for (const channel of guild.channels.cache.values()) {
 			if (channel.isVoiceBased()) {
 				// Check if user is banned from this channel
@@ -116,8 +161,11 @@ async function handleUnban(
 			}
 		}
 
+		// Clear all mutes, deafens, and nicknames for this user
+		await clearAllModeration(interaction, voiceManager);
+
 		console.log(
-			`🔹 User ${interaction.user.tag} rolled a 20 and was unbanned from ${unbannedFrom.length} channels`,
+			`🔹 User ${interaction.user.tag} rolled a 20 and was unbanned from ${unbannedFrom.length} channels, plus all mutes/deafens/nicknames cleared`,
 		);
 	} catch (error) {
 		console.error("🔸 Error handling unban for roll 20:", error);
@@ -126,21 +174,89 @@ async function handleUnban(
 	return unbannedFrom;
 }
 
-function getRollMessage(rollValue: number, unbannedFrom: string[]): string {
+async function clearAllModeration(
+	interaction: ChatInputCommandInteraction,
+	voiceManager: any,
+): Promise<void> {
+	const userId = interaction.user.id;
+	const guild = interaction.guild;
+
+	if (!guild || !voiceManager) return;
+
+	try {
+		// Clear all mutes, deafens, and nicknames across all voice channels
+		for (const channel of guild.channels.cache.values()) {
+			if (channel.isVoiceBased()) {
+				// Reset user nickname in this channel
+				await voiceManager.resetUserNickname(
+					channel.id,
+					userId,
+					interaction.user.id,
+				);
+
+				// Remove from muted users
+				await voiceManager.updateUserModerationPreference(
+					interaction.user.id,
+					guild.id,
+					"mutedUsers",
+					userId,
+					false,
+				);
+
+				// Remove from deafened users
+				await voiceManager.updateUserModerationPreference(
+					interaction.user.id,
+					guild.id,
+					"deafenedUsers",
+					userId,
+					false,
+				);
+			}
+		}
+
+		console.log(
+			`🔹 Cleared all moderation (mutes/deafens/nicknames) for user ${interaction.user.tag}`,
+		);
+	} catch (error) {
+		console.error("🔸 Error clearing moderation for roll 20:", error);
+	}
+}
+
+function getRollMessage(
+	rollValue: number,
+	unbannedFrom: string[],
+	bannedChannels: { channelId: string; channelName: string }[],
+): string {
 	if (rollValue === 20) {
 		if (unbannedFrom.length > 0) {
-			return `🎉 **NATURAL 20!** You've been unbanned from ${unbannedFrom.length} channel(s)! You're free!`;
+			return `🎉 **NATURAL 20!** You've been unbanned from ${unbannedFrom.length} channel(s) and all mutes/deafens/nicknames cleared! You're free!`;
 		} else {
-			return `🎉 **NATURAL 20!** Lucky roll! (You weren't banned from any channels)`;
+			return `🎉 **NATURAL 20!** Lucky roll! (You weren't banned from any channels, but all mutes/deafens/nicknames cleared!)`;
 		}
 	} else if (rollValue >= 15) {
-		return `🔹 **${rollValue}** - Good roll! But not quite enough for freedom...`;
+		const bannedText =
+			bannedChannels.length > 0
+				? ` You're banned from: ${bannedChannels.map((c) => c.channelName).join(", ")}`
+				: "";
+		return `🔹 **${rollValue}** - Good roll! But not quite enough for freedom...${bannedText}`;
 	} else if (rollValue >= 10) {
-		return `🔸 **${rollValue}** - Decent roll, but you'll need better luck next time!`;
+		const bannedText =
+			bannedChannels.length > 0
+				? ` You're banned from: ${bannedChannels.map((c) => c.channelName).join(", ")}`
+				: "";
+		return `🔸 **${rollValue}** - Decent roll, but you'll need better luck next time!${bannedText}`;
 	} else if (rollValue >= 5) {
-		return `🔸 **${rollValue}** - Not great, but not terrible either.`;
+		const bannedText =
+			bannedChannels.length > 0
+				? ` You're banned from: ${bannedChannels.map((c) => c.channelName).join(", ")}`
+				: "";
+		return `🔸 **${rollValue}** - Not great, but not terrible either.${bannedText}`;
 	} else {
-		return `🔸 **${rollValue}** - Ouch! Better luck next time!`;
+		const bannedText =
+			bannedChannels.length > 0
+				? ` You're banned from: ${bannedChannels.map((c) => c.channelName).join(", ")}`
+				: "";
+		return `🔸 **${rollValue}** - Ouch! Better luck next time!${bannedText}`;
 	}
 }
 
@@ -148,6 +264,7 @@ function createRollEmbed(
 	user: any,
 	result: RollResult,
 	rollData: RollData,
+	bannedChannels: { channelId: string; channelName: string }[],
 ): EmbedBuilder {
 	const embed = new EmbedBuilder()
 		.setTitle("🎲 Dice Roll Result")
@@ -178,6 +295,18 @@ function createRollEmbed(
 			name: "Unbanned From",
 			value: `${result.unbannedFrom.length} channel(s)`,
 			inline: true,
+		});
+	}
+
+	if (bannedChannels.length > 0) {
+		const channelNames = bannedChannels.map((c) => c.channelName).join(", ");
+		embed.addFields({
+			name: "Banned From",
+			value:
+				channelNames.length > 100
+					? channelNames.substring(0, 97) + "..."
+					: channelNames,
+			inline: false,
 		});
 	}
 
