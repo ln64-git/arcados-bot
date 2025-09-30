@@ -320,20 +320,6 @@ export class VoiceManager implements IVoiceManager {
 				channel.guild.id,
 			);
 
-			console.log(
-				`🔹 Applying preferences for new owner ${newOwner.displayName || newOwner.user.username} (${newOwner.id})`,
-			);
-			console.log(
-				`🔹 Preferences:`,
-				preferences
-					? {
-							preferredChannelName: preferences.preferredChannelName,
-							preferredUserLimit: preferences.preferredUserLimit,
-							preferredLocked: preferences.preferredLocked,
-						}
-					: "null",
-			);
-
 			if (preferences) {
 				if (preferences.preferredChannelName) {
 					try {
@@ -379,9 +365,6 @@ export class VoiceManager implements IVoiceManager {
 				try {
 					const displayName = newOwner.displayName || newOwner.user.username;
 					const defaultName = `${displayName}'s Channel`;
-					console.log(
-						`🔹 No preferences found, setting channel name to default: ${defaultName}`,
-					);
 					await channel.setName(defaultName);
 				} catch (_error) {
 					console.error(
@@ -1514,13 +1497,6 @@ export class VoiceManager implements IVoiceManager {
 					const sample = await collection.findOne();
 					if (!sample) continue;
 
-					console.log(
-						`🔹 Found collection "${collectionName}" with ${count} documents`,
-					);
-					console.log(
-						`🔹 Looking for voice activity in channel: ${channel.id} (${channel.name})`,
-					);
-
 					// Try to find voice activity data for each member
 					for (const [userId, member] of members) {
 						try {
@@ -1574,11 +1550,6 @@ export class VoiceManager implements IVoiceManager {
 					}
 				} catch (_error) {}
 			}
-
-			// If no voice activity data found, fall back to first member
-			console.log(
-				`🔸 No voice activity data found, using first member as fallback`,
-			);
 			return members.first() || null;
 		} catch (error) {
 			console.warn(`🔸 Error finding longest standing user: ${error}`);
