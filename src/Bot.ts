@@ -11,6 +11,7 @@ import { getRedisClient } from "./features/cache-management/RedisManager";
 import { DatabaseManager } from "./features/database-manager/DatabaseManager";
 import { memoryManager } from "./features/performance-monitoring/MemoryManager";
 import { speakVoiceCall } from "./features/speak-voice-call/speakVoiceCall";
+import { starboardManager } from "./features/starboard/StarboardManager";
 import { userManager } from "./features/user-manager/UserManager";
 import { voiceManager } from "./features/voice-manager/VoiceManager";
 import type { ClientWithVoiceManager, Command } from "./types";
@@ -57,10 +58,13 @@ export class Bot {
 
 		// Initialize features after login
 		speakVoiceCall(this.client);
+		(this.client as ClientWithVoiceManager).userManager = userManager();
 		(this.client as ClientWithVoiceManager).voiceManager = voiceManager(
 			this.client,
 		);
-		(this.client as ClientWithVoiceManager).userManager = userManager();
+		(this.client as ClientWithVoiceManager).starboardManager = starboardManager(
+			this.client,
+		);
 
 		memoryManager.endTimer(initStartTime);
 	}
@@ -138,6 +142,31 @@ export class Bot {
 				}
 			} catch (error) {
 				console.error("🔸 Error handling guild member remove:", error);
+			}
+		});
+
+		// Starboard reaction events
+		this.client.on("messageReactionAdd", async (reaction) => {
+			try {
+				const starboardManager = (this.client as ClientWithVoiceManager)
+					.starboardManager;
+				if (starboardManager) {
+					await starboardManager.handleReactionAdd(reaction);
+				}
+			} catch (error) {
+				console.error("🔸 Error handling reaction add:", error);
+			}
+		});
+
+		this.client.on("messageReactionRemove", async (reaction) => {
+			try {
+				const starboardManager = (this.client as ClientWithVoiceManager)
+					.starboardManager;
+				if (starboardManager) {
+					await starboardManager.handleReactionRemove(reaction);
+				}
+			} catch (error) {
+				console.error("🔸 Error handling reaction remove:", error);
 			}
 		});
 	}

@@ -11,6 +11,7 @@ export interface BotConfig {
 	botPrefix: string;
 	botOwnerId?: string;
 	spawnChannelId?: string;
+	starboardChannelId?: string;
 
 	// Database settings
 	mongoUri?: string;
@@ -47,6 +48,7 @@ function validateConfig(): BotConfig {
 		botPrefix: process.env.BOT_PREFIX || "!",
 		botOwnerId: process.env.BOT_OWNER_ID,
 		spawnChannelId: process.env.SPAWN_CHANNEL_ID,
+		starboardChannelId: process.env.STARBOARD_CHANNEL_ID,
 
 		// Database settings
 		mongoUri: process.env.MONGO_URI,

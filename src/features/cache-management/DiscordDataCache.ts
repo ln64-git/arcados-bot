@@ -2,6 +2,7 @@ import type {
 	CallState,
 	CoupSession,
 	RateLimit,
+	StarboardEntry,
 	UserModerationPreferences,
 	UserRoleData,
 	VoiceChannelConfig,
@@ -414,6 +415,126 @@ export class DiscordDataCache {
 		} catch (error) {
 			console.error(
 				`🔸 Failed to get all user role data for guild ${guildId}: ${error}`,
+			);
+			return [];
+		}
+	}
+
+	// Starboard Entry Methods
+	async setStarboardEntry(entry: StarboardEntry): Promise<void> {
+		// Try Redis first
+		if (this.redisAvailable && this.redisCache) {
+			try {
+				await this.redisCache.setStarboardEntry(entry);
+			} catch (error) {
+				console.warn(`🔸 Failed to cache starboard entry in Redis: ${error}`);
+			}
+		}
+
+		// Always store in MongoDB as fallback
+		try {
+			const db = await getDatabase();
+			await db.collection("starboardEntries").replaceOne(
+				{
+					originalMessageId: entry.originalMessageId,
+					guildId: entry.guildId,
+				},
+				entry,
+				{ upsert: true },
+			);
+		} catch (error) {
+			console.error(`🔸 Failed to store starboard entry in MongoDB: ${error}`);
+		}
+	}
+
+	async getStarboardEntry(
+		messageId: string,
+		guildId: string,
+	): Promise<StarboardEntry | null> {
+		// Try Redis first
+		if (this.redisAvailable && this.redisCache) {
+			try {
+				const cached = await this.redisCache.getStarboardEntry(
+					messageId,
+					guildId,
+				);
+				if (cached) {
+					return cached as StarboardEntry;
+				}
+			} catch (error) {
+				console.warn(`🔸 Failed to get starboard entry from Redis: ${error}`);
+			}
+		}
+
+		// Fallback to MongoDB
+		try {
+			const db = await getDatabase();
+			const entry = await db
+				.collection("starboardEntries")
+				.findOne({ originalMessageId: messageId, guildId });
+			if (entry) {
+				const typedEntry = entry as unknown as StarboardEntry;
+
+				// Cache in Redis for next time
+				if (this.redisAvailable && this.redisCache) {
+					try {
+						await this.redisCache.setStarboardEntry(typedEntry);
+					} catch (error) {
+						console.warn(
+							`🔸 Failed to cache starboard entry in Redis: ${error}`,
+						);
+					}
+				}
+
+				return typedEntry;
+			}
+		} catch (error) {
+			console.error(`🔸 Failed to get starboard entry from MongoDB: ${error}`);
+		}
+
+		return null;
+	}
+
+	async deleteStarboardEntry(
+		messageId: string,
+		guildId: string,
+	): Promise<void> {
+		// Delete from Redis
+		if (this.redisAvailable && this.redisCache) {
+			try {
+				await this.redisCache.deleteStarboardEntry(messageId, guildId);
+			} catch (error) {
+				console.warn(
+					`🔸 Failed to delete starboard entry from Redis: ${error}`,
+				);
+			}
+		}
+
+		// Delete from MongoDB
+		try {
+			const db = await getDatabase();
+			await db
+				.collection("starboardEntries")
+				.deleteOne({ originalMessageId: messageId, guildId });
+		} catch (error) {
+			console.error(
+				`🔸 Failed to delete starboard entry from MongoDB: ${error}`,
+			);
+		}
+	}
+
+	async getAllStarboardEntries(guildId: string): Promise<StarboardEntry[]> {
+		try {
+			const db = await getDatabase();
+			const entries = await db
+				.collection("starboardEntries")
+				.find({ guildId })
+				.sort({ createdAt: -1 })
+				.toArray();
+			return entries as unknown as StarboardEntry[];
+		} catch (error) {
+			console.error(
+				`🔸 Failed to get all starboard entries for guild ${guildId}: ${error}`,
 			);
 			return [];
 		}

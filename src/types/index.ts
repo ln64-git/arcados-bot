@@ -3,6 +3,8 @@ import type {
 	Client,
 	EmbedBuilder,
 	GuildMember,
+	MessageReaction,
+	PartialMessageReaction,
 	SlashCommandBuilder,
 } from "discord.js";
 
@@ -88,6 +90,17 @@ export interface UserRoleData {
 	guildId: string;
 	roleIds: string[];
 	storedAt: Date;
+	lastUpdated: Date;
+}
+
+export interface StarboardEntry {
+	originalMessageId: string;
+	originalChannelId: string;
+	starboardMessageId: string;
+	starboardChannelId: string;
+	guildId: string;
+	starCount: number;
+	createdAt: Date;
 	lastUpdated: Date;
 }
 
@@ -293,9 +306,26 @@ export interface UserManager {
 	getStoredRoleCount(userId: string, guildId: string): Promise<number>;
 }
 
+export interface StarboardManager {
+	// Starboard methods
+	handleReactionAdd(
+		reaction: MessageReaction | PartialMessageReaction,
+	): Promise<void>;
+	handleReactionRemove(
+		reaction: MessageReaction | PartialMessageReaction,
+	): Promise<void>;
+	getStarboardEntries(guildId: string): Promise<StarboardEntry[]>;
+	getStarboardStats(guildId: string): Promise<{
+		totalEntries: number;
+		totalStars: number;
+		mostStarredMessage: StarboardEntry | null;
+	}>;
+}
+
 export type ClientWithVoiceManager = Client & {
 	voiceManager?: VoiceManager;
 	userManager?: UserManager;
+	starboardManager?: StarboardManager;
 };
 
 // Type guard for GuildMember

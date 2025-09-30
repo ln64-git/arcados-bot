@@ -4,6 +4,7 @@ import type {
 	CallState,
 	CoupSession,
 	RateLimit,
+	StarboardEntry,
 	UserModerationPreferences,
 	UserRoleData,
 	VoiceChannelConfig,
@@ -268,6 +269,29 @@ export class RedisCache {
 
 	async deleteUserRoleData(userId: string, guildId: string): Promise<void> {
 		await this.del(`user_role_data:${guildId}:${userId}`);
+	}
+
+	// Starboard Entry Methods
+	async setStarboardEntry(entry: StarboardEntry, ttl?: number) {
+		return this.set(
+			`starboard_entry:${entry.guildId}:${entry.originalMessageId}`,
+			entry,
+			ttl || this.defaultTTL,
+		);
+	}
+
+	async getStarboardEntry(
+		messageId: string,
+		guildId: string,
+	): Promise<StarboardEntry | null> {
+		return this.get<StarboardEntry>(`starboard_entry:${guildId}:${messageId}`);
+	}
+
+	async deleteStarboardEntry(
+		messageId: string,
+		guildId: string,
+	): Promise<void> {
+		await this.del(`starboard_entry:${guildId}:${messageId}`);
 	}
 }
 
