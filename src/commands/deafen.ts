@@ -127,6 +127,7 @@ export const deafenCommand: Command = {
 					mutedUsers: [],
 					kickedUsers: [],
 					deafenedUsers: [],
+					renamedUsers: [],
 					lastUpdated: new Date(),
 				};
 
@@ -189,6 +190,7 @@ export const deafenCommand: Command = {
 					mutedUsers: [],
 					kickedUsers: [],
 					deafenedUsers: [],
+					renamedUsers: [],
 					lastUpdated: new Date(),
 				};
 

@@ -15,6 +15,7 @@ import type {
 	VoiceManager as IVoiceManager,
 	ModerationLog,
 	RateLimit,
+	RenamedUser,
 	UserModerationPreferences,
 	VoiceChannelConfig,
 	VoiceChannelOwner,
@@ -119,6 +120,9 @@ export class VoiceManager implements IVoiceManager {
 	private async handleUserLeft(oldState: VoiceState) {
 		const channel = oldState.channel;
 		if (!channel || !oldState.member) return;
+
+		// Restore user's nickname when they leave any voice channel
+		await this.restoreUserNickname(oldState.member.id, oldState.guild.id);
 
 		const owner = await this.getChannelOwner(channel.id);
 		if (!owner || owner.userId !== oldState.member.id) return;
@@ -341,6 +345,13 @@ export class VoiceManager implements IVoiceManager {
 					} catch (_error) {
 						// Insufficient permissions to change lock state
 					}
+				}
+			}
+
+			// Apply nicknames to all current members based on new owner's preferences
+			for (const [userId, member] of channel.members) {
+				if (!member.user.bot) {
+					await this.applyNicknamesToNewJoiner(channel.id, userId);
 				}
 			}
 
@@ -657,6 +668,9 @@ export class VoiceManager implements IVoiceManager {
 				// Failed to deafen user - bot may lack DeafenMembers permission or user left
 			}
 		}
+
+		// Apply nickname if user was renamed in this channel
+		await this.applyNicknamesToNewJoiner(channelId, userId);
 
 		// Update call state
 		callState.lastUpdated = new Date();
@@ -1112,6 +1126,7 @@ export class VoiceManager implements IVoiceManager {
 			mutedUsers: [],
 			kickedUsers: [],
 			deafenedUsers: [],
+			renamedUsers: [],
 			lastUpdated: new Date(),
 		};
 
@@ -1467,6 +1482,360 @@ export class VoiceManager implements IVoiceManager {
 			console.warn(`🔸 Error finding longest standing user: ${error}`);
 			// Fall back to first member
 			return members.first() || null;
+		}
+	}
+
+	// User nickname management methods
+	async renameUser(
+		channelId: string,
+		targetUserId: string,
+		performerId: string,
+		newNickname: string,
+	): Promise<boolean> {
+		try {
+			// Validate ownership
+			const ownershipValidation = await this.validateChannelOwnership(
+				channelId,
+				performerId,
+			);
+			if (!ownershipValidation.isValid) {
+				console.warn(`🔸 Rename user failed: ${ownershipValidation.error}`);
+				return false;
+			}
+
+			// Validate target user is in channel
+			const channel = this.client.channels.cache.get(channelId) as VoiceChannel;
+			if (!channel) return false;
+
+			const targetMember = channel.members.get(targetUserId);
+			if (!targetMember) {
+				console.warn(
+					`🔸 Target user ${targetUserId} not in channel ${channelId}`,
+				);
+				return false;
+			}
+
+			// Store original nickname before changing
+			const originalNickname = targetMember.nickname;
+
+			// Change the user's nickname
+			await targetMember.setNickname(
+				newNickname,
+				`Renamed by channel owner ${performerId}`,
+			);
+
+			// Update preferences to track this rename
+			const preferences = (await this.getUserPreferences(
+				performerId,
+				channel.guild.id,
+			)) || {
+				userId: performerId,
+				guildId: channel.guild.id,
+				bannedUsers: [],
+				mutedUsers: [],
+				kickedUsers: [],
+				deafenedUsers: [],
+				renamedUsers: [],
+				lastUpdated: new Date(),
+			};
+
+			// Remove any existing rename for this user in this channel
+			preferences.renamedUsers = preferences.renamedUsers.filter(
+				(renamed) =>
+					!(renamed.userId === targetUserId && renamed.channelId === channelId),
+			);
+
+			// Add new rename record
+			preferences.renamedUsers.push({
+				userId: targetUserId,
+				originalNickname,
+				scopedNickname: newNickname,
+				channelId,
+				renamedAt: new Date(),
+			});
+
+			preferences.lastUpdated = new Date();
+			await this.updateUserPreferences(preferences);
+
+			// Log the action
+			await this.logModerationAction({
+				action: "rename",
+				channelId,
+				guildId: channel.guild.id,
+				performerId,
+				targetId: targetUserId,
+				reason: `Renamed to: ${newNickname}`,
+			});
+
+			return true;
+		} catch (error) {
+			console.error(`🔸 Error renaming user: ${error}`);
+			return false;
+		}
+	}
+
+	async resetUserNickname(
+		channelId: string,
+		targetUserId: string,
+		performerId: string,
+	): Promise<boolean> {
+		try {
+			// Validate ownership
+			const ownershipValidation = await this.validateChannelOwnership(
+				channelId,
+				performerId,
+			);
+			if (!ownershipValidation.isValid) {
+				console.warn(`🔸 Reset nickname failed: ${ownershipValidation.error}`);
+				return false;
+			}
+
+			// Get preferences to find the original nickname
+			const preferences = await this.getUserPreferences(
+				performerId,
+				this.client.guilds.cache.get(channelId)?.id || "",
+			);
+			if (!preferences) return false;
+
+			// Find the rename record
+			const renameRecord = preferences.renamedUsers.find(
+				(renamed) =>
+					renamed.userId === targetUserId && renamed.channelId === channelId,
+			);
+
+			if (!renameRecord) {
+				console.warn(
+					`🔸 No rename record found for user ${targetUserId} in channel ${channelId}`,
+				);
+				return false;
+			}
+
+			// Restore original nickname
+			const channel = this.client.channels.cache.get(channelId) as VoiceChannel;
+			if (!channel) return false;
+
+			const targetMember = channel.members.get(targetUserId);
+			if (targetMember) {
+				await targetMember.setNickname(
+					renameRecord.originalNickname,
+					`Nickname reset by channel owner ${performerId}`,
+				);
+			}
+
+			// Remove the rename record
+			preferences.renamedUsers = preferences.renamedUsers.filter(
+				(renamed) =>
+					!(renamed.userId === targetUserId && renamed.channelId === channelId),
+			);
+
+			preferences.lastUpdated = new Date();
+			await this.updateUserPreferences(preferences);
+
+			// Log the action
+			await this.logModerationAction({
+				action: "rename",
+				channelId,
+				guildId: channel.guild.id,
+				performerId,
+				targetId: targetUserId,
+				reason: `Nickname reset to original`,
+			});
+
+			return true;
+		} catch (error) {
+			console.error(`🔸 Error resetting user nickname: ${error}`);
+			return false;
+		}
+	}
+
+	async resetAllNicknames(
+		channelId: string,
+		performerId: string,
+	): Promise<boolean> {
+		try {
+			// Validate ownership
+			const ownershipValidation = await this.validateChannelOwnership(
+				channelId,
+				performerId,
+			);
+			if (!ownershipValidation.isValid) {
+				console.warn(
+					`🔸 Reset all nicknames failed: ${ownershipValidation.error}`,
+				);
+				return false;
+			}
+
+			// Get preferences to find all renamed users in this channel
+			const preferences = await this.getUserPreferences(
+				performerId,
+				this.client.guilds.cache.get(channelId)?.id || "",
+			);
+			if (!preferences) return false;
+
+			const channel = this.client.channels.cache.get(channelId) as VoiceChannel;
+			if (!channel) return false;
+
+			// Reset all nicknames for this channel
+			const channelRenames = preferences.renamedUsers.filter(
+				(renamed) => renamed.channelId === channelId,
+			);
+
+			for (const renameRecord of channelRenames) {
+				const targetMember = channel.members.get(renameRecord.userId);
+				if (targetMember) {
+					await targetMember.setNickname(
+						renameRecord.originalNickname,
+						`All nicknames reset by channel owner ${performerId}`,
+					);
+				}
+			}
+
+			// Remove all rename records for this channel
+			preferences.renamedUsers = preferences.renamedUsers.filter(
+				(renamed) => renamed.channelId !== channelId,
+			);
+
+			preferences.lastUpdated = new Date();
+			await this.updateUserPreferences(preferences);
+
+			// Log the action
+			await this.logModerationAction({
+				action: "rename",
+				channelId,
+				guildId: channel.guild.id,
+				performerId,
+				targetId: performerId,
+				reason: `All nicknames reset`,
+			});
+
+			return true;
+		} catch (error) {
+			console.error(`🔸 Error resetting all nicknames: ${error}`);
+			return false;
+		}
+	}
+
+	async restoreUserNickname(userId: string, guildId: string): Promise<boolean> {
+		try {
+			const guild = this.client.guilds.cache.get(guildId);
+			if (!guild) return false;
+
+			const member = await guild.members.fetch(userId);
+			if (!member) return false;
+
+			// Find any active rename records for this user by checking all voice channels
+			let originalNickname: string | null = null;
+			const channelsToUpdate: string[] = [];
+
+			// Check all voice channels in the guild
+			for (const channel of guild.channels.cache.values()) {
+				if (channel.isVoiceBased()) {
+					const owner = await this.getChannelOwner(channel.id);
+					if (owner) {
+						const preferences = await this.getUserPreferences(
+							owner.userId,
+							guildId,
+						);
+						if (preferences) {
+							const renameRecord = preferences.renamedUsers.find(
+								(renamed) => renamed.userId === userId,
+							);
+							if (renameRecord) {
+								originalNickname = renameRecord.originalNickname;
+								channelsToUpdate.push(owner.userId);
+							}
+						}
+					}
+				}
+			}
+
+			// Restore original nickname
+			await member.setNickname(
+				originalNickname,
+				"User left voice channel - nickname restored",
+			);
+
+			// Remove all rename records for this user
+			for (const ownerId of channelsToUpdate) {
+				const preferences = await this.getUserPreferences(ownerId, guildId);
+				if (preferences) {
+					const hasChanges = preferences.renamedUsers.some(
+						(renamed) => renamed.userId === userId,
+					);
+
+					if (hasChanges) {
+						preferences.renamedUsers = preferences.renamedUsers.filter(
+							(renamed) => renamed.userId !== userId,
+						);
+						preferences.lastUpdated = new Date();
+						await this.updateUserPreferences(preferences);
+					}
+				}
+			}
+
+			return true;
+		} catch (error) {
+			console.error(`🔸 Error restoring user nickname: ${error}`);
+			return false;
+		}
+	}
+
+	async applyNicknamesToNewJoiner(
+		channelId: string,
+		userId: string,
+	): Promise<void> {
+		try {
+			const channel = this.client.channels.cache.get(channelId) as VoiceChannel;
+			if (!channel) return;
+
+			// Get current channel owner
+			const currentOwner = await this.getChannelOwner(channelId);
+			if (!currentOwner) return;
+
+			// Get owner's preferences
+			const preferences = await this.getUserPreferences(
+				currentOwner.userId,
+				channel.guild.id,
+			);
+			if (!preferences) return;
+
+			// Find rename record for this user in this channel
+			const renameRecord = preferences.renamedUsers.find(
+				(renamed) =>
+					renamed.userId === userId && renamed.channelId === channelId,
+			);
+
+			if (renameRecord) {
+				const member = channel.members.get(userId);
+				if (member) {
+					await member.setNickname(
+						renameRecord.scopedNickname,
+						`Applied scoped nickname by channel owner ${currentOwner.userId}`,
+					);
+				}
+			}
+		} catch (error) {
+			console.error(`🔸 Error applying nicknames to new joiner: ${error}`);
+		}
+	}
+
+	async getRenamedUsers(channelId: string): Promise<RenamedUser[]> {
+		try {
+			const currentOwner = await this.getChannelOwner(channelId);
+			if (!currentOwner) return [];
+
+			const preferences = await this.getUserPreferences(
+				currentOwner.userId,
+				this.client.guilds.cache.get(channelId)?.id || "",
+			);
+			if (!preferences) return [];
+
+			return preferences.renamedUsers.filter(
+				(renamed) => renamed.channelId === channelId,
+			);
+		} catch (error) {
+			console.error(`🔸 Error getting renamed users: ${error}`);
+			return [];
 		}
 	}
 }

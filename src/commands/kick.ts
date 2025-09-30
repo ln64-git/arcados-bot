@@ -106,6 +106,7 @@ export const kickCommand: Command = {
 				mutedUsers: [],
 				kickedUsers: [],
 				deafenedUsers: [],
+				renamedUsers: [],
 				lastUpdated: new Date(),
 			};
 

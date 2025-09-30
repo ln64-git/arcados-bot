@@ -92,6 +92,7 @@ export const limitCommand: Command = {
 				mutedUsers: [],
 				kickedUsers: [],
 				deafenedUsers: [],
+				renamedUsers: [],
 				lastUpdated: new Date(),
 			};
 

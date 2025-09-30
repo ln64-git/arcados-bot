@@ -118,6 +118,7 @@ export const lockCommand: Command = {
 				mutedUsers: [],
 				kickedUsers: [],
 				deafenedUsers: [],
+				renamedUsers: [],
 				lastUpdated: new Date(),
 			};
 

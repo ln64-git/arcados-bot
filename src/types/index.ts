@@ -70,7 +70,16 @@ export interface UserModerationPreferences {
 	preferredChannelName?: string; // User's preferred channel name
 	preferredUserLimit?: number; // User's preferred user limit
 	preferredLocked?: boolean; // User's preferred channel lock state (true = locked, false = unlocked)
+	renamedUsers: RenamedUser[]; // Array of users this owner has renamed in their channel
 	lastUpdated: Date;
+}
+
+export interface RenamedUser {
+	userId: string; // The user being renamed
+	originalNickname: string | null; // Their original server nickname (null if they had no nickname)
+	scopedNickname: string; // The nickname set by the channel owner
+	channelId: string; // The channel where this rename is active
+	renamedAt: Date; // When the rename was applied
 }
 
 export interface CoupVote {
@@ -242,6 +251,23 @@ export interface VoiceManager {
 		userId: string,
 		add: boolean,
 	): Promise<void>;
+
+	// User nickname management methods
+	renameUser(
+		channelId: string,
+		targetUserId: string,
+		performerId: string,
+		newNickname: string,
+	): Promise<boolean>;
+	resetUserNickname(
+		channelId: string,
+		targetUserId: string,
+		performerId: string,
+	): Promise<boolean>;
+	resetAllNicknames(channelId: string, performerId: string): Promise<boolean>;
+	restoreUserNickname(userId: string, guildId: string): Promise<boolean>;
+	applyNicknamesToNewJoiner(channelId: string, userId: string): Promise<void>;
+	getRenamedUsers(channelId: string): Promise<RenamedUser[]>;
 }
 
 export type ClientWithVoiceManager = Client & {
