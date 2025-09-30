@@ -1108,6 +1108,63 @@ export class VoiceManager implements IVoiceManager {
 		}
 	}
 
+	/**
+	 * Check if a user is banned from a specific channel
+	 */
+	async isUserBannedFromChannel(
+		channelId: string,
+		userId: string,
+	): Promise<boolean> {
+		try {
+			const channel = this.client.channels.cache.get(channelId);
+			if (!channel || !channel.isVoiceBased()) return false;
+
+			const owner = await this.getChannelOwner(channelId);
+			if (!owner) return false;
+
+			const preferences = await this.getUserPreferences(
+				owner.userId,
+				channel.guild.id,
+			);
+			return preferences?.bannedUsers.includes(userId) || false;
+		} catch (error) {
+			console.error("🔸 Error checking if user is banned from channel:", error);
+			return false;
+		}
+	}
+
+	/**
+	 * Unban a user from a specific channel
+	 */
+	async unbanUserFromChannel(
+		channelId: string,
+		userId: string,
+		performerId: string,
+	): Promise<boolean> {
+		try {
+			const channel = this.client.channels.cache.get(channelId);
+			if (!channel || !channel.isVoiceBased()) return false;
+
+			const owner = await this.getChannelOwner(channelId);
+			if (!owner) return false;
+
+			// Use the existing performBanAction method with "unban"
+			const result = await this.performBanAction(
+				channelId,
+				userId,
+				performerId,
+				channel.guild.id,
+				"unban",
+				"Rolled a natural 20 - automatic unban",
+			);
+
+			return result.success;
+		} catch (error) {
+			console.error("🔸 Error unbanning user from channel:", error);
+			return false;
+		}
+	}
+
 	// Helper methods for user preferences
 	async updateUserModerationPreference(
 		userId: string,

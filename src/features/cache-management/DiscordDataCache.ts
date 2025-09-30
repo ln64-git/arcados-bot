@@ -2,6 +2,7 @@ import type {
 	CallState,
 	CoupSession,
 	RateLimit,
+	RollData,
 	StarboardEntry,
 	UserModerationPreferences,
 	UserRoleData,
@@ -537,6 +538,91 @@ export class DiscordDataCache {
 				`🔸 Failed to get all starboard entries for guild ${guildId}: ${error}`,
 			);
 			return [];
+		}
+	}
+
+	// Roll Data Methods
+	async setRollData(
+		userId: string,
+		guildId: string,
+		rollData: RollData,
+	): Promise<void> {
+		// Try Redis first
+		if (this.redisAvailable && this.redisCache) {
+			try {
+				await this.redisCache.setRollData(userId, guildId, rollData);
+			} catch (error) {
+				console.warn(`🔸 Failed to cache roll data in Redis: ${error}`);
+			}
+		}
+
+		// Always store in MongoDB as fallback
+		try {
+			const db = await getDatabase();
+			await db
+				.collection("rollData")
+				.replaceOne({ userId, guildId }, rollData, { upsert: true });
+		} catch (error) {
+			console.error(`🔸 Failed to store roll data in MongoDB: ${error}`);
+		}
+	}
+
+	async getRollData(userId: string, guildId: string): Promise<RollData | null> {
+		// Try Redis first
+		if (this.redisAvailable && this.redisCache) {
+			try {
+				const cached = await this.redisCache.getRollData(userId, guildId);
+				if (cached) {
+					return cached as RollData;
+				}
+			} catch (error) {
+				console.warn(`🔸 Failed to get roll data from Redis: ${error}`);
+			}
+		}
+
+		// Fallback to MongoDB
+		try {
+			const db = await getDatabase();
+			const rollData = await db
+				.collection("rollData")
+				.findOne({ userId, guildId });
+			if (rollData) {
+				const typedData = rollData as unknown as RollData;
+
+				// Cache in Redis for next time
+				if (this.redisAvailable && this.redisCache) {
+					try {
+						await this.redisCache.setRollData(userId, guildId, typedData);
+					} catch (error) {
+						console.warn(`🔸 Failed to cache roll data in Redis: ${error}`);
+					}
+				}
+
+				return typedData;
+			}
+		} catch (error) {
+			console.error(`🔸 Failed to get roll data from MongoDB: ${error}`);
+		}
+
+		return null;
+	}
+
+	async deleteRollData(userId: string, guildId: string): Promise<void> {
+		// Delete from Redis
+		if (this.redisAvailable && this.redisCache) {
+			try {
+				await this.redisCache.deleteRollData(userId, guildId);
+			} catch (error) {
+				console.warn(`🔸 Failed to delete roll data from Redis: ${error}`);
+			}
+		}
+
+		// Delete from MongoDB
+		try {
+			const db = await getDatabase();
+			await db.collection("rollData").deleteOne({ userId, guildId });
+		} catch (error) {
+			console.error(`🔸 Failed to delete roll data from MongoDB: ${error}`);
 		}
 	}
 }

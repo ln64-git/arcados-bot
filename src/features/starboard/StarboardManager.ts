@@ -151,19 +151,57 @@ export class StarboardManager {
 				return;
 			}
 
-			// Create embed for starboard message
-			const embed = this.createStarboardEmbed(message, starCount);
+			// Check if this message is a reply to another message
+			if (message.reference && message.reference.messageId) {
+				await this.handleReplyStarboard(message, starCount, starboardChannel);
+			} else {
+				// Regular starboard entry for non-reply messages
+				await this.handleRegularStarboard(message, starCount, starboardChannel);
+			}
+		} catch (error) {
+			console.error("🔸 Error creating starboard entry:", error);
+		}
+	}
 
-			// Send starboard message
-			const starboardMessage = await starboardChannel.send({ embeds: [embed] });
+	/**
+	 * Handle starboard entry for reply messages
+	 */
+	private async handleReplyStarboard(
+		message: Message,
+		starCount: number,
+		starboardChannel: TextChannel,
+	): Promise<void> {
+		try {
+			// Fetch the original message that this is replying to
+			const originalMessage = await message.channel.messages.fetch(
+				message.reference!.messageId!,
+			);
 
-			// Store starboard entry
+			if (!originalMessage) {
+				// If we can't fetch the original message, treat as regular starboard
+				await this.handleRegularStarboard(message, starCount, starboardChannel);
+				return;
+			}
+
+			// Create embed for the original message (without star count)
+			const originalEmbed = this.createContextEmbed(originalMessage, false);
+
+			// Create embed for the reply message (with star count)
+			const replyEmbed = this.createStarboardEmbed(message, starCount);
+
+			// Send both messages to starboard
+			await starboardChannel.send({ embeds: [originalEmbed] });
+			const starboardMessage = await starboardChannel.send({
+				embeds: [replyEmbed],
+			});
+
+			// Store starboard entry for the reply message
 			const entry: StarboardEntry = {
 				originalMessageId: message.id,
 				originalChannelId: message.channel.id,
 				starboardMessageId: starboardMessage.id,
 				starboardChannelId: starboardChannel.id,
-				guildId: message.guild.id,
+				guildId: message.guild!.id,
 				starCount,
 				createdAt: new Date(),
 				lastUpdated: new Date(),
@@ -172,11 +210,46 @@ export class StarboardManager {
 			await this.cache.setStarboardEntry(entry);
 
 			console.log(
-				`🔹 Created starboard entry for message ${message.id} with ${starCount} stars`,
+				`🔹 Created reply starboard entry for message ${message.id} (replying to ${originalMessage.id}) with ${starCount} stars`,
 			);
 		} catch (error) {
-			console.error("🔸 Error creating starboard entry:", error);
+			console.error("🔸 Error handling reply starboard:", error);
+			// Fallback to regular starboard if reply handling fails
+			await this.handleRegularStarboard(message, starCount, starboardChannel);
 		}
+	}
+
+	/**
+	 * Handle regular starboard entry for non-reply messages
+	 */
+	private async handleRegularStarboard(
+		message: Message,
+		starCount: number,
+		starboardChannel: TextChannel,
+	): Promise<void> {
+		// Create embed for starboard message
+		const embed = this.createStarboardEmbed(message, starCount);
+
+		// Send starboard message
+		const starboardMessage = await starboardChannel.send({ embeds: [embed] });
+
+		// Store starboard entry
+		const entry: StarboardEntry = {
+			originalMessageId: message.id,
+			originalChannelId: message.channel.id,
+			starboardMessageId: starboardMessage.id,
+			starboardChannelId: starboardChannel.id,
+			guildId: message.guild!.id,
+			starCount,
+			createdAt: new Date(),
+			lastUpdated: new Date(),
+		};
+
+		await this.cache.setStarboardEntry(entry);
+
+		console.log(
+			`🔹 Created starboard entry for message ${message.id} with ${starCount} stars`,
+		);
 	}
 
 	/**
@@ -211,17 +284,81 @@ export class StarboardManager {
 
 			if (!originalMessage) return;
 
-			// Create updated embed
-			const embed = this.createStarboardEmbed(originalMessage, newStarCount);
+			// Check if this is a reply message
+			if (originalMessage.reference && originalMessage.reference.messageId) {
+				await this.updateReplyStarboardMessage(
+					entry,
+					originalMessage,
+					newStarCount,
+					starboardChannel,
+				);
+			} else {
+				// Regular starboard message update
+				await this.updateRegularStarboardMessage(
+					entry,
+					originalMessage,
+					newStarCount,
+					starboardChannel,
+				);
+			}
+		} catch (error) {
+			console.error("🔸 Error updating starboard message:", error);
+		}
+	}
 
-			// Update starboard message
+	/**
+	 * Update reply starboard message (both context and starred message)
+	 */
+	private async updateReplyStarboardMessage(
+		entry: StarboardEntry,
+		originalMessage: Message,
+		newStarCount: number,
+		starboardChannel: TextChannel,
+	): Promise<void> {
+		try {
+			// Fetch the context message (the message being replied to)
+			const contextMessage = await originalMessage.channel.messages.fetch(
+				originalMessage.reference!.messageId!,
+			);
+
+			if (!contextMessage) {
+				// If context message is deleted, treat as regular update
+				await this.updateRegularStarboardMessage(
+					entry,
+					originalMessage,
+					newStarCount,
+					starboardChannel,
+				);
+				return;
+			}
+
+			// Get the starboard message (the reply message with stars)
 			const starboardMessage = await starboardChannel.messages.fetch(
 				entry.starboardMessageId,
 			);
 
-			if (starboardMessage) {
-				await starboardMessage.edit({ embeds: [embed] });
+			if (!starboardMessage) return;
+
+			// Get the message before the starboard message (should be the context)
+			const messages = await starboardChannel.messages.fetch({
+				before: starboardMessage.id,
+				limit: 1,
+			});
+
+			const contextStarboardMessage = messages.first();
+
+			// Update context message if it exists
+			if (contextStarboardMessage) {
+				const contextEmbed = this.createContextEmbed(contextMessage, true);
+				await contextStarboardMessage.edit({ embeds: [contextEmbed] });
 			}
+
+			// Update the starred reply message
+			const replyEmbed = this.createStarboardEmbed(
+				originalMessage,
+				newStarCount,
+			);
+			await starboardMessage.edit({ embeds: [replyEmbed] });
 
 			// Update entry in cache
 			entry.starCount = newStarCount;
@@ -229,11 +366,49 @@ export class StarboardManager {
 			await this.cache.setStarboardEntry(entry);
 
 			console.log(
-				`🔹 Updated starboard entry for message ${entry.originalMessageId} to ${newStarCount} stars`,
+				`🔹 Updated reply starboard entry for message ${entry.originalMessageId} to ${newStarCount} stars`,
 			);
 		} catch (error) {
-			console.error("🔸 Error updating starboard message:", error);
+			console.error("🔸 Error updating reply starboard message:", error);
+			// Fallback to regular update
+			await this.updateRegularStarboardMessage(
+				entry,
+				originalMessage,
+				newStarCount,
+				starboardChannel,
+			);
 		}
+	}
+
+	/**
+	 * Update regular starboard message
+	 */
+	private async updateRegularStarboardMessage(
+		entry: StarboardEntry,
+		originalMessage: Message,
+		newStarCount: number,
+		starboardChannel: TextChannel,
+	): Promise<void> {
+		// Create updated embed
+		const embed = this.createStarboardEmbed(originalMessage, newStarCount);
+
+		// Update starboard message
+		const starboardMessage = await starboardChannel.messages.fetch(
+			entry.starboardMessageId,
+		);
+
+		if (starboardMessage) {
+			await starboardMessage.edit({ embeds: [embed] });
+		}
+
+		// Update entry in cache
+		entry.starCount = newStarCount;
+		entry.lastUpdated = new Date();
+		await this.cache.setStarboardEntry(entry);
+
+		console.log(
+			`🔹 Updated starboard entry for message ${entry.originalMessageId} to ${newStarCount} stars`,
+		);
 	}
 
 	/**
@@ -250,13 +425,36 @@ export class StarboardManager {
 
 			if (!starboardChannel) return;
 
-			// Delete starboard message
+			// Get the starboard message
 			const starboardMessage = await starboardChannel.messages.fetch(
 				entry.starboardMessageId,
 			);
 
 			if (starboardMessage) {
+				// Check if this is a reply message by looking for a context message before it
+				const messages = await starboardChannel.messages.fetch({
+					before: starboardMessage.id,
+					limit: 1,
+				});
+
+				const contextStarboardMessage = messages.first();
+
+				// Delete the starred message
 				await starboardMessage.delete();
+
+				// If there's a context message, delete it too
+				if (contextStarboardMessage) {
+					// Check if the context message is also a starboard entry
+					// by looking for the "Original message (replied to)" footer
+					const contextEmbed = contextStarboardMessage.embeds[0];
+					if (
+						contextEmbed?.footer?.text?.includes(
+							"Original message (replied to)",
+						)
+					) {
+						await contextStarboardMessage.delete();
+					}
+				}
 			}
 
 			// Remove entry from cache
@@ -305,6 +503,56 @@ export class StarboardManager {
 			.setTimestamp(message.createdAt)
 			.setFooter({
 				text: `Message ID: ${message.id}`,
+			});
+
+		// Add image if message has attachments
+		if (message.attachments.size > 0) {
+			const firstAttachment = message.attachments.first();
+			if (firstAttachment?.contentType?.startsWith("image/")) {
+				embed.setImage(firstAttachment.url);
+			}
+		}
+
+		// Add embeds if message has them
+		if (message.embeds.length > 0) {
+			const firstEmbed = message.embeds[0];
+			if (firstEmbed.image) {
+				embed.setImage(firstEmbed.image.url);
+			}
+			if (firstEmbed.thumbnail) {
+				embed.setThumbnail(firstEmbed.thumbnail.url);
+			}
+		}
+
+		return embed;
+	}
+
+	/**
+	 * Create context embed for original message (without star count)
+	 */
+	private createContextEmbed(message: Message, isReply: boolean): EmbedBuilder {
+		const embed = new EmbedBuilder()
+			.setColor(0x5865f2) // Blurple color for context
+			.setAuthor({
+				name: message.author.tag,
+				iconURL: message.author.displayAvatarURL(),
+			})
+			.setDescription(message.content || "*No text content*")
+			.addFields({
+				name: "📍 Channel",
+				value: `<#${message.channel.id}>`,
+				inline: true,
+			})
+			.addFields({
+				name: "🔗 Jump to Message",
+				value: `[Click here](${message.url})`,
+				inline: true,
+			})
+			.setTimestamp(message.createdAt)
+			.setFooter({
+				text: isReply
+					? "Original message (replied to)"
+					: `Message ID: ${message.id}`,
 			});
 
 		// Add image if message has attachments

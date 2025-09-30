@@ -7,8 +7,11 @@ The starboard feature automatically tracks and displays highly-reacted messages 
 1. **Reaction Tracking**: When users react to messages with the ⭐ emoji, the bot tracks the reaction count
 2. **Threshold**: Messages need 3 or more star reactions to be added to the starboard
 3. **Automatic Posting**: When a message reaches the threshold, it's automatically posted to the starboard channel
-4. **Live Updates**: The starboard message is updated in real-time as more reactions are added or removed
-5. **Auto-Removal**: If a message drops below 3 stars, it's automatically removed from the starboard
+4. **Reply Support**: If a starred message is a reply to another message, the bot posts both:
+   - The original message (for context) with a blue embed
+   - The starred reply message with the star count in a gold embed
+5. **Live Updates**: The starboard message is updated in real-time as more reactions are added or removed
+6. **Auto-Removal**: If a message drops below 3 stars, it's automatically removed from the starboard
 
 ## Configuration
 
@@ -36,10 +39,13 @@ Shows recent starred messages (1-10, default 5)
 ## Features
 
 - **Rich Embeds**: Starboard messages include author info, original content, star count, and jump links
+- **Reply Context**: When starring a reply, shows both the original message and the reply for full context
+- **Visual Distinction**: Original messages use blue embeds, starred messages use gold embeds
 - **Image Support**: Automatically includes images from the original message
 - **Persistent Storage**: Uses both Redis (cache) and MongoDB (persistence) for reliability
 - **Real-time Updates**: Star counts update automatically as reactions change
 - **Bot Message Filtering**: Ignores messages from bots to prevent spam
+- **Smart Cleanup**: When removing starred replies, also removes the context message
 
 ## Database Collections
 

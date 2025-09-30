@@ -104,6 +104,25 @@ export interface StarboardEntry {
 	lastUpdated: Date;
 }
 
+export interface RollData {
+	userId: string;
+	guildId: string;
+	lastRollDate: string; // YYYY-MM-DD format for daily tracking
+	totalRolls: number;
+	totalTwenties: number;
+	lastRollValue: number;
+	createdAt: Date;
+	lastUpdated: Date;
+}
+
+export interface RollResult {
+	value: number;
+	isTwenty: boolean;
+	isDailyLimit: boolean;
+	unbannedFrom: string[]; // Channel IDs that user was unbanned from
+	message: string;
+}
+
 export interface CoupVote {
 	channelId: string;
 	voterId: string;
@@ -290,6 +309,12 @@ export interface VoiceManager {
 	restoreUserNickname(userId: string, guildId: string): Promise<boolean>;
 	applyNicknamesToNewJoiner(channelId: string, userId: string): Promise<void>;
 	getRenamedUsers(channelId: string): Promise<RenamedUser[]>;
+	isUserBannedFromChannel(channelId: string, userId: string): Promise<boolean>;
+	unbanUserFromChannel(
+		channelId: string,
+		userId: string,
+		performerId: string,
+	): Promise<boolean>;
 }
 
 export interface UserManager {

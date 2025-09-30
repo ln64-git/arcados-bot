@@ -4,6 +4,7 @@ import type {
 	CallState,
 	CoupSession,
 	RateLimit,
+	RollData,
 	StarboardEntry,
 	UserModerationPreferences,
 	UserRoleData,
@@ -292,6 +293,28 @@ export class RedisCache {
 		guildId: string,
 	): Promise<void> {
 		await this.del(`starboard_entry:${guildId}:${messageId}`);
+	}
+
+	// Roll Data Methods
+	async setRollData(
+		userId: string,
+		guildId: string,
+		rollData: RollData,
+		ttl?: number,
+	) {
+		return this.set(
+			`roll_data:${guildId}:${userId}`,
+			rollData,
+			ttl || this.defaultTTL,
+		);
+	}
+
+	async getRollData(userId: string, guildId: string): Promise<RollData | null> {
+		return this.get<RollData>(`roll_data:${guildId}:${userId}`);
+	}
+
+	async deleteRollData(userId: string, guildId: string): Promise<void> {
+		await this.del(`roll_data:${guildId}:${userId}`);
 	}
 }
 
