@@ -140,7 +140,7 @@ export class VoiceManager implements IVoiceManager {
 			member.displayName,
 		);
 
-		// Get the spawn channel to determine positioning
+		// Get the spawn channel to determine positioning and privacy settings
 		const spawnChannel = member.guild.channels.cache.get(config.spawnChannelId);
 		if (!spawnChannel || !spawnChannel.isVoiceBased()) {
 			console.warn(
@@ -153,22 +153,81 @@ export class VoiceManager implements IVoiceManager {
 		const spawnChannelPosition = spawnChannel.position;
 		const newChannelPosition = spawnChannelPosition + 1;
 
+		// Check if spawn channel is private/locked (privacy setting)
+		const spawnChannelPermissions = spawnChannel.permissionOverwrites.cache.get(
+			member.guild.roles.everyone.id,
+		);
+
+		// A channel is considered private if @everyone has Connect denied OR ViewChannel denied
+		const isSpawnChannelPrivate =
+			spawnChannelPermissions?.deny.has(PermissionFlagsBits.Connect) ||
+			spawnChannelPermissions?.deny.has(PermissionFlagsBits.ViewChannel);
+
+		console.log(`🔹 Spawn channel ${spawnChannel.name} privacy check:`, {
+			hasEveryoneOverwrite: !!spawnChannelPermissions,
+			connectDenied: spawnChannelPermissions?.deny.has(
+				PermissionFlagsBits.Connect,
+			),
+			viewChannelDenied: spawnChannelPermissions?.deny.has(
+				PermissionFlagsBits.ViewChannel,
+			),
+			isPrivate: isSpawnChannelPrivate,
+			allowBitfield: spawnChannelPermissions?.allow.bitfield?.toString(),
+			denyBitfield: spawnChannelPermissions?.deny.bitfield?.toString(),
+		});
+
+		// Build permission overwrites array
+		const permissionOverwrites: Array<{
+			id: string;
+			allow?: bigint[];
+			deny?: bigint[];
+		}> = [
+			{
+				id: member.id,
+				allow: [
+					PermissionFlagsBits.ManageChannels,
+					PermissionFlagsBits.MoveMembers,
+					PermissionFlagsBits.MuteMembers,
+					PermissionFlagsBits.DeafenMembers,
+				],
+			},
+		];
+
+		// Inherit privacy settings from spawn channel
+		if (isSpawnChannelPrivate) {
+			// Copy ALL permission overwrites from the spawn channel to maintain the same privacy structure
+			console.log(
+				`🔹 Copying ALL permission overwrites from spawn channel ${spawnChannel.name}:`,
+			);
+
+			for (const [id, overwrite] of spawnChannel.permissionOverwrites.cache) {
+				// Skip the owner's permissions as we'll add those separately
+				if (id === member.id) continue;
+
+				const copiedOverwrite = {
+					id: id,
+					allow: overwrite.allow.bitfield
+						? [overwrite.allow.bitfield]
+						: undefined,
+					deny: overwrite.deny.bitfield ? [overwrite.deny.bitfield] : undefined,
+				};
+
+				console.log(`🔹 Copying overwrite for ${id}:`, {
+					originalAllow: overwrite.allow.bitfield?.toString(),
+					originalDeny: overwrite.deny.bitfield?.toString(),
+					copiedOverwrite,
+				});
+
+				permissionOverwrites.push(copiedOverwrite);
+			}
+		}
+
 		const channel = await member.guild.channels.create({
 			name: channelName,
 			type: ChannelType.GuildVoice,
 			parent: member.voice.channel?.parent,
 			position: newChannelPosition,
-			permissionOverwrites: [
-				{
-					id: member.id,
-					allow: [
-						PermissionFlagsBits.ManageChannels,
-						PermissionFlagsBits.MoveMembers,
-						PermissionFlagsBits.MuteMembers,
-						PermissionFlagsBits.DeafenMembers,
-					],
-				},
-			],
+			permissionOverwrites,
 		});
 
 		await member.voice.setChannel(channel as VoiceChannel);
