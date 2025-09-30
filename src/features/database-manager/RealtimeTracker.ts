@@ -243,7 +243,7 @@ export class RealtimeTracker {
 			const channel = newState.channel;
 			if (channel && this.isAFKChannel(channel)) return;
 
-			// User joined a voice channel
+			// User joined a voice channel (from no channel)
 			if (!oldState.channelId && newState.channelId) {
 				const session: Omit<VoiceSession, "_id" | "createdAt" | "updatedAt"> = {
 					userId,
@@ -271,7 +271,57 @@ export class RealtimeTracker {
 				});
 			}
 
-			// User left a voice channel
+			// User moved between voice channels
+			if (
+				oldState.channelId &&
+				newState.channelId &&
+				oldState.channelId !== newState.channelId
+			) {
+				// Close previous session
+				const leftAt = new Date();
+				await this.core.updateVoiceSession(userId, guildId, leftAt);
+				this.activeVoiceSessions.delete(userId);
+
+				await this.core.recordInteraction({
+					fromUserId: userId,
+					toUserId: userId,
+					guildId,
+					interactionType: "voice",
+					channelId: oldState.channelId,
+					timestamp: leftAt,
+					metadata: {
+						action: "moved_from",
+						channelName: oldState.channel?.name,
+					},
+				});
+
+				// Open new session
+				const joinedAt = new Date();
+				const newSession: Omit<
+					VoiceSession,
+					"_id" | "createdAt" | "updatedAt"
+				> = {
+					userId,
+					guildId,
+					channelId: newState.channelId,
+					channelName: newState.channel?.name || "Unknown Channel",
+					joinedAt,
+				};
+				await this.core.createVoiceSession(newSession);
+				this.activeVoiceSessions.set(userId, newSession as VoiceSession);
+
+				await this.core.recordInteraction({
+					fromUserId: userId,
+					toUserId: userId,
+					guildId,
+					interactionType: "voice",
+					channelId: newState.channelId,
+					timestamp: joinedAt,
+					metadata: { action: "moved_to", channelName: newState.channel?.name },
+				});
+			}
+
+			// User left a voice channel (to no channel)
 			if (oldState.channelId && !newState.channelId) {
 				const session = this.activeVoiceSessions.get(userId);
 				if (session) {

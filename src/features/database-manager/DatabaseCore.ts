@@ -466,6 +466,82 @@ export class DatabaseCore {
 		);
 	}
 
+	// ==================== VOICE DURATION OPERATIONS ====================
+
+	async getActiveVoiceDurations(
+		channelId: string,
+		guildId: string,
+	): Promise<Array<{ userId: string; duration: number }>> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+
+			// Get active voice sessions for this channel
+			const activeFilter: any = {
+				channelId,
+				guildId,
+				$or: [{ leftAt: { $exists: false } }, { leftAt: null }], // Active session (hasn't left yet)
+			};
+			const activeSessions = await collections.voiceSessions
+				.find(activeFilter)
+				.toArray();
+
+			// Calculate durations
+			const now = Date.now();
+			return activeSessions.map((session) => ({
+				userId: session.userId,
+				duration: session.joinedAt ? now - session.joinedAt.getTime() : 0,
+			}));
+		}, `getActiveVoiceDurations(${channelId}, ${guildId})`);
+	}
+
+	// ==================== ROLE RESTORATION OPERATIONS ====================
+
+	async restoreMemberRoles(
+		member: import("discord.js").GuildMember,
+	): Promise<{ success: boolean; restoredCount: number; error?: string }> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+
+			// Get user data from database
+			const userData = await collections.users.findOne({
+				discordId: member.id,
+				guildId: member.guild.id,
+			});
+
+			if (!userData || !userData.roles || userData.roles.length === 0) {
+				return {
+					success: true,
+					restoredCount: 0,
+					error: `No stored roles found for user ${member.user.tag}`,
+				};
+			}
+
+			// Filter out roles that no longer exist in the guild
+			const validRoles = userData.roles.filter((roleId: string) =>
+				member.guild.roles.cache.has(roleId),
+			);
+
+			if (validRoles.length === 0) {
+				return {
+					success: true,
+					restoredCount: 0,
+					error: `No valid roles found for user ${member.user.tag} - all stored roles may have been deleted`,
+				};
+			}
+
+			// Add roles to the member
+			await member.roles.add(
+				validRoles,
+				"Automatic role restoration on rejoin",
+			);
+
+			return {
+				success: true,
+				restoredCount: validRoles.length,
+			};
+		}, `restoreMemberRoles(${member.id}, ${member.guild.id})`);
+	}
+
 	// ==================== STATISTICS ====================
 
 	async getGuildStats(guildId: string): Promise<{

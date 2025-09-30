@@ -160,43 +160,21 @@ export class Bot {
 		member: GuildMember,
 	): Promise<void> {
 		try {
-			const { getDatabase } = await import(
-				"./features/database-manager/DatabaseConnection"
+			const { DatabaseManager } = await import(
+				"./features/database-manager/DatabaseManager"
 			);
-			const db = await getDatabase();
+			const dbManager = new DatabaseManager(this.client);
+			await dbManager.initialize();
 
-			// Get user data from database
-			const userData = await db.collection("users").findOne({
-				discordId: member.id,
-				guildId: member.guild.id,
-			});
+			const result = await dbManager.restoreMemberRoles(member);
 
-			if (!userData || !userData.roles || userData.roles.length === 0) {
-				console.log(`🔹 No stored roles found for user ${member.user.tag}`);
-				return;
-			}
-
-			// Filter out roles that no longer exist in the guild
-			const validRoles = userData.roles.filter((roleId: string) =>
-				member.guild.roles.cache.has(roleId),
-			);
-
-			if (validRoles.length === 0) {
+			if (result.success && result.restoredCount > 0) {
 				console.log(
-					`🔹 No valid roles found for user ${member.user.tag} - all stored roles may have been deleted`,
+					`🔹 Restored ${result.restoredCount} roles for user ${member.user.tag} (${member.id})`,
 				);
-				return;
+			} else if (result.error) {
+				console.log(`🔹 ${result.error}`);
 			}
-
-			// Add roles to the member
-			await member.roles.add(
-				validRoles,
-				"Automatic role restoration on rejoin",
-			);
-
-			console.log(
-				`🔹 Restored ${validRoles.length} roles for user ${member.user.tag} (${member.id})`,
-			);
 		} catch (error) {
 			console.error(
 				`🔸 Error restoring user roles for ${member.user.tag}:`,

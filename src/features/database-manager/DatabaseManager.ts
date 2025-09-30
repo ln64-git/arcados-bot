@@ -175,6 +175,14 @@ export class DatabaseManager {
 		return this.core.getUserInteractions(fromUserId, toUserId, guildId);
 	}
 
+	async getActiveVoiceDurations(channelId: string, guildId: string) {
+		return this.core.getActiveVoiceDurations(channelId, guildId);
+	}
+
+	async restoreMemberRoles(member: import("discord.js").GuildMember) {
+		return this.core.restoreMemberRoles(member);
+	}
+
 	async getGuildStats(guildId: string) {
 		return this.core.getGuildStats(guildId);
 	}

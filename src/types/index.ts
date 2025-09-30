@@ -2,11 +2,9 @@ import type {
 	ChatInputCommandInteraction,
 	Client,
 	EmbedBuilder,
-	GuildMember,
 	MessageReaction,
 	PartialMessageReaction,
 	SlashCommandBuilder,
-	VoiceState,
 } from "discord.js";
 
 export interface Command {
@@ -181,6 +179,21 @@ export interface VoiceManager {
 	getCallState(channelId: string): Promise<CallState | null>;
 	updateCallState(state: CallState): Promise<void>;
 	applyPreferencesToNewJoiner(channelId: string, userId: string): Promise<void>;
+
+	// Channel state methods
+	getChannelState(channelId: string): Promise<{
+		owner: VoiceChannelOwner | null;
+		memberIds: string[];
+		moderationInfo: {
+			bannedUsers: string[];
+			mutedUsers: string[];
+			deafenedUsers: string[];
+		};
+		inheritanceOrder: Array<{ userId: string; duration: number }>;
+		createdAt: Date;
+		guildId: string;
+		channelName: string;
+	}>;
 
 	// Coup system methods
 	startCoupVote(channelId: string, targetUserId: string): Promise<boolean>;

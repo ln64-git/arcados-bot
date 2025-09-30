@@ -1,7 +1,6 @@
 import {
 	type ChatInputCommandInteraction,
 	EmbedBuilder,
-	type GuildMember,
 	SlashCommandBuilder,
 	type VoiceBasedChannel,
 } from "discord.js";
@@ -44,49 +43,31 @@ export const channelInfoCommand: Command = {
 		}
 
 		try {
-			// Get channel owner
-			const owner = await voiceManager.getChannelOwner(voiceChannel.id);
-
-			// Get owner preferences for banned/muted/deafened users
-			let bannedUsers: string[] = [];
-			let mutedUsers: string[] = [];
-			let deafenedUsers: string[] = [];
-
-			if (owner) {
-				const preferences = await voiceManager.getUserPreferences(
-					owner.userId,
-					voiceChannel.guild.id,
-				);
-				if (preferences) {
-					bannedUsers = preferences.bannedUsers;
-					mutedUsers = preferences.mutedUsers;
-					deafenedUsers = preferences.deafenedUsers;
-				}
-			}
-
-			// Get call order (longest to shortest standing)
-			const callOrder = await getCallOrder(voiceChannel);
+			// Get comprehensive channel state using centralized method
+			const channelState = await voiceManager.getChannelState(voiceChannel.id);
 
 			// Create embed
 			const embed = new EmbedBuilder()
 				.setTitle(`Channel Information`)
-				.setDescription(`**${voiceChannel.name}**`)
+				.setDescription(`**${channelState.channelName}**`)
 				.setColor(0x5865f2)
 				.setThumbnail(voiceChannel.guild.iconURL() || null)
 				.addFields(
 					{
 						name: "Owner",
-						value: owner ? `<@${owner.userId}>` : "No owner",
+						value: channelState.owner
+							? `<@${channelState.owner.userId}>`
+							: "No owner",
 						inline: true,
 					},
 					{
 						name: "Members",
-						value: `${voiceChannel.members.size} users`,
+						value: `${channelState.memberIds.length} users`,
 						inline: true,
 					},
 					{
 						name: "Created",
-						value: `<t:${Math.floor(voiceChannel.createdTimestamp / 1000)}:R>`,
+						value: `<t:${Math.floor(channelState.createdAt.getTime() / 1000)}:R>`,
 						inline: true,
 					},
 				)
@@ -94,14 +75,20 @@ export const channelInfoCommand: Command = {
 
 			// Add moderation info if any
 			const moderationInfo: string[] = [];
-			if (bannedUsers.length > 0) {
-				moderationInfo.push(`**Banned:** ${bannedUsers.length} users`);
+			if (channelState.moderationInfo.bannedUsers.length > 0) {
+				moderationInfo.push(
+					`**Banned:** ${channelState.moderationInfo.bannedUsers.length} users`,
+				);
 			}
-			if (mutedUsers.length > 0) {
-				moderationInfo.push(`**Muted:** ${mutedUsers.length} users`);
+			if (channelState.moderationInfo.mutedUsers.length > 0) {
+				moderationInfo.push(
+					`**Muted:** ${channelState.moderationInfo.mutedUsers.length} users`,
+				);
 			}
-			if (deafenedUsers.length > 0) {
-				moderationInfo.push(`**Deafened:** ${deafenedUsers.length} users`);
+			if (channelState.moderationInfo.deafenedUsers.length > 0) {
+				moderationInfo.push(
+					`**Deafened:** ${channelState.moderationInfo.deafenedUsers.length} users`,
+				);
 			}
 
 			if (moderationInfo.length > 0) {
@@ -113,10 +100,10 @@ export const channelInfoCommand: Command = {
 			}
 
 			// Add call order (inheritance order)
-			if (callOrder.length > 0) {
-				const callOrderText = callOrder
+			if (channelState.inheritanceOrder.length > 0) {
+				const callOrderText = channelState.inheritanceOrder
 					.slice(0, 5) // Show top 5
-					.map((member) => {
+					.map((member: { userId: string; duration: number }) => {
 						const duration = formatDuration(member.duration);
 						return `<@${member.userId}> • ${duration}`;
 					})
@@ -140,82 +127,6 @@ export const channelInfoCommand: Command = {
 		}
 	},
 };
-
-async function getCallOrder(
-	channel: VoiceBasedChannel,
-): Promise<Array<{ userId: string; duration: number; member: GuildMember }>> {
-	try {
-		// Use the existing database manager to get voice sessions
-		const { getDatabase } = await import(
-			"../features/database-manager/DatabaseConnection"
-		);
-		const db = await getDatabase();
-
-		const members = Array.from(channel.members.values()).filter(
-			(member) => !member.user.bot,
-		);
-
-		const membersWithDuration = await Promise.all(
-			members.map(async (member) => {
-				// Get the active voice session for this user in this channel
-				const voiceSession = await db.collection("voiceSessions").findOne({
-					userId: member.id,
-					guildId: channel.guild.id,
-					channelId: channel.id,
-					leftAt: null, // Active session (hasn't left yet)
-				});
-
-				let duration = 0;
-				if (voiceSession && voiceSession.joinedAt) {
-					duration = Date.now() - voiceSession.joinedAt.getTime();
-				}
-
-				return {
-					userId: member.id,
-					duration,
-					member,
-				};
-			}),
-		);
-
-		// Sort by duration (longest first)
-		return membersWithDuration.sort((a, b) => b.duration - a.duration);
-	} catch (error) {
-		console.error("🔸 Error getting call order:", error);
-		return [];
-	}
-}
-
-function isChannelLocked(channel: VoiceBasedChannel): boolean {
-	try {
-		const everyoneOverwrite = channel.permissionOverwrites.cache.get(
-			channel.guild.roles.everyone.id,
-		);
-		if (!everyoneOverwrite) return false;
-
-		// A channel is considered "locked" only if:
-		// 1. Connect permission is denied for @everyone
-		// 2. AND there are no other role/member overwrites that allow Connect
-		const isConnectDenied = everyoneOverwrite.deny.has("Connect");
-		if (!isConnectDenied) return false;
-
-		// Check if any other role or member has Connect permission allowed
-		for (const [id, overwrite] of channel.permissionOverwrites.cache) {
-			if (id === channel.guild.roles.everyone.id) continue; // Skip @everyone, already checked
-
-			// If any role/member has Connect allowed OR no explicit Connect permission (inherits access),
-			// the channel is not fully locked
-			if (overwrite.allow.has("Connect") || !overwrite.deny.has("Connect")) {
-				return false;
-			}
-		}
-
-		// If Connect is denied for @everyone and no other permissions allow it, channel is locked
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 function formatDuration(milliseconds: number): string {
 	const seconds = Math.floor(milliseconds / 1000);

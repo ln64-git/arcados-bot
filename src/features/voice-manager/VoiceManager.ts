@@ -20,6 +20,7 @@ import type {
 	VoiceChannelConfig,
 	VoiceChannelOwner,
 } from "../../types";
+import { clonePermissionOverwrites } from "../../utils/permissions";
 import { getCacheManager } from "../cache-management/DiscordDataCache";
 import { getDatabase } from "../database-manager/DatabaseConnection";
 
@@ -181,7 +182,7 @@ export class VoiceManager implements IVoiceManager {
 		});
 
 		// Build permission overwrites array
-		const permissionOverwrites: Array<{
+		let permissionOverwrites: Array<{
 			id: string;
 			allow?: bigint[];
 			deny?: bigint[];
@@ -199,31 +200,13 @@ export class VoiceManager implements IVoiceManager {
 
 		// Inherit privacy settings from spawn channel
 		if (isSpawnChannelPrivate) {
-			// Copy ALL permission overwrites from the spawn channel to maintain the same privacy structure
+			// Use the centralized permission cloning utility
 			console.log(
-				`🔹 Copying ALL permission overwrites from spawn channel ${spawnChannel.name}:`,
+				`🔹 Copying ALL permission overwrites from spawn channel ${spawnChannel.name}`,
 			);
 
-			for (const [id, overwrite] of spawnChannel.permissionOverwrites.cache) {
-				// Skip the owner's permissions as we'll add those separately
-				if (id === member.id) continue;
-
-				const copiedOverwrite = {
-					id: id,
-					allow: overwrite.allow.bitfield
-						? [overwrite.allow.bitfield]
-						: undefined,
-					deny: overwrite.deny.bitfield ? [overwrite.deny.bitfield] : undefined,
-				};
-
-				console.log(`🔹 Copying overwrite for ${id}:`, {
-					originalAllow: overwrite.allow.bitfield?.toString(),
-					originalDeny: overwrite.deny.bitfield?.toString(),
-					copiedOverwrite,
-				});
-
-				permissionOverwrites.push(copiedOverwrite);
-			}
+			// We'll clone permissions after channel creation since we need the channel object
+			permissionOverwrites = []; // Clear the array since we'll handle this separately
 		}
 
 		const channel = await member.guild.channels.create({
@@ -233,6 +216,22 @@ export class VoiceManager implements IVoiceManager {
 			position: newChannelPosition,
 			permissionOverwrites,
 		});
+
+		// Clone permissions from spawn channel if it was private
+		if (isSpawnChannelPrivate) {
+			try {
+				await clonePermissionOverwrites(
+					spawnChannel as VoiceChannel,
+					channel,
+					member.id,
+				);
+			} catch (error) {
+				console.error(
+					"🔸 Error cloning permissions from spawn channel:",
+					error,
+				);
+			}
+		}
 
 		await member.voice.setChannel(channel as VoiceChannel);
 		await this.setChannelOwner(channel.id, member.id, member.guild.id);
@@ -314,64 +313,8 @@ export class VoiceManager implements IVoiceManager {
 				await this.updateCallState(currentCallState);
 			}
 
-			// Apply only channel settings (name, limit, lock) from new owner's preferences
-			const preferences = await this.getUserPreferences(
-				newOwner.id,
-				channel.guild.id,
-			);
-
-			if (preferences) {
-				if (preferences.preferredChannelName) {
-					try {
-						console.log(
-							`🔹 Setting channel name to preferred: ${preferences.preferredChannelName}`,
-						);
-						await channel.setName(preferences.preferredChannelName);
-					} catch (_error) {
-						console.error(`🔸 Failed to set preferred channel name: ${_error}`);
-					}
-				} else {
-					// Default to "{Display Name}'s Channel" if no preferred name is set
-					try {
-						const displayName = newOwner.displayName || newOwner.user.username;
-						const defaultName = `${displayName}'s Channel`;
-						console.log(`🔹 Setting channel name to default: ${defaultName}`);
-						await channel.setName(defaultName);
-					} catch (_error) {
-						console.error(`🔸 Failed to set default channel name: ${_error}`);
-					}
-				}
-				if (preferences.preferredUserLimit) {
-					try {
-						await channel.setUserLimit(preferences.preferredUserLimit);
-					} catch (_error) {
-						// Insufficient permissions to change user limit
-					}
-				}
-				if (preferences.preferredLocked !== undefined) {
-					try {
-						await channel.permissionOverwrites.edit(
-							channel.guild.roles.everyone,
-							{
-								Connect: !preferences.preferredLocked,
-							},
-						);
-					} catch (_error) {
-						// Insufficient permissions to change lock state
-					}
-				}
-			} else {
-				// No preferences found, apply default naming
-				try {
-					const displayName = newOwner.displayName || newOwner.user.username;
-					const defaultName = `${displayName}'s Channel`;
-					await channel.setName(defaultName);
-				} catch (_error) {
-					console.error(
-						`🔸 Failed to set default channel name (no preferences): ${_error}`,
-					);
-				}
-			}
+			// Apply new owner's preferences using centralized method
+			await this.applyUserPreferencesToChannel(channel.id, newOwner.id);
 
 			// Apply nicknames to all current members based on new owner's preferences
 			for (const [userId, member] of channel.members) {
@@ -1909,6 +1852,96 @@ export class VoiceManager implements IVoiceManager {
 		} catch (error) {
 			console.error(`🔸 Error getting renamed users: ${error}`);
 			return [];
+		}
+	}
+
+	/**
+	 * Get comprehensive channel state information
+	 * @param channelId The voice channel ID
+	 * @returns Channel state data including owner, members, moderation info, and inheritance order
+	 */
+	async getChannelState(channelId: string): Promise<{
+		owner: VoiceChannelOwner | null;
+		memberIds: string[];
+		moderationInfo: {
+			bannedUsers: string[];
+			mutedUsers: string[];
+			deafenedUsers: string[];
+		};
+		inheritanceOrder: Array<{ userId: string; duration: number }>;
+		createdAt: Date;
+		guildId: string;
+		channelName: string;
+	}> {
+		try {
+			const channel = this.client.channels.cache.get(channelId) as VoiceChannel;
+			if (!channel || !channel.isVoiceBased()) {
+				throw new Error("Channel not found or not a voice channel");
+			}
+
+			// Get channel owner
+			const owner = await this.getChannelOwner(channelId);
+
+			// Get owner preferences for moderation info
+			let bannedUsers: string[] = [];
+			let mutedUsers: string[] = [];
+			let deafenedUsers: string[] = [];
+
+			if (owner) {
+				const preferences = await this.getUserPreferences(
+					owner.userId,
+					channel.guild.id,
+				);
+				if (preferences) {
+					bannedUsers = preferences.bannedUsers;
+					mutedUsers = preferences.mutedUsers;
+					deafenedUsers = preferences.deafenedUsers;
+				}
+			}
+
+			// Get inheritance order using centralized database method
+			const { DatabaseManager } = await import(
+				"../database-manager/DatabaseManager"
+			);
+			const dbManager = new DatabaseManager(this.client);
+			await dbManager.initialize();
+
+			const durations = await dbManager.getActiveVoiceDurations(
+				channelId,
+				channel.guild.id,
+			);
+
+			// Build list of current members (non-bots)
+			const memberIds = Array.from(channel.members.keys()).filter(
+				(id) => !channel.members.get(id)?.user.bot,
+			);
+
+			// Create a map from DB durations
+			const durationMap = new Map<string, number>(
+				durations.map((d) => [d.userId, d.duration]),
+			);
+
+			// Ensure all current members are represented; fallback to 0 duration if DB is missing
+			const inheritanceOrder = memberIds
+				.map((userId) => ({ userId, duration: durationMap.get(userId) ?? 0 }))
+				.sort((a, b) => b.duration - a.duration);
+
+			return {
+				owner,
+				memberIds,
+				moderationInfo: {
+					bannedUsers,
+					mutedUsers,
+					deafenedUsers,
+				},
+				inheritanceOrder,
+				createdAt: channel.createdAt,
+				guildId: channel.guild.id,
+				channelName: channel.name,
+			};
+		} catch (error) {
+			console.error("🔸 Error getting channel state:", error);
+			throw error;
 		}
 	}
 }
