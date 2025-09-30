@@ -2,6 +2,7 @@ import {
 	Client,
 	Collection,
 	GatewayIntentBits,
+	type GuildMember,
 	type Interaction,
 	REST,
 	Routes,
@@ -12,7 +13,6 @@ import { DatabaseManager } from "./features/database-manager/DatabaseManager";
 import { memoryManager } from "./features/performance-monitoring/MemoryManager";
 import { speakVoiceCall } from "./features/speak-voice-call/speakVoiceCall";
 import { starboardManager } from "./features/starboard/StarboardManager";
-import { userManager } from "./features/user-manager/UserManager";
 import { voiceManager } from "./features/voice-manager/VoiceManager";
 import type { ClientWithVoiceManager, Command } from "./types";
 import { loadCommands } from "./utils/loadCommands";
@@ -58,7 +58,6 @@ export class Bot {
 
 		// Initialize features after login
 		speakVoiceCall(this.client);
-		(this.client as ClientWithVoiceManager).userManager = userManager();
 		(this.client as ClientWithVoiceManager).voiceManager = voiceManager(
 			this.client,
 		);
@@ -122,26 +121,12 @@ export class Bot {
 			}
 		});
 
-		// Guild member events for role restoration
+		// Guild member events for role restoration using database manager
 		this.client.on("guildMemberAdd", async (member) => {
 			try {
-				const userManager = (this.client as ClientWithVoiceManager).userManager;
-				if (userManager) {
-					await userManager.restoreUserRoles(member);
-				}
+				await this.restoreUserRolesFromDatabase(member);
 			} catch (error) {
 				console.error("🔸 Error handling guild member add:", error);
-			}
-		});
-
-		this.client.on("guildMemberRemove", async (member) => {
-			try {
-				const userManager = (this.client as ClientWithVoiceManager).userManager;
-				if (userManager && member.partial === false) {
-					await userManager.storeUserRoles(member);
-				}
-			} catch (error) {
-				console.error("🔸 Error handling guild member remove:", error);
 			}
 		});
 
@@ -169,6 +154,55 @@ export class Bot {
 				console.error("🔸 Error handling reaction remove:", error);
 			}
 		});
+	}
+
+	private async restoreUserRolesFromDatabase(
+		member: GuildMember,
+	): Promise<void> {
+		try {
+			const { getDatabase } = await import(
+				"./features/database-manager/DatabaseConnection"
+			);
+			const db = await getDatabase();
+
+			// Get user data from database
+			const userData = await db.collection("users").findOne({
+				discordId: member.id,
+				guildId: member.guild.id,
+			});
+
+			if (!userData || !userData.roles || userData.roles.length === 0) {
+				console.log(`🔹 No stored roles found for user ${member.user.tag}`);
+				return;
+			}
+
+			// Filter out roles that no longer exist in the guild
+			const validRoles = userData.roles.filter((roleId: string) =>
+				member.guild.roles.cache.has(roleId),
+			);
+
+			if (validRoles.length === 0) {
+				console.log(
+					`🔹 No valid roles found for user ${member.user.tag} - all stored roles may have been deleted`,
+				);
+				return;
+			}
+
+			// Add roles to the member
+			await member.roles.add(
+				validRoles,
+				"Automatic role restoration on rejoin",
+			);
+
+			console.log(
+				`🔹 Restored ${validRoles.length} roles for user ${member.user.tag} (${member.id})`,
+			);
+		} catch (error) {
+			console.error(
+				`🔸 Error restoring user roles for ${member.user.tag}:`,
+				error,
+			);
+		}
 	}
 
 	private async deployCommands() {

@@ -5,7 +5,6 @@ import type {
 	RollData,
 	StarboardEntry,
 	UserModerationPreferences,
-	UserRoleData,
 	VoiceChannelConfig,
 	VoiceChannelOwner,
 } from "../../types";
@@ -310,114 +309,6 @@ export class DiscordDataCache {
 			} catch (error) {
 				console.warn(`🔸 Failed to flush Redis cache: ${error}`);
 			}
-		}
-	}
-
-	// User Role Data Methods
-	async setUserRoleData(
-		userId: string,
-		guildId: string,
-		userRoleData: UserRoleData,
-	): Promise<void> {
-		// Try Redis first
-		if (this.redisAvailable && this.redisCache) {
-			try {
-				await this.redisCache.setUserRoleData(userId, guildId, userRoleData);
-			} catch (error) {
-				console.warn(`🔸 Failed to cache user role data in Redis: ${error}`);
-			}
-		}
-
-		// Always store in MongoDB as fallback
-		try {
-			const db = await getDatabase();
-			await db
-				.collection("userRoleData")
-				.replaceOne({ userId, guildId }, userRoleData, { upsert: true });
-		} catch (error) {
-			console.error(`🔸 Failed to store user role data in MongoDB: ${error}`);
-		}
-	}
-
-	async getUserRoleData(
-		userId: string,
-		guildId: string,
-	): Promise<UserRoleData | null> {
-		// Try Redis first
-		if (this.redisAvailable && this.redisCache) {
-			try {
-				const cached = await this.redisCache.getUserRoleData(userId, guildId);
-				if (cached) {
-					return cached as UserRoleData;
-				}
-			} catch (error) {
-				console.warn(`🔸 Failed to get user role data from Redis: ${error}`);
-			}
-		}
-
-		// Fallback to MongoDB
-		try {
-			const db = await getDatabase();
-			const userRoleData = await db
-				.collection("userRoleData")
-				.findOne({ userId, guildId });
-			if (userRoleData) {
-				const typedData = userRoleData as unknown as UserRoleData;
-
-				// Cache in Redis for next time
-				if (this.redisAvailable && this.redisCache) {
-					try {
-						await this.redisCache.setUserRoleData(userId, guildId, typedData);
-					} catch (error) {
-						console.warn(
-							`🔸 Failed to cache user role data in Redis: ${error}`,
-						);
-					}
-				}
-
-				return typedData;
-			}
-		} catch (error) {
-			console.error(`🔸 Failed to get user role data from MongoDB: ${error}`);
-		}
-
-		return null;
-	}
-
-	async deleteUserRoleData(userId: string, guildId: string): Promise<void> {
-		// Delete from Redis
-		if (this.redisAvailable && this.redisCache) {
-			try {
-				await this.redisCache.deleteUserRoleData(userId, guildId);
-			} catch (error) {
-				console.warn(`🔸 Failed to delete user role data from Redis: ${error}`);
-			}
-		}
-
-		// Delete from MongoDB
-		try {
-			const db = await getDatabase();
-			await db.collection("userRoleData").deleteOne({ userId, guildId });
-		} catch (error) {
-			console.error(
-				`🔸 Failed to delete user role data from MongoDB: ${error}`,
-			);
-		}
-	}
-
-	async getAllUserRoleData(guildId: string): Promise<UserRoleData[]> {
-		try {
-			const db = await getDatabase();
-			const userRoleData = await db
-				.collection("userRoleData")
-				.find({ guildId })
-				.toArray();
-			return userRoleData as unknown as UserRoleData[];
-		} catch (error) {
-			console.error(
-				`🔸 Failed to get all user role data for guild ${guildId}: ${error}`,
-			);
-			return [];
 		}
 	}
 

@@ -145,25 +145,43 @@ async function getCallOrder(
 	channel: VoiceBasedChannel,
 ): Promise<Array<{ userId: string; duration: number; member: GuildMember }>> {
 	try {
-		// Use join time as a proxy for call duration
-		// Members who joined earlier are likely to have been in the call longer
-		const members = Array.from(channel.members.values())
-			.filter((member) => !member.user.bot)
-			.map((member) => {
-				// Use joinedTimestamp if available, otherwise use current time
-				const joinTime = member.joinedTimestamp || Date.now();
-				const duration = Date.now() - joinTime;
+		// Use the existing database manager to get voice sessions
+		const { getDatabase } = await import(
+			"../features/database-manager/DatabaseConnection"
+		);
+		const db = await getDatabase();
+
+		const members = Array.from(channel.members.values()).filter(
+			(member) => !member.user.bot,
+		);
+
+		const membersWithDuration = await Promise.all(
+			members.map(async (member) => {
+				// Get the active voice session for this user in this channel
+				const voiceSession = await db.collection("voiceSessions").findOne({
+					userId: member.id,
+					guildId: channel.guild.id,
+					channelId: channel.id,
+					leftAt: null, // Active session (hasn't left yet)
+				});
+
+				let duration = 0;
+				if (voiceSession && voiceSession.joinedAt) {
+					duration = Date.now() - voiceSession.joinedAt.getTime();
+				}
+
 				return {
 					userId: member.id,
 					duration,
 					member,
 				};
-			});
+			}),
+		);
 
 		// Sort by duration (longest first)
-		return members.sort((a, b) => b.duration - a.duration);
-	} catch {
-		console.error("🔸 Error getting call order");
+		return membersWithDuration.sort((a, b) => b.duration - a.duration);
+	} catch (error) {
+		console.error("🔸 Error getting call order:", error);
 		return [];
 	}
 }
