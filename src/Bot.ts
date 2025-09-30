@@ -11,6 +11,7 @@ import { getRedisClient } from "./features/cache-management/RedisManager";
 import { DatabaseManager } from "./features/database-manager/DatabaseManager";
 import { memoryManager } from "./features/performance-monitoring/MemoryManager";
 import { speakVoiceCall } from "./features/speak-voice-call/speakVoiceCall";
+import { userManager } from "./features/user-manager/UserManager";
 import { voiceManager } from "./features/voice-manager/VoiceManager";
 import type { ClientWithVoiceManager, Command } from "./types";
 import { loadCommands } from "./utils/loadCommands";
@@ -27,6 +28,7 @@ export class Bot {
 				GatewayIntentBits.GuildMessages,
 				GatewayIntentBits.MessageContent,
 				GatewayIntentBits.GuildVoiceStates,
+				GatewayIntentBits.GuildMembers,
 			],
 		});
 		// Initialize services
@@ -58,6 +60,7 @@ export class Bot {
 		(this.client as ClientWithVoiceManager).voiceManager = voiceManager(
 			this.client,
 		);
+		(this.client as ClientWithVoiceManager).userManager = userManager();
 
 		memoryManager.endTimer(initStartTime);
 	}
@@ -112,6 +115,29 @@ export class Bot {
 					// If sending the error message fails, just log it - don't try again
 					console.error("🔸 Failed to send error message to interaction:", err);
 				}
+			}
+		});
+
+		// Guild member events for role restoration
+		this.client.on("guildMemberAdd", async (member) => {
+			try {
+				const userManager = (this.client as ClientWithVoiceManager).userManager;
+				if (userManager) {
+					await userManager.restoreUserRoles(member);
+				}
+			} catch (error) {
+				console.error("🔸 Error handling guild member add:", error);
+			}
+		});
+
+		this.client.on("guildMemberRemove", async (member) => {
+			try {
+				const userManager = (this.client as ClientWithVoiceManager).userManager;
+				if (userManager && member.partial === false) {
+					await userManager.storeUserRoles(member);
+				}
+			} catch (error) {
+				console.error("🔸 Error handling guild member remove:", error);
 			}
 		});
 	}

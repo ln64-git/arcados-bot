@@ -5,6 +5,7 @@ import type {
 	CoupSession,
 	RateLimit,
 	UserModerationPreferences,
+	UserRoleData,
 	VoiceChannelConfig,
 	VoiceChannelOwner,
 } from "../../types";
@@ -242,6 +243,31 @@ export class RedisCache {
 		ttl?: number,
 	) {
 		return this.set(`rate_limit:${userId}:${action}`, limit, ttl);
+	}
+
+	// User Role Data Methods
+	async setUserRoleData(
+		userId: string,
+		guildId: string,
+		userRoleData: UserRoleData,
+		ttl?: number,
+	) {
+		return this.set(
+			`user_role_data:${guildId}:${userId}`,
+			userRoleData,
+			ttl || this.defaultTTL,
+		);
+	}
+
+	async getUserRoleData(
+		userId: string,
+		guildId: string,
+	): Promise<UserRoleData | null> {
+		return this.get<UserRoleData>(`user_role_data:${guildId}:${userId}`);
+	}
+
+	async deleteUserRoleData(userId: string, guildId: string): Promise<void> {
+		await this.del(`user_role_data:${guildId}:${userId}`);
 	}
 }
 

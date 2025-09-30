@@ -2,6 +2,7 @@ import type {
 	ChatInputCommandInteraction,
 	Client,
 	EmbedBuilder,
+	GuildMember,
 	SlashCommandBuilder,
 } from "discord.js";
 
@@ -80,6 +81,14 @@ export interface RenamedUser {
 	scopedNickname: string; // The nickname set by the channel owner
 	channelId: string; // The channel where this rename is active
 	renamedAt: Date; // When the rename was applied
+}
+
+export interface UserRoleData {
+	userId: string;
+	guildId: string;
+	roleIds: string[];
+	storedAt: Date;
+	lastUpdated: Date;
 }
 
 export interface CoupVote {
@@ -270,8 +279,23 @@ export interface VoiceManager {
 	getRenamedUsers(channelId: string): Promise<RenamedUser[]>;
 }
 
+export interface UserManager {
+	// Role restoration methods
+	storeUserRoles(member: GuildMember): Promise<void>;
+	restoreUserRoles(member: GuildMember): Promise<void>;
+	getStoredUserRoles(
+		userId: string,
+		guildId: string,
+	): Promise<UserRoleData | null>;
+	clearStoredUserRoles(userId: string, guildId: string): Promise<void>;
+	getUsersWithStoredRoles(guildId: string): Promise<UserRoleData[]>;
+	hasStoredRoles(userId: string, guildId: string): Promise<boolean>;
+	getStoredRoleCount(userId: string, guildId: string): Promise<number>;
+}
+
 export type ClientWithVoiceManager = Client & {
 	voiceManager?: VoiceManager;
+	userManager?: UserManager;
 };
 
 // Type guard for GuildMember
