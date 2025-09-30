@@ -2,7 +2,6 @@ import {
 	type ChatInputCommandInteraction,
 	EmbedBuilder,
 	SlashCommandBuilder,
-	type VoiceBasedChannel,
 } from "discord.js";
 import type { ClientWithVoiceManager, Command } from "../types";
 import { isGuildMember } from "../types";
