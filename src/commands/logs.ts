@@ -36,7 +36,7 @@ export const logsCommand: Command = {
 
 		if (!channel) {
 			await interaction.reply({
-				content: "🔸 You must be in a voice channel to use this command!",
+				content: "🔸 You must be in a voice channel!",
 				ephemeral: true,
 			});
 			return;

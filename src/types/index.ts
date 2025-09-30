@@ -16,6 +16,7 @@ export interface VoiceChannelOwner {
 	guildId: string;
 	createdAt: Date;
 	lastActivity: Date;
+	previousOwnerId?: string; // Track the previous owner for claiming purposes
 }
 
 export interface ModerationLog {
@@ -98,6 +99,7 @@ export interface CallState {
 
 export interface VoiceManager {
 	isChannelOwner(channelId: string, userId: string): Promise<boolean>;
+	isPreviousChannelOwner(channelId: string, userId: string): Promise<boolean>;
 	checkRateLimit(
 		userId: string,
 		action: string,

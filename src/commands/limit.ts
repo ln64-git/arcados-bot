@@ -34,7 +34,7 @@ export const limitCommand: Command = {
 
 		if (!channel) {
 			await interaction.reply({
-				content: "🔸 You must be in a voice channel to use this command!",
+				content: "🔸 You must be in a voice channel!",
 				ephemeral: true,
 			});
 			return;
@@ -56,8 +56,7 @@ export const limitCommand: Command = {
 		);
 		if (!isOwner) {
 			await interaction.reply({
-				content:
-					"🔸 You must be the owner of this voice channel to use this command!",
+				content: "🔸 You must be the owner of this voice channel!",
 				ephemeral: true,
 			});
 			return;

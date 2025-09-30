@@ -314,12 +314,16 @@ export class VoiceManager implements IVoiceManager {
 		userId: string,
 		guildId: string,
 	): Promise<void> {
+		// Get current owner to track as previous owner
+		const currentOwner = await this.getChannelOwner(channelId);
+
 		const owner: VoiceChannelOwner = {
 			channelId,
 			userId,
 			guildId,
 			createdAt: new Date(),
 			lastActivity: new Date(),
+			previousOwnerId: currentOwner?.userId, // Track the previous owner
 		};
 
 		await this.cache.setChannelOwner(channelId, owner);
@@ -376,6 +380,14 @@ export class VoiceManager implements IVoiceManager {
 	async isChannelOwner(channelId: string, userId: string): Promise<boolean> {
 		const owner = await this.getChannelOwner(channelId);
 		return owner?.userId === userId;
+	}
+
+	async isPreviousChannelOwner(
+		channelId: string,
+		userId: string,
+	): Promise<boolean> {
+		const owner = await this.getChannelOwner(channelId);
+		return owner?.previousOwnerId === userId;
 	}
 
 	async getGuildConfig(guildId: string): Promise<VoiceChannelConfig> {
@@ -453,20 +465,26 @@ export class VoiceManager implements IVoiceManager {
 			ownerId,
 			channel.guild.id,
 		);
-		if (!preferences) {
-			return;
-		}
 
 		// Apply channel settings (name, limit, visibility)
-		if (preferences.preferredChannelName) {
+		if (preferences?.preferredChannelName) {
 			try {
 				await channel.setName(preferences.preferredChannelName);
 			} catch (_error) {
 				// Insufficient permissions to change channel name
 			}
+		} else {
+			// Default to "{Display Name}'s Channel" if no preferred name is set
+			try {
+				const member = await channel.guild.members.fetch(ownerId);
+				const displayName = member.displayName || member.user.username;
+				await channel.setName(`${displayName}'s Channel`);
+			} catch (_error) {
+				// Insufficient permissions to change channel name or member not found
+			}
 		}
 
-		if (preferences.preferredUserLimit) {
+		if (preferences?.preferredUserLimit) {
 			try {
 				await channel.setUserLimit(preferences.preferredUserLimit);
 			} catch (_error) {
@@ -474,7 +492,7 @@ export class VoiceManager implements IVoiceManager {
 			}
 		}
 
-		if (preferences.preferredLocked !== undefined) {
+		if (preferences?.preferredLocked !== undefined) {
 			try {
 				await channel.permissionOverwrites.edit(channel.guild.roles.everyone, {
 					Connect: !preferences.preferredLocked,
@@ -495,13 +513,15 @@ export class VoiceManager implements IVoiceManager {
 		};
 
 		// Only apply bans to users currently in the channel (not mutes/deafens)
-		for (const bannedUserId of preferences.bannedUsers) {
-			const member = channel.members.get(bannedUserId);
-			if (member) {
-				try {
-					await member.voice.disconnect("Owner preferences: pre-banned");
-				} catch (_error) {
-					// User may have already left the channel
+		if (preferences?.bannedUsers) {
+			for (const bannedUserId of preferences.bannedUsers) {
+				const member = channel.members.get(bannedUserId);
+				if (member) {
+					try {
+						await member.voice.disconnect("Owner preferences: pre-banned");
+					} catch (_error) {
+						// User may have already left the channel
+					}
 				}
 			}
 		}
@@ -840,8 +860,7 @@ export class VoiceManager implements IVoiceManager {
 		if (!isOwner) {
 			return {
 				isValid: false,
-				error:
-					"🔸 You must be the owner of this voice channel to use this command!",
+				error: "🔸 You must be the owner of this voice channel!",
 			};
 		}
 		return { isValid: true };

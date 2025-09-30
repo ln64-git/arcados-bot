@@ -40,7 +40,7 @@ export const kickCommand: Command = {
 
 		if (!channel) {
 			await interaction.reply({
-				content: "🔸 You must be in a voice channel to use this command!",
+				content: "🔸 You must be in a voice channel!",
 				ephemeral: true,
 			});
 			return;
@@ -62,8 +62,7 @@ export const kickCommand: Command = {
 		);
 		if (!isOwner) {
 			await interaction.reply({
-				content:
-					"🔸 You must be the owner of this voice channel to use this command!",
+				content: "🔸 You must be the owner of this voice channel!",
 				ephemeral: true,
 			});
 			return;
