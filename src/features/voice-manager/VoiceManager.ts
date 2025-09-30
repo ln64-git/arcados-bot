@@ -319,12 +319,40 @@ export class VoiceManager implements IVoiceManager {
 				newOwner.id,
 				channel.guild.id,
 			);
+
+			console.log(
+				`🔹 Applying preferences for new owner ${newOwner.displayName || newOwner.user.username} (${newOwner.id})`,
+			);
+			console.log(
+				`🔹 Preferences:`,
+				preferences
+					? {
+							preferredChannelName: preferences.preferredChannelName,
+							preferredUserLimit: preferences.preferredUserLimit,
+							preferredLocked: preferences.preferredLocked,
+						}
+					: "null",
+			);
+
 			if (preferences) {
 				if (preferences.preferredChannelName) {
 					try {
+						console.log(
+							`🔹 Setting channel name to preferred: ${preferences.preferredChannelName}`,
+						);
 						await channel.setName(preferences.preferredChannelName);
 					} catch (_error) {
-						// Insufficient permissions to change channel name
+						console.error(`🔸 Failed to set preferred channel name: ${_error}`);
+					}
+				} else {
+					// Default to "{Display Name}'s Channel" if no preferred name is set
+					try {
+						const displayName = newOwner.displayName || newOwner.user.username;
+						const defaultName = `${displayName}'s Channel`;
+						console.log(`🔹 Setting channel name to default: ${defaultName}`);
+						await channel.setName(defaultName);
+					} catch (_error) {
+						console.error(`🔸 Failed to set default channel name: ${_error}`);
 					}
 				}
 				if (preferences.preferredUserLimit) {
@@ -345,6 +373,20 @@ export class VoiceManager implements IVoiceManager {
 					} catch (_error) {
 						// Insufficient permissions to change lock state
 					}
+				}
+			} else {
+				// No preferences found, apply default naming
+				try {
+					const displayName = newOwner.displayName || newOwner.user.username;
+					const defaultName = `${displayName}'s Channel`;
+					console.log(
+						`🔹 No preferences found, setting channel name to default: ${defaultName}`,
+					);
+					await channel.setName(defaultName);
+				} catch (_error) {
+					console.error(
+						`🔸 Failed to set default channel name (no preferences): ${_error}`,
+					);
 				}
 			}
 
@@ -892,6 +934,9 @@ export class VoiceManager implements IVoiceManager {
 				session.targetUserId,
 				channel.guild.id,
 			);
+
+			// Apply the new owner's preferences to the channel
+			await this.applyUserPreferencesToChannel(channelId, session.targetUserId);
 
 			// Send ownership change message
 			try {
