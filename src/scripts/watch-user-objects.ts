@@ -94,7 +94,7 @@ export class UserObjectWatcher {
 				for (const doc of docs) {
 					const docId = doc._id.toString();
 					if (!this.lastSeenIds.has(docId)) {
-						this.handleNewUser(doc);
+						this.handleNewUser(doc as unknown as User & { _id: unknown });
 						this.lastSeenIds.add(docId);
 						this.lastSeenData.set(docId, this.serializeUserData(doc));
 					}
@@ -108,7 +108,11 @@ export class UserObjectWatcher {
 						const lastData = this.lastSeenData.get(docId);
 
 						if (JSON.stringify(currentData) !== JSON.stringify(lastData)) {
-							this.handleUpdatedUser(doc, lastData, currentData);
+							this.handleUpdatedUser(
+								doc as unknown as User & { _id: unknown },
+								lastData || {},
+								currentData,
+							);
 							this.lastSeenData.set(docId, currentData);
 						}
 					}
@@ -304,8 +308,8 @@ export class UserObjectWatcher {
 			"statusHistory",
 		];
 		for (const field of arrayFields) {
-			const oldArray = oldData[field] || [];
-			const newArray = newData[field] || [];
+			const oldArray = (oldData[field] as unknown[]) || [];
+			const newArray = (newData[field] as unknown[]) || [];
 			if (JSON.stringify(oldArray) !== JSON.stringify(newArray)) {
 				changes.push(`${field}: ${oldArray.length} → ${newArray.length} items`);
 			}
@@ -313,8 +317,10 @@ export class UserObjectWatcher {
 
 		// Check moderation preferences
 		if (oldData.modPreferences || newData.modPreferences) {
-			const oldPrefs = oldData.modPreferences || {};
-			const newPrefs = newData.modPreferences || {};
+			const oldPrefs =
+				(oldData.modPreferences as Record<string, unknown>) || {};
+			const newPrefs =
+				(newData.modPreferences as Record<string, unknown>) || {};
 
 			const prefFields = [
 				"preferredChannelName",
@@ -340,8 +346,8 @@ export class UserObjectWatcher {
 				"renamedUsers",
 			];
 			for (const list of modLists) {
-				const oldList = oldPrefs[list] || [];
-				const newList = newPrefs[list] || [];
+				const oldList = (oldPrefs[list] as unknown[]) || [];
+				const newList = (newPrefs[list] as unknown[]) || [];
 				if (JSON.stringify(oldList) !== JSON.stringify(newList)) {
 					changes.push(
 						`modPreferences.${list}: ${oldList.length} → ${newList.length} items`,
