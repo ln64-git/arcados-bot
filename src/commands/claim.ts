@@ -10,18 +10,32 @@ export const claimCommand: Command = {
 	data: new SlashCommandBuilder()
 		.setName("claim")
 		.setDescription(
-			"Claim ownership of the current voice channel or reclaim from previous owner",
+			"Claim, reclaim, or unclaim ownership of the current voice channel",
+		)
+		.addStringOption((option) =>
+			option
+				.setName("action")
+				.setDescription("Action to perform")
+				.setRequired(false)
+				.addChoices(
+					{ name: "Claim/Reclaim", value: "claim" },
+					{ name: "Unclaim (Make Available)", value: "unclaim" },
+				),
 		)
 		.addStringOption((option) =>
 			option
 				.setName("reason")
-				.setDescription("Reason for claiming ownership")
+				.setDescription("Reason for the action")
 				.setRequired(false),
 		),
 
 	async execute(interaction: ChatInputCommandInteraction) {
+		const action = interaction.options.getString("action") || "claim";
 		const reason =
-			interaction.options.getString("reason") || "User claimed ownership";
+			interaction.options.getString("reason") ||
+			(action === "unclaim"
+				? "Channel made available for claiming"
+				: "User claimed ownership");
 
 		const member = interaction.member;
 		if (!isGuildMember(member)) {
@@ -53,6 +67,102 @@ export const claimCommand: Command = {
 		}
 
 		try {
+			// Handle unclaim action
+			if (action === "unclaim") {
+				// Check if channel has an owner
+				const currentOwner = await voiceManager.getChannelOwner(
+					voiceChannel.id,
+				);
+				if (!currentOwner) {
+					await interaction.reply({
+						content: "🔸 This channel doesn't have an owner to unclaim!",
+						ephemeral: true,
+					});
+					return;
+				}
+
+				// Check if the user is the current owner
+				if (currentOwner.userId !== member.id) {
+					await interaction.reply({
+						content: "🔸 Only the current owner can unclaim this channel!",
+						ephemeral: true,
+					});
+					return;
+				}
+
+				// Remove ownership
+				await voiceManager.removeChannelOwner(voiceChannel.id);
+
+				// Change channel name to indicate it's available (in background)
+				const availableName = "Available Channel";
+				(async () => {
+					try {
+						// Use REST API first with timeout
+						const restPromise = client.rest.patch(
+							`/channels/${voiceChannel.id}`,
+							{
+								body: { name: availableName },
+							},
+						);
+						const restTimeoutPromise = new Promise((_, reject) =>
+							setTimeout(
+								() => reject(new Error("REST API rename timeout")),
+								8000, // 8 second timeout for REST API
+							),
+						);
+						await Promise.race([restPromise, restTimeoutPromise]);
+						console.log(`🔹 Channel renamed to available: ${availableName}`);
+					} catch (error) {
+						console.log(
+							`🔸 Failed to rename channel to available via REST API: ${error instanceof Error ? error.message : String(error)}`,
+						);
+						// Fallback to discord.js method with timeout
+						try {
+							const renamePromise = voiceChannel.setName(availableName);
+							const timeoutPromise = new Promise((_, reject) =>
+								setTimeout(
+									() => reject(new Error("Channel rename timeout")),
+									5000, // 5 second timeout for discord.js fallback
+								),
+							);
+							await Promise.race([renamePromise, timeoutPromise]);
+							console.log("🔹 Channel renamed to available via fallback");
+						} catch (fallbackError) {
+							console.log(
+								`🔸 Failed to rename channel to available: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
+							);
+						}
+					}
+				})();
+
+				const embed = new EmbedBuilder()
+					.setColor(0xffa500)
+					.setTitle("🔹 Channel Unclaimed Successfully")
+					.setDescription(
+						`You have successfully unclaimed <#${voiceChannel.id}>. The channel is now available for anyone to claim!`,
+					)
+					.addFields(
+						{
+							name: "Channel",
+							value: `<#${voiceChannel.id}>`,
+							inline: true,
+						},
+						{
+							name: "Previous Owner",
+							value: `<@${member.id}>`,
+							inline: true,
+						},
+						{
+							name: "Reason",
+							value: reason,
+							inline: false,
+						},
+					)
+					.setTimestamp();
+
+				await interaction.reply({ embeds: [embed] });
+				return;
+			}
 			// Check if channel already has an owner
 			const currentOwner = await voiceManager.getChannelOwner(voiceChannel.id);
 			if (currentOwner) {
@@ -85,12 +195,6 @@ export const claimCommand: Command = {
 					voiceChannel.id,
 					member.id,
 					voiceChannel.guild.id,
-				);
-
-				// Apply the new owner's preferences to the channel
-				await voiceManager.applyUserPreferencesToChannel(
-					voiceChannel.id,
-					member.id,
 				);
 
 				const reclaimReason =
@@ -128,7 +232,25 @@ export const claimCommand: Command = {
 					)
 					.setTimestamp();
 
+				// Respond immediately to avoid timeout
 				await interaction.reply({ embeds: [embed] });
+
+				// Apply preferences in background (non-blocking)
+				console.log(
+					`🔍 Applying preferences for user ${member.id} to channel ${voiceChannel.id}`,
+				);
+				voiceManager
+					.applyUserPreferencesToChannel(voiceChannel.id, member.id)
+					.then(() => {
+						console.log(
+							`✅ Successfully applied preferences for user ${member.id}`,
+						);
+					})
+					.catch((error) => {
+						console.error(
+							`🔸 Failed to apply preferences after reclaim: ${error}`,
+						);
+					});
 				return;
 			}
 
@@ -137,12 +259,6 @@ export const claimCommand: Command = {
 				voiceChannel.id,
 				member.id,
 				voiceChannel.guild.id,
-			);
-
-			// Apply the new owner's preferences to the channel
-			await voiceManager.applyUserPreferencesToChannel(
-				voiceChannel.id,
-				member.id,
 			);
 
 			const embed = new EmbedBuilder()
@@ -170,7 +286,23 @@ export const claimCommand: Command = {
 				)
 				.setTimestamp();
 
+			// Respond immediately to avoid timeout
 			await interaction.reply({ embeds: [embed] });
+
+			// Apply preferences in background (non-blocking)
+			console.log(
+				`🔍 Applying preferences for user ${member.id} to channel ${voiceChannel.id}`,
+			);
+			voiceManager
+				.applyUserPreferencesToChannel(voiceChannel.id, member.id)
+				.then(() => {
+					console.log(
+						`✅ Successfully applied preferences for user ${member.id}`,
+					);
+				})
+				.catch((error) => {
+					console.error(`🔸 Failed to apply preferences after claim: ${error}`);
+				});
 		} catch (error) {
 			console.error("Error claiming channel:", error);
 			await interaction.reply({
