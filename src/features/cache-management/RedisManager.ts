@@ -117,10 +117,40 @@ export class RedisCache {
 		this.defaultTTL = defaultTTL;
 	}
 
+	private convertDateStringsToDates(obj: unknown): unknown {
+		if (obj === null || obj === undefined) return obj;
+
+		if (typeof obj === "string") {
+			// Check if this string looks like a date
+			const dateRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?$/;
+			if (dateRegex.test(obj)) {
+				return new Date(obj);
+			}
+			return obj;
+		}
+
+		if (Array.isArray(obj)) {
+			return obj.map((item) => this.convertDateStringsToDates(item));
+		}
+
+		if (typeof obj === "object") {
+			const converted: Record<string, unknown> = {};
+			for (const [key, value] of Object.entries(obj)) {
+				converted[key] = this.convertDateStringsToDates(value);
+			}
+			return converted;
+		}
+
+		return obj;
+	}
+
 	async get<T>(key: string): Promise<T | null> {
 		try {
 			const value = await this.client.get(key);
-			return value ? JSON.parse(value) : null;
+			if (!value) return null;
+
+			const parsed = JSON.parse(value);
+			return this.convertDateStringsToDates(parsed);
 		} catch (error) {
 			console.warn(`🔸 Redis get error for key ${key}: ${error}`);
 			return null;

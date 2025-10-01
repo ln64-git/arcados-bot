@@ -9,7 +9,7 @@ import type {
 	VoiceChannelOwner,
 } from "../../types";
 import { getDatabase } from "../database-manager/DatabaseConnection";
-import { getRedisClient, RedisCache } from "./RedisManager";
+import { RedisCache, getRedisClient } from "./RedisManager";
 
 export class DiscordDataCache {
 	private redisCache: RedisCache | null = null;
@@ -156,17 +156,36 @@ export class DiscordDataCache {
 		// Persist to MongoDB
 		try {
 			const db = await getDatabase();
+			// Remove _id field to avoid immutable field error
+			const { _id, ...preferencesWithoutId } =
+				preferences as UserModerationPreferences & { _id?: unknown };
 			await db
 				.collection("userPreferences")
 				.replaceOne(
 					{ userId: preferences.userId, guildId: preferences.guildId },
-					preferences,
+					preferencesWithoutId,
 					{ upsert: true },
 				);
 		} catch (error) {
 			console.warn(
 				`🔸 Failed to persist user preferences to database: ${error}`,
 			);
+		}
+	}
+
+	async invalidateUserPreferences(
+		userId: string,
+		guildId: string,
+	): Promise<void> {
+		// Invalidate Redis cache
+		if (this.redisAvailable && this.redisCache) {
+			try {
+				await this.redisCache.del(`user_prefs:${userId}:${guildId}`);
+			} catch (error) {
+				console.warn(
+					`🔸 Failed to invalidate user preferences in Redis: ${error}`,
+				);
+			}
 		}
 	}
 
@@ -288,7 +307,7 @@ export class DiscordDataCache {
 		userId: string,
 		action: string,
 		limit: RateLimit,
-		ttl: number = 60,
+		ttl = 60,
 	): Promise<void> {
 		// Update Redis (rate limits are temporary, no MongoDB persistence needed)
 		if (this.redisAvailable && this.redisCache) {

@@ -37,14 +37,15 @@
 	"author": "",
 	"license": "MIT",
 	"devDependencies": {
-		"@types/node": "^20.0.0",
 		"@biomejs/biome": "^1.8.0",
-		"tsx": "^4.20.3",
-		"typescript": "^5.0.0",
+		"@types/node": "^20.0.0",
+		"concurrently": "^8.0.0",
 		"nodemon": "^3.0.0",
-		"concurrently": "^8.0.0"
+		"tsx": "^4.20.3",
+		"typescript": "^5.0.0"
 	},
 	"dependencies": {
+		"chalk": "^5.6.2",
 		"discord.js": "^14.16.3",
 		"dotenv": "^16.4.5",
 		"install": "^0.13.0",
@@ -64,7 +65,11 @@
 		},
 		"files": {
 			"ignoreUnknown": false,
-			"ignore": ["node_modules", "dist", "*.min.js"]
+			"ignore": [
+				"node_modules",
+				"dist",
+				"*.min.js"
+			]
 		},
 		"formatter": {
 			"enabled": true,

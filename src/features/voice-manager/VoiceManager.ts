@@ -1,4 +1,5 @@
 import {
+	type Channel,
 	ChannelType,
 	type Client,
 	type Collection,
@@ -27,6 +28,15 @@ import { getDatabase } from "../database-manager/DatabaseConnection";
 export class VoiceManager implements IVoiceManager {
 	private client: Client;
 	private cache = getCacheManager();
+	private channelCreationQueue: Array<{
+		member: GuildMember;
+		config: VoiceChannelConfig;
+		resolve: () => void;
+		reject: (error: Error) => void;
+	}> = [];
+	private isProcessingQueue = false;
+	private maxConcurrentChannels = 50; // Discord's per-guild daily limit is 500, so 50 is safe
+	private channelCreationDelay = 100; // 100ms delay between channel creations
 
 	constructor(client: Client) {
 		this.client = client;
@@ -37,6 +47,69 @@ export class VoiceManager implements IVoiceManager {
 		this.client.on("voiceStateUpdate", async (oldState, newState) => {
 			await this.handleVoiceStateUpdate(oldState, newState);
 		});
+
+		// Listen for channel updates to capture manual renames
+		this.client.on("channelUpdate", async (oldChannel, newChannel) => {
+			await this.handleChannelUpdate(oldChannel, newChannel);
+		});
+	}
+
+	private async processChannelCreationQueue() {
+		if (this.isProcessingQueue || this.channelCreationQueue.length === 0) {
+			return;
+		}
+
+		this.isProcessingQueue = true;
+		console.log(
+			`🔹 Processing channel creation queue: ${this.channelCreationQueue.length} pending`,
+		);
+
+		while (this.channelCreationQueue.length > 0) {
+			const queueItem = this.channelCreationQueue.shift();
+			if (!queueItem) break;
+			const { member, config, resolve, reject } = queueItem;
+
+			try {
+				// Check if we've hit the concurrent channel limit
+				const currentChannelCount = member.guild.channels.cache.filter(
+					(c) =>
+						c.type === ChannelType.GuildVoice && c.name.includes("'s Room"),
+				).size;
+
+				if (currentChannelCount >= this.maxConcurrentChannels) {
+					console.log(
+						`🔸 Channel limit reached (${this.maxConcurrentChannels}), queuing for later`,
+					);
+					// Re-queue this request
+					this.channelCreationQueue.unshift({
+						member,
+						config,
+						resolve,
+						reject,
+					});
+					break;
+				}
+
+				await this.createTemporaryChannel(member, config);
+				resolve();
+
+				// Add delay between channel creations to respect rate limits
+				if (this.channelCreationQueue.length > 0) {
+					await new Promise((resolve) =>
+						setTimeout(resolve, this.channelCreationDelay),
+					);
+				}
+			} catch (error) {
+				console.error(
+					`🔸 Failed to create channel for ${member.displayName}:`,
+					error,
+				);
+				reject(error instanceof Error ? error : new Error(String(error)));
+			}
+		}
+
+		this.isProcessingQueue = false;
+		console.log(`🔹 Channel creation queue processed`);
 	}
 
 	private async handleVoiceStateUpdate(
@@ -56,6 +129,7 @@ export class VoiceManager implements IVoiceManager {
 			}
 		}
 		// User left a voice channel
+
 		if (oldState.channelId && !newState.channelId) {
 			await this.handleUserLeft(oldState);
 		}
@@ -114,8 +188,19 @@ export class VoiceManager implements IVoiceManager {
 			channelLimit: 10,
 		};
 
-		// Create new temporary channel
-		await this.createTemporaryChannel(newState.member, defaultConfig);
+		// Queue channel creation to handle rapid joins gracefully
+		console.log(
+			`🔹 Queuing channel creation for ${newState.member.displayName}`,
+		);
+		await new Promise<void>((resolve, reject) => {
+			this.channelCreationQueue.push({
+				member: newState.member!,
+				config: defaultConfig,
+				resolve,
+				reject,
+			});
+			this.processChannelCreationQueue();
+		});
 	}
 
 	private async handleUserLeft(oldState: VoiceState) {
@@ -124,6 +209,16 @@ export class VoiceManager implements IVoiceManager {
 
 		// Restore user's nickname when they leave any voice channel
 		await this.restoreUserNickname(oldState.member.id, oldState.guild.id);
+
+		// Check if this is a dynamic voice channel (created by our system)
+		if (channel.name.includes("'s Room | #")) {
+			// Check if channel is now empty
+			if (channel.members.size === 0) {
+				console.log(`🔹 Auto-deleting empty dynamic channel: ${channel.name}`);
+				await this.deleteTemporaryChannel(channel as VoiceChannel);
+				return;
+			}
+		}
 
 		const owner = await this.getChannelOwner(channel.id);
 		if (!owner || owner.userId !== oldState.member.id) return;
@@ -136,14 +231,105 @@ export class VoiceManager implements IVoiceManager {
 		await this.handleUserJoined(newState);
 	}
 
+	private async handleChannelUpdate(oldChannel: Channel, newChannel: Channel) {
+		// Only handle voice channels
+		if (
+			!newChannel.isVoiceBased() ||
+			newChannel.type !== ChannelType.GuildVoice
+		) {
+			return;
+		}
+
+		// Cast to VoiceChannel to access properties
+		const oldVoiceChannel = oldChannel as VoiceChannel;
+		const newVoiceChannel = newChannel as VoiceChannel;
+
+		console.log(
+			`🔍 Channel update detected: "${oldVoiceChannel.name}" → "${newVoiceChannel.name}"`,
+		);
+
+		// Check if this channel has an owner (regardless of naming pattern)
+		// This allows us to capture renames for any channel that has been claimed/owned
+		const owner = await this.getChannelOwner(newVoiceChannel.id);
+		if (!owner) {
+			console.log(
+				`🔸 No owner found for channel ${newVoiceChannel.name}, skipping preference update`,
+			);
+			return;
+		}
+
+		console.log(
+			`🔹 Found owner ${owner.userId} for channel ${newVoiceChannel.name}`,
+		);
+
+		// Check if the channel name changed
+		if (oldVoiceChannel.name === newVoiceChannel.name) {
+			return;
+		}
+
+		console.log(
+			`🔹 Channel renamed: "${oldVoiceChannel.name}" → "${newVoiceChannel.name}"`,
+		);
+
+		// Update the user's preferred channel name in the database
+		try {
+			const db = await getDatabase();
+			await db.collection("userPreferences").updateOne(
+				{
+					userId: owner.userId,
+					guildId: newVoiceChannel.guild.id,
+				},
+				{
+					$set: {
+						preferredChannelName: newVoiceChannel.name,
+						lastUpdated: new Date(),
+					},
+				},
+				{ upsert: true },
+			);
+
+			// Invalidate cache to ensure fresh data is fetched
+			await this.cache.invalidateUserPreferences(
+				owner.userId,
+				newVoiceChannel.guild.id,
+			);
+
+			console.log(
+				`✅ Updated preferred channel name for user ${owner.userId}: "${newVoiceChannel.name}"`,
+			);
+		} catch (error) {
+			console.error(
+				`🔸 Failed to update preferred channel name for user ${owner.userId}:`,
+				error,
+			);
+		}
+	}
+
+	private async isDynamicChannel(channelId: string): Promise<boolean> {
+		try {
+			const db = await getDatabase();
+			const channelOwner = await db.collection("voiceChannelOwners").findOne({
+				channelId: channelId,
+			});
+			return !!channelOwner;
+		} catch (error) {
+			console.error(
+				`🔸 Error checking if channel ${channelId} is dynamic:`,
+				error,
+			);
+			return false;
+		}
+	}
+
 	async createTemporaryChannel(
 		member: GuildMember,
 		config: VoiceChannelConfig,
 	): Promise<void> {
-		const channelName = config.channelNameTemplate.replace(
-			"{displayname}",
-			member.displayName,
-		);
+		// Generate unique channel name with random ID
+		const randomId = Math.floor(Math.random() * 1000)
+			.toString()
+			.padStart(3, "0");
+		const channelName = `${member.displayName}'s Room | #${randomId}`;
 
 		// Get the spawn channel to determine positioning and privacy settings
 		const spawnChannel = member.guild.channels.cache.get(config.spawnChannelId);
@@ -181,7 +367,7 @@ export class VoiceManager implements IVoiceManager {
 			denyBitfield: spawnChannelPermissions?.deny.bitfield?.toString(),
 		});
 
-		// Build permission overwrites array
+		// Build permission overwrites array - Grant full channel management to the creator
 		let permissionOverwrites: Array<{
 			id: string;
 			allow?: bigint[];
@@ -190,10 +376,17 @@ export class VoiceManager implements IVoiceManager {
 			{
 				id: member.id,
 				allow: [
-					PermissionFlagsBits.ManageChannels,
-					PermissionFlagsBits.MoveMembers,
-					PermissionFlagsBits.MuteMembers,
-					PermissionFlagsBits.DeafenMembers,
+					PermissionFlagsBits.ManageChannels, // Allows renaming, deleting, etc.
+					PermissionFlagsBits.MoveMembers, // Move users between channels
+					PermissionFlagsBits.MuteMembers, // Mute/unmute users
+					PermissionFlagsBits.DeafenMembers, // Deafen/undeafen users
+					PermissionFlagsBits.ManageRoles, // Manage channel-specific roles
+					PermissionFlagsBits.CreateInstantInvite, // Create invites
+					PermissionFlagsBits.Connect, // Connect to voice
+					PermissionFlagsBits.Speak, // Speak in voice
+					PermissionFlagsBits.UseVAD, // Use voice activity detection
+					PermissionFlagsBits.PrioritySpeaker, // Priority speaker
+					PermissionFlagsBits.Stream, // Stream video
 				],
 			},
 		];
@@ -506,19 +699,94 @@ export class VoiceManager implements IVoiceManager {
 
 		// Apply channel settings (name, limit, visibility)
 		if (preferences?.preferredChannelName) {
+			console.log(
+				`🔹 Restoring channel name to: ${preferences.preferredChannelName}`,
+			);
+			console.log(`🔍 Cache debug - preferences from cache:`, {
+				userId: ownerId,
+				guildId: channel.guild.id,
+				preferredChannelName: preferences.preferredChannelName,
+				lastUpdated: preferences.lastUpdated,
+			});
 			try {
-				await channel.setName(preferences.preferredChannelName);
-			} catch (_error) {
-				// Insufficient permissions to change channel name
+				// Use REST API first with timeout
+				const restPromise = this.client.rest.patch(`/channels/${channel.id}`, {
+					body: { name: preferences.preferredChannelName },
+				});
+				const restTimeoutPromise = new Promise((_, reject) =>
+					setTimeout(
+						() => reject(new Error("REST API rename timeout")),
+						8000, // 8 second timeout for REST API
+					),
+				);
+				await Promise.race([restPromise, restTimeoutPromise]);
+				console.log(`🔹 Channel name restored successfully`);
+			} catch (error) {
+				console.log(
+					`🔸 Failed to restore channel name via REST API: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				// Fallback to discord.js method with timeout
+				try {
+					const renamePromise = channel.setName(
+						preferences.preferredChannelName,
+					);
+					const timeoutPromise = new Promise((_, reject) =>
+						setTimeout(
+							() => reject(new Error("Channel rename timeout")),
+							5000, // 5 second timeout for discord.js fallback
+						),
+					);
+					await Promise.race([renamePromise, timeoutPromise]);
+					console.log(`🔹 Channel name restored via fallback`);
+				} catch (fallbackError) {
+					console.log(
+						`🔸 Failed to restore channel name: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
+					);
+				}
 			}
 		} else {
 			// Default to "{Display Name}'s Channel" if no preferred name is set
 			try {
 				const member = await channel.guild.members.fetch(ownerId);
 				const displayName = member.displayName || member.user.username;
-				await channel.setName(`${displayName}'s Channel`);
-			} catch (_error) {
-				// Insufficient permissions to change channel name or member not found
+				const defaultName = `${displayName}'s Channel`;
+				console.log(`🔹 Setting default channel name to: ${defaultName}`);
+
+				// Use REST API first with timeout
+				const restPromise = this.client.rest.patch(`/channels/${channel.id}`, {
+					body: { name: defaultName },
+				});
+				const restTimeoutPromise = new Promise((_, reject) =>
+					setTimeout(
+						() => reject(new Error("REST API rename timeout")),
+						8000, // 8 second timeout for REST API
+					),
+				);
+				await Promise.race([restPromise, restTimeoutPromise]);
+				console.log(`🔹 Default channel name set successfully`);
+			} catch (error) {
+				console.log(
+					`🔸 Failed to set default channel name via REST API: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				// Fallback to discord.js method with timeout
+				try {
+					const member = await channel.guild.members.fetch(ownerId);
+					const displayName = member.displayName || member.user.username;
+					const defaultName = `${displayName}'s Channel`;
+					const renamePromise = channel.setName(defaultName);
+					const timeoutPromise = new Promise((_, reject) =>
+						setTimeout(
+							() => reject(new Error("Channel rename timeout")),
+							5000, // 5 second timeout for discord.js fallback
+						),
+					);
+					await Promise.race([renamePromise, timeoutPromise]);
+					console.log(`🔹 Default channel name set via fallback`);
+				} catch (fallbackError) {
+					console.log(
+						`🔸 Failed to set default channel name: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
+					);
+				}
 			}
 		}
 
@@ -785,7 +1053,7 @@ export class VoiceManager implements IVoiceManager {
 
 	async getModerationLogs(
 		channelId: string,
-		limit: number = 10,
+		limit = 10,
 	): Promise<ModerationLog[]> {
 		try {
 			const db = await getDatabase();
@@ -1396,7 +1664,7 @@ export class VoiceManager implements IVoiceManager {
 	createSuccessEmbed(
 		title: string,
 		description: string,
-		color: number = 0x00ff00,
+		color = 0x00ff00,
 	): EmbedBuilder {
 		return new EmbedBuilder()
 			.setTitle(`🔹 ${title}`)
@@ -1752,7 +2020,7 @@ export class VoiceManager implements IVoiceManager {
 							owner.userId,
 							guildId,
 						);
-						if (preferences) {
+						if (preferences?.renamedUsers) {
 							const renameRecord = preferences.renamedUsers.find(
 								(renamed) => renamed.userId === userId,
 							);
@@ -1766,15 +2034,29 @@ export class VoiceManager implements IVoiceManager {
 			}
 
 			// Restore original nickname
-			await member.setNickname(
-				originalNickname,
-				"User left voice channel - nickname restored",
-			);
+			try {
+				await member.setNickname(
+					originalNickname,
+					"User left voice channel - nickname restored",
+				);
+			} catch (error) {
+				// Log permission errors but don't fail the entire operation
+				if (
+					error instanceof Error &&
+					error.message.includes("Missing Permissions")
+				) {
+					console.warn(
+						`🔸 Missing permissions to restore nickname for user ${userId}: ${error.message}`,
+					);
+				} else {
+					throw error; // Re-throw other errors
+				}
+			}
 
 			// Remove all rename records for this user
 			for (const ownerId of channelsToUpdate) {
 				const preferences = await this.getUserPreferences(ownerId, guildId);
-				if (preferences) {
+				if (preferences?.renamedUsers) {
 					const hasChanges = preferences.renamedUsers.some(
 						(renamed) => renamed.userId === userId,
 					);

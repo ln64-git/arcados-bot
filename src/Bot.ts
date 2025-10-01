@@ -44,7 +44,12 @@ export class Bot {
 		await this.deployCommands();
 
 		// Initialize database manager
-		await this.databaseManager.initialize();
+		try {
+			await this.databaseManager.initialize();
+		} catch (error) {
+			console.error("🔸 Database manager initialization failed:", error);
+			// Continue with initialization even if database fails
+		}
 
 		// Initialize Redis connection
 		try {
@@ -56,14 +61,7 @@ export class Bot {
 			);
 		}
 
-		// Initialize features after login
-		speakVoiceCall(this.client);
-		(this.client as ClientWithVoiceManager).voiceManager = voiceManager(
-			this.client,
-		);
-		(this.client as ClientWithVoiceManager).starboardManager = starboardManager(
-			this.client,
-		);
+		// Features will be initialized in the ready event handler
 
 		memoryManager.endTimer(initStartTime);
 	}
@@ -72,6 +70,15 @@ export class Bot {
 		// Ready event
 		this.client.once("ready", async () => {
 			console.log("🔹 Bot is ready");
+
+			// Initialize features after bot is ready
+			speakVoiceCall(this.client);
+			(this.client as ClientWithVoiceManager).voiceManager = voiceManager(
+				this.client,
+			);
+			(this.client as ClientWithVoiceManager).starboardManager =
+				starboardManager(this.client);
+
 			// Check guild sync status after bot is ready
 		});
 
