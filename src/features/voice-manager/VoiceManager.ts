@@ -530,12 +530,13 @@ export class VoiceManager implements IVoiceManager {
 					value: [
 						"`/disconnect` - Disconnect users",
 						"`/kick` - Kick users from channel",
-						"`/ban` - Ban/unban users",
-						"`/mute` - Mute/unmute users",
-						"`/deafen` - Deafen/undeafen users",
+						"`/ban` - Ban/Unban users",
+						"`/mute` - Mute/Unmute users",
+						"`/deafen` - Deafen/Undeafen users",
 						"`/rename` - Change channel name",
 						"`/limit` - Set user limit",
-						"`/lock` - Lock/unlock channel",
+						"`/lock` - Lock/Unlock channel",
+						"`/hide` - Hide/Show channel",
 					].join("\n"),
 					inline: false,
 				})

@@ -937,10 +937,6 @@ export class DatabaseCore {
 						},
 					},
 				);
-
-				if (imageData) {
-					console.log(`📸 Stored avatar for user ${userId}: ${fileSize} bytes`);
-				}
 			}
 		}, `trackAvatarChange(${userId})`);
 	}
