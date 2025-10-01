@@ -109,7 +109,7 @@ export class VoiceManager implements IVoiceManager {
 		}
 
 		this.isProcessingQueue = false;
-		console.log(`🔹 Channel creation queue processed`);
+		console.log("🔹 Channel creation queue processed");
 	}
 
 	private async handleVoiceStateUpdate(
@@ -194,7 +194,7 @@ export class VoiceManager implements IVoiceManager {
 		);
 		await new Promise<void>((resolve, reject) => {
 			this.channelCreationQueue.push({
-				member: newState.member!,
+				member: newState.member as GuildMember,
 				config: defaultConfig,
 				resolve,
 				reject,
@@ -439,7 +439,7 @@ export class VoiceManager implements IVoiceManager {
 			const embed = new EmbedBuilder()
 				.setTitle(`**${member.user.displayName || member.user.username}**`)
 				.setDescription(
-					`Welcome to your channel, as the moderator you can use the following commands.`,
+					"Welcome to your channel, as the moderator you can use the following commands.",
 				)
 				.addFields({
 					name: "Available Commands",
@@ -702,7 +702,7 @@ export class VoiceManager implements IVoiceManager {
 			console.log(
 				`🔹 Restoring channel name to: ${preferences.preferredChannelName}`,
 			);
-			console.log(`🔍 Cache debug - preferences from cache:`, {
+			console.log("🔍 Cache debug - preferences from cache:", {
 				userId: ownerId,
 				guildId: channel.guild.id,
 				preferredChannelName: preferences.preferredChannelName,
@@ -720,7 +720,7 @@ export class VoiceManager implements IVoiceManager {
 					),
 				);
 				await Promise.race([restPromise, restTimeoutPromise]);
-				console.log(`🔹 Channel name restored successfully`);
+				console.log("🔹 Channel name restored successfully");
 			} catch (error) {
 				console.log(
 					`🔸 Failed to restore channel name via REST API: ${error instanceof Error ? error.message : String(error)}`,
@@ -737,7 +737,7 @@ export class VoiceManager implements IVoiceManager {
 						),
 					);
 					await Promise.race([renamePromise, timeoutPromise]);
-					console.log(`🔹 Channel name restored via fallback`);
+					console.log("🔹 Channel name restored via fallback");
 				} catch (fallbackError) {
 					console.log(
 						`🔸 Failed to restore channel name: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
@@ -763,7 +763,7 @@ export class VoiceManager implements IVoiceManager {
 					),
 				);
 				await Promise.race([restPromise, restTimeoutPromise]);
-				console.log(`🔹 Default channel name set successfully`);
+				console.log("🔹 Default channel name set successfully");
 			} catch (error) {
 				console.log(
 					`🔸 Failed to set default channel name via REST API: ${error instanceof Error ? error.message : String(error)}`,
@@ -781,7 +781,7 @@ export class VoiceManager implements IVoiceManager {
 						),
 					);
 					await Promise.race([renamePromise, timeoutPromise]);
-					console.log(`🔹 Default channel name set via fallback`);
+					console.log("🔹 Default channel name set via fallback");
 				} catch (fallbackError) {
 					console.log(
 						`🔸 Failed to set default channel name: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
@@ -1922,7 +1922,7 @@ export class VoiceManager implements IVoiceManager {
 				guildId: channel.guild.id,
 				performerId,
 				targetId: targetUserId,
-				reason: `Nickname reset to original`,
+				reason: "Nickname reset to original",
 			});
 
 			return true;
@@ -1989,7 +1989,7 @@ export class VoiceManager implements IVoiceManager {
 				guildId: channel.guild.id,
 				performerId,
 				targetId: performerId,
-				reason: `All nicknames reset`,
+				reason: "All nicknames reset",
 			});
 
 			return true;

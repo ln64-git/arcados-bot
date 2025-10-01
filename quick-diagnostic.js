@@ -64,9 +64,9 @@ async function runQuickDiagnostic() {
         if (voiceChannels.size === 0) {
             console.log('❌ No voice channels found');
         } else {
-            voiceChannels.forEach(channel => {
+            for (const channel of voiceChannels.values()) {
                 console.log(`  - ${channel.name} (${channel.id}) in ${channel.guild.name}`);
-            });
+            }
         }
         
         // Test 4: Check bot permissions in voice channels

@@ -1,4 +1,4 @@
-import { createClient, type RedisClientType } from "redis";
+import { type RedisClientType, createClient } from "redis";
 import { config } from "../../config";
 import type {
 	CallState,
@@ -112,7 +112,7 @@ export class RedisCache {
 	private client: RedisClientType;
 	private defaultTTL: number;
 
-	constructor(client: RedisClientType, defaultTTL: number = 3600) {
+	constructor(client: RedisClientType, defaultTTL = 3600) {
 		this.client = client;
 		this.defaultTTL = defaultTTL;
 	}
@@ -149,8 +149,8 @@ export class RedisCache {
 			const value = await this.client.get(key);
 			if (!value) return null;
 
-			const parsed = JSON.parse(value);
-			return this.convertDateStringsToDates(parsed);
+			const parsed = JSON.parse(value) as T;
+			return this.convertDateStringsToDates(parsed) as T;
 		} catch (error) {
 			console.warn(`🔸 Redis get error for key ${key}: ${error}`);
 			return null;

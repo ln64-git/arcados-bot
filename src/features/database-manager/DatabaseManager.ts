@@ -17,7 +17,7 @@ export class DatabaseManager {
 	private tracker: RealtimeTracker;
 	private syncer: GuildSyncEngine;
 	private watchInterval: NodeJS.Timeout | null = null;
-	private isWatching: boolean = false;
+	private isWatching = false;
 
 	constructor(client: Client) {
 		this.client = client;
@@ -73,7 +73,7 @@ export class DatabaseManager {
 
 			// If unhealthy, perform auto-sync
 			if (!healthCheck.isHealthy) {
-				console.log(`🔧 Database unhealthy, performing autonomous sync...`);
+				console.log("🔧 Database unhealthy, performing autonomous sync...");
 				const autoSyncResult = await this.performAutoSync(guild);
 
 				if (autoSyncResult.performed) {
@@ -86,7 +86,7 @@ export class DatabaseManager {
 			// Perform periodic maintenance (every 30 minutes)
 			const now = new Date();
 			if (now.getMinutes() % 30 === 0) {
-				console.log(`🔧 Performing periodic database maintenance...`);
+				console.log("🔧 Performing periodic database maintenance...");
 				await this.performDatabaseMaintenance(guild.id);
 			}
 		} catch (error) {
@@ -117,23 +117,23 @@ export class DatabaseManager {
 		return this.core.upsertRole(role);
 	}
 
-	async getMessagesByGuild(guildId: string, limit: number = 100) {
+	async getMessagesByGuild(guildId: string, limit = 100) {
 		return this.core.getMessagesByGuild(guildId, limit);
 	}
 
 	async getMessagesByChannel(
 		guildId: string,
 		channelName: string,
-		limit: number = 100,
+		limit = 100,
 	) {
 		return this.core.getMessagesByChannel(guildId, channelName, limit);
 	}
 
-	async getRecentMessagesWithUsers(guildId: string, limit: number = 20) {
+	async getRecentMessagesWithUsers(guildId: string, limit = 20) {
 		return this.core.getRecentMessagesWithUsers(guildId, limit);
 	}
 
-	async getOldestMessagesWithUsers(guildId: string, limit: number = 20) {
+	async getOldestMessagesWithUsers(guildId: string, limit = 20) {
 		return this.core.getOldestMessagesWithUsers(guildId, limit);
 	}
 
@@ -192,11 +192,7 @@ export class DatabaseManager {
 		return this.syncer.checkGuildSyncStatus(guildId);
 	}
 
-	async syncGuild(
-		guild: Guild,
-		forceFullSync: boolean = false,
-		messageLimit: number = 1000,
-	) {
+	async syncGuild(guild: Guild, forceFullSync = false, messageLimit = 1000) {
 		return this.syncer.syncGuild(guild, forceFullSync, messageLimit);
 	}
 
@@ -219,20 +215,19 @@ export class DatabaseManager {
 				return null;
 			}
 			return guild;
-		} else {
-			// Look for Arcados guild specifically, or use first available guild
-			const guild =
-				this.client.guilds.cache.find((g) => g.name === "Arcados") ||
-				this.client.guilds.cache.first();
-			if (!guild) {
-				console.warn(`⚠️ No guilds found for database operations`);
-				return null;
-			}
-			console.log(
-				`🔹 No GUILD_ID configured, using guild: ${guild.name} (${guild.id})`,
-			);
-			return guild;
 		}
+		// Look for Arcados guild specifically, or use first available guild
+		const guild =
+			this.client.guilds.cache.find((g) => g.name === "Arcados") ||
+			this.client.guilds.cache.first();
+		if (!guild) {
+			console.warn("⚠️ No guilds found for database operations");
+			return null;
+		}
+		console.log(
+			`🔹 No GUILD_ID configured, using guild: ${guild.name} (${guild.id})`,
+		);
+		return guild;
 	}
 
 	private async performDatabaseHealthCheck(guild: Guild): Promise<{
@@ -284,9 +279,9 @@ export class DatabaseManager {
 				recommendations.push(`Users sync: ${userSyncPercent}% (needs refresh)`);
 			if (roleSyncPercent < 95)
 				recommendations.push(`Roles sync: ${roleSyncPercent}% (needs refresh)`);
-			if (stats.totalMessages === 0) recommendations.push(`No messages synced`);
+			if (stats.totalMessages === 0) recommendations.push("No messages synced");
 			if (stats.totalVoiceSessions === 0)
-				recommendations.push(`No voice sessions tracked`);
+				recommendations.push("No voice sessions tracked");
 
 			return {
 				isHealthy,
