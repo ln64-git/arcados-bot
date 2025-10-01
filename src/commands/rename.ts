@@ -300,29 +300,21 @@ export const renameCommand: Command = {
 						);
 					}
 
-					// Update user preferences to remember this channel name
+					// Update user preferences to remember this channel name using the new system
 					console.log("🔍 Starting database operations...");
 					const dbStart = Date.now();
 
-					const preferences = (await voiceManager.getUserPreferences(
-						interaction.user.id,
-						interaction.guild?.id || "",
-					)) || {
-						userId: interaction.user.id,
-						guildId: interaction.guild?.id || "",
-						bannedUsers: [],
-						mutedUsers: [],
-						kickedUsers: [],
-						deafenedUsers: [],
-						renamedUsers: [],
-						lastUpdated: new Date(),
-					};
-
-					preferences.preferredChannelName = newName;
-					preferences.lastUpdated = new Date();
+					// Use DatabaseCore to update mod preferences in the users collection
+					const { DatabaseCore } = await import(
+						"../features/database-manager/DatabaseCore"
+					);
+					const dbCore = new DatabaseCore();
+					await dbCore.initialize();
 
 					const updateStart = Date.now();
-					await voiceManager.updateUserPreferences(preferences);
+					await dbCore.updateModPreferences(interaction.user.id, {
+						preferredChannelName: newName,
+					});
 					const updateDuration = Date.now() - updateStart;
 					console.log("🔍 User preferences update took", updateDuration, "ms");
 

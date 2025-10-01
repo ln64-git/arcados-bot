@@ -361,22 +361,16 @@ export class VoiceManager implements IVoiceManager {
 			`🔹 Channel renamed: "${oldVoiceChannel.name}" → "${newVoiceChannel.name}"`,
 		);
 
-		// Update the user's preferred channel name in the database
+		// Update the user's preferred channel name in the database using the new system
 		try {
-			const db = await getDatabase();
-			await db.collection("userPreferences").updateOne(
-				{
-					userId: owner.userId,
-					guildId: newVoiceChannel.guild.id,
-				},
-				{
-					$set: {
-						preferredChannelName: newVoiceChannel.name,
-						lastUpdated: new Date(),
-					},
-				},
-				{ upsert: true },
-			);
+			// Use DatabaseCore to update mod preferences in the users collection
+			const { DatabaseCore } = await import("../database-manager/DatabaseCore");
+			const dbCore = new DatabaseCore();
+			await dbCore.initialize();
+
+			await dbCore.updateModPreferences(owner.userId, {
+				preferredChannelName: newVoiceChannel.name,
+			});
 
 			// Invalidate cache to ensure fresh data is fetched
 			await this.cache.invalidateUserPreferences(
