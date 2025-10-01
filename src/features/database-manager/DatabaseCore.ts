@@ -1,7 +1,7 @@
 import type { Db } from "mongodb";
 import type {
-	DatabaseCollections,
 	Message as DBMessage,
+	DatabaseCollections,
 	GuildSync,
 	Role,
 	User,
@@ -143,7 +143,7 @@ export class DatabaseCore {
 	async getUsersByGuild(guildId: string): Promise<User[]> {
 		return this.withPerformanceTracking(async () => {
 			const collections = this.getCollections();
-			return await collections.users.find({ guildId }).toArray();
+			return collections.users.find({ guildId }).toArray();
 		}, `getUsersByGuild(${guildId})`);
 	}
 
@@ -173,7 +173,7 @@ export class DatabaseCore {
 	async getRolesByGuild(guildId: string): Promise<Role[]> {
 		try {
 			const collections = this.getCollections();
-			return await collections.roles.find({ guildId }).toArray();
+			return collections.roles.find({ guildId }).toArray();
 		} catch (error) {
 			console.error("🔸 Error getting roles by guild:", error);
 			return [];
@@ -203,13 +203,10 @@ export class DatabaseCore {
 
 	// ==================== MESSAGE OPERATIONS ====================
 
-	async getMessagesByGuild(
-		guildId: string,
-		limit: number = 100,
-	): Promise<DBMessage[]> {
+	async getMessagesByGuild(guildId: string, limit = 100): Promise<DBMessage[]> {
 		try {
 			const collections = this.getCollections();
-			return await collections.messages
+			return collections.messages
 				.find({ guildId })
 				.sort({ timestamp: -1 })
 				.limit(limit)
@@ -223,11 +220,11 @@ export class DatabaseCore {
 	async getMessagesByChannel(
 		guildId: string,
 		channelName: string,
-		limit: number = 100,
+		limit = 100,
 	): Promise<DBMessage[]> {
 		try {
 			const collections = this.getCollections();
-			return await collections.messages
+			return collections.messages
 				.find({ guildId, channelId: channelName })
 				.sort({ timestamp: -1 })
 				.limit(limit)
@@ -240,7 +237,7 @@ export class DatabaseCore {
 
 	async getRecentMessagesWithUsers(
 		guildId: string,
-		limit: number = 20,
+		limit = 20,
 	): Promise<
 		{
 			message: DBMessage;
@@ -272,7 +269,7 @@ export class DatabaseCore {
 
 	async getOldestMessagesWithUsers(
 		guildId: string,
-		limit: number = 20,
+		limit = 20,
 	): Promise<
 		{
 			message: DBMessage;
@@ -386,20 +383,44 @@ export class DatabaseCore {
 		userId: string,
 		guildId: string,
 		leftAt: Date,
+		channelId?: string,
 	): Promise<void> {
 		const collections = this.getCollections();
 		const now = new Date();
 
-		await collections.voiceSessions.updateOne(
-			{ userId, guildId, leftAt: { $exists: false } },
-			{
-				$set: {
-					leftAt,
-					duration: Math.floor((leftAt.getTime() - Date.now()) / 1000),
-					updatedAt: now,
-				},
+		// Build filter to find the active session
+		const filter: Record<string, unknown> = {
+			userId,
+			guildId,
+			leftAt: { $exists: false },
+		};
+
+		// If channelId is provided, filter by it to ensure we update the correct session
+		if (channelId) {
+			filter.channelId = channelId;
+		}
+
+		// First, get the session to calculate proper duration
+		const activeSession = await collections.voiceSessions.findOne(filter);
+		if (!activeSession) {
+			console.warn(
+				`🔸 No active voice session found for user ${userId} in guild ${guildId}`,
+			);
+			return;
+		}
+
+		// Calculate duration using the original joinedAt time
+		const duration = activeSession.joinedAt
+			? Math.floor((leftAt.getTime() - activeSession.joinedAt.getTime()) / 1000)
+			: 0;
+
+		await collections.voiceSessions.updateOne(filter, {
+			$set: {
+				leftAt,
+				duration,
+				updatedAt: now,
 			},
-		);
+		});
 	}
 
 	// ==================== INTERACTION OPERATIONS ====================
@@ -476,20 +497,35 @@ export class DatabaseCore {
 			const collections = this.getCollections();
 
 			// Get active voice sessions for this channel
-			const activeFilter: any = {
+			// Only get the most recent active session per user to avoid duplicates
+			const activeFilter = {
 				channelId,
 				guildId,
 				$or: [{ leftAt: { $exists: false } }, { leftAt: null }], // Active session (hasn't left yet)
 			};
+
+			// Use aggregation to get only the most recent session per user
 			const activeSessions = await collections.voiceSessions
-				.find(activeFilter)
+				.aggregate([
+					{ $match: activeFilter },
+					{ $sort: { joinedAt: -1 } }, // Sort by most recent join time
+					{
+						$group: {
+							_id: "$userId",
+							latestSession: { $first: "$$ROOT" },
+						},
+					},
+					{ $replaceRoot: { newRoot: "$latestSession" } },
+				])
 				.toArray();
 
-			// Calculate durations
+			// Calculate durations - FIXED: Use proper duration calculation
 			const now = Date.now();
 			return activeSessions.map((session) => ({
 				userId: session.userId,
-				duration: session.joinedAt ? now - session.joinedAt.getTime() : 0,
+				duration: session.joinedAt
+					? Math.floor((now - session.joinedAt.getTime()) / 1000)
+					: 0, // Convert to seconds
 			}));
 		}, `getActiveVoiceDurations(${channelId}, ${guildId})`);
 	}
@@ -566,6 +602,107 @@ export class DatabaseCore {
 			totalRoles,
 			totalVoiceSessions,
 		};
+	}
+
+	// ==================== VOICE SESSION CLEANUP ====================
+
+	async cleanupStaleVoiceSessions(): Promise<{
+		cleaned: number;
+		errors: string[];
+	}> {
+		const errors: string[] = [];
+		let cleaned = 0;
+
+		try {
+			const collections = this.getCollections();
+
+			// Find and remove duplicate active sessions (multiple sessions for same user without leftAt)
+			const duplicateSessions = await collections.voiceSessions
+				.aggregate([
+					{
+						$match: {
+							$or: [{ leftAt: { $exists: false } }, { leftAt: null }],
+						},
+					},
+					{
+						$group: {
+							_id: {
+								userId: "$userId",
+								guildId: "$guildId",
+								channelId: "$channelId",
+							},
+							sessions: { $push: "$$ROOT" },
+							count: { $sum: 1 },
+						},
+					},
+					{
+						$match: { count: { $gt: 1 } },
+					},
+				])
+				.toArray();
+
+			// Keep only the most recent session for each user/channel combination
+			for (const duplicate of duplicateSessions) {
+				const sessions = duplicate.sessions.sort(
+					(a: VoiceSession, b: VoiceSession) =>
+						new Date(b.joinedAt).getTime() - new Date(a.joinedAt).getTime(),
+				);
+
+				// Keep the first (most recent) session, delete the rest
+				const toDelete = sessions.slice(1);
+
+				for (const session of toDelete) {
+					try {
+						await collections.voiceSessions.deleteOne({ _id: session._id });
+						cleaned++;
+					} catch (error) {
+						errors.push(
+							`Failed to delete duplicate session ${session._id}: ${error}`,
+						);
+					}
+				}
+			}
+
+			// Clean up very old sessions (older than 7 days) that are still marked as active
+			const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+			const oldActiveSessions = await collections.voiceSessions
+				.find({
+					joinedAt: { $lt: sevenDaysAgo },
+					$or: [{ leftAt: { $exists: false } }, { leftAt: null }],
+				})
+				.toArray();
+
+			for (const session of oldActiveSessions) {
+				try {
+					// Mark as left with the join time + 1 hour as a reasonable estimate
+					const estimatedLeftAt = new Date(
+						session.joinedAt.getTime() + 60 * 60 * 1000,
+					);
+					await collections.voiceSessions.updateOne(
+						{ _id: session._id },
+						{
+							$set: {
+								leftAt: estimatedLeftAt,
+								duration: 3600, // 1 hour
+								updatedAt: new Date(),
+							},
+						},
+					);
+					cleaned++;
+				} catch (error) {
+					errors.push(`Failed to cleanup old session ${session._id}: ${error}`);
+				}
+			}
+
+			console.log(
+				`🔧 Voice session cleanup completed: ${cleaned} sessions cleaned, ${errors.length} errors`,
+			);
+		} catch (error) {
+			errors.push(`Voice session cleanup failed: ${error}`);
+			console.error("🔸 Error during voice session cleanup:", error);
+		}
+
+		return { cleaned, errors };
 	}
 
 	// ==================== MAINTENANCE ====================

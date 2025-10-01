@@ -37,10 +37,13 @@ export class VoiceManager implements IVoiceManager {
 	private isProcessingQueue = false;
 	private maxConcurrentChannels = 50; // Discord's per-guild daily limit is 500, so 50 is safe
 	private channelCreationDelay = 100; // 100ms delay between channel creations
+	private orphanedChannelWatcher: NodeJS.Timeout | null = null;
+	private isWatchingOrphanedChannels = false;
 
 	constructor(client: Client) {
 		this.client = client;
 		this.setupEventHandlers();
+		this.startOrphanedChannelWatcher();
 	}
 
 	private setupEventHandlers() {
@@ -110,6 +113,93 @@ export class VoiceManager implements IVoiceManager {
 
 		this.isProcessingQueue = false;
 		console.log("🔹 Channel creation queue processed");
+	}
+
+	private startOrphanedChannelWatcher(): void {
+		if (this.isWatchingOrphanedChannels) {
+			return;
+		}
+
+		this.isWatchingOrphanedChannels = true;
+
+		// Check for orphaned channels every 2 minutes
+		this.orphanedChannelWatcher = setInterval(
+			async () => {
+				await this.checkForOrphanedChannels();
+			},
+			2 * 60 * 1000,
+		); // 2 minutes
+
+		// Initial check after 30 seconds
+		setTimeout(async () => {
+			await this.checkForOrphanedChannels();
+		}, 30 * 1000);
+	}
+
+	private async checkForOrphanedChannels(): Promise<void> {
+		try {
+			const orphanedChannels: VoiceChannel[] = [];
+
+			// Check all guilds
+			for (const guild of this.client.guilds.cache.values()) {
+				// Find all voice channels that match our naming pattern
+				const dynamicChannels = guild.channels.cache.filter(
+					(channel) =>
+						channel.type === ChannelType.GuildVoice &&
+						channel.name.includes("'s Room | #"),
+				) as Collection<string, VoiceChannel>;
+
+				for (const channel of dynamicChannels.values()) {
+					// Check if channel is empty
+					if (channel.members.size === 0) {
+						// Check if channel has an owner in our database
+						const owner = await this.getChannelOwner(channel.id);
+
+						if (owner) {
+							// Channel has an owner but is empty - this is an orphaned channel
+							orphanedChannels.push(channel);
+							console.log(
+								`🔸 Found orphaned channel: ${channel.name} (owner: ${owner.userId})`,
+							);
+						}
+					}
+				}
+			}
+
+			// Clean up orphaned channels
+			if (orphanedChannels.length > 0) {
+				console.log(
+					`🔧 Cleaning up ${orphanedChannels.length} orphaned channels`,
+				);
+
+				for (const channel of orphanedChannels) {
+					try {
+						// Remove owner from database
+						await this.removeChannelOwner(channel.id);
+
+						// Delete the channel
+						await this.deleteTemporaryChannel(channel);
+
+						console.log(`✅ Cleaned up orphaned channel: ${channel.name}`);
+					} catch (error) {
+						console.error(
+							`🔸 Failed to clean up orphaned channel ${channel.name}:`,
+							error,
+						);
+					}
+				}
+			}
+		} catch (error) {
+			console.error("🔸 Error checking for orphaned channels:", error);
+		}
+	}
+
+	private stopOrphanedChannelWatcher(): void {
+		if (this.orphanedChannelWatcher) {
+			clearInterval(this.orphanedChannelWatcher);
+			this.orphanedChannelWatcher = null;
+		}
+		this.isWatchingOrphanedChannels = false;
 	}
 
 	private async handleVoiceStateUpdate(
@@ -2142,6 +2232,132 @@ export class VoiceManager implements IVoiceManager {
 	 * @param channelId The voice channel ID
 	 * @returns Channel state data including owner, members, moderation info, and inheritance order
 	 */
+	// ==================== PUBLIC ORPHANED CHANNEL METHODS ====================
+
+	/**
+	 * Manually trigger orphaned channel cleanup
+	 * @returns Promise<{ cleaned: number; errors: string[] }>
+	 */
+	async cleanupOrphanedChannels(): Promise<{
+		cleaned: number;
+		errors: string[];
+	}> {
+		const errors: string[] = [];
+		let cleaned = 0;
+
+		try {
+			console.log("🔧 Manual orphaned channel cleanup triggered");
+
+			const orphanedChannels: VoiceChannel[] = [];
+
+			// Check all guilds
+			for (const guild of this.client.guilds.cache.values()) {
+				// Find all voice channels that match our naming pattern
+				const dynamicChannels = guild.channels.cache.filter(
+					(channel) =>
+						channel.type === ChannelType.GuildVoice &&
+						channel.name.includes("'s Room | #"),
+				) as Collection<string, VoiceChannel>;
+
+				for (const channel of dynamicChannels.values()) {
+					// Check if channel is empty
+					if (channel.members.size === 0) {
+						// Check if channel has an owner in our database
+						const owner = await this.getChannelOwner(channel.id);
+
+						if (owner) {
+							// Channel has an owner but is empty - this is an orphaned channel
+							orphanedChannels.push(channel);
+						}
+					}
+				}
+			}
+
+			// Clean up orphaned channels
+			for (const channel of orphanedChannels) {
+				try {
+					// Remove owner from database
+					await this.removeChannelOwner(channel.id);
+
+					// Delete the channel
+					await this.deleteTemporaryChannel(channel);
+
+					cleaned++;
+					console.log(`✅ Cleaned up orphaned channel: ${channel.name}`);
+				} catch (error) {
+					const errorMsg = `Failed to clean up orphaned channel ${channel.name}: ${error}`;
+					errors.push(errorMsg);
+					console.error(`🔸 ${errorMsg}`);
+				}
+			}
+
+			console.log(
+				`🔧 Manual cleanup completed: ${cleaned} channels cleaned, ${errors.length} errors`,
+			);
+		} catch (error) {
+			const errorMsg = `Manual orphaned channel cleanup failed: ${error}`;
+			errors.push(errorMsg);
+			console.error(`🔸 ${errorMsg}`);
+		}
+
+		return { cleaned, errors };
+	}
+
+	/**
+	 * Get statistics about orphaned channels
+	 * @returns Promise<{ total: number; orphaned: number; details: Array<{ name: string; owner: string; empty: boolean }> }>
+	 */
+	async getOrphanedChannelStats(): Promise<{
+		total: number;
+		orphaned: number;
+		details: Array<{ name: string; owner: string; empty: boolean }>;
+	}> {
+		const details: Array<{ name: string; owner: string; empty: boolean }> = [];
+		let total = 0;
+		let orphaned = 0;
+
+		try {
+			// Check all guilds
+			for (const guild of this.client.guilds.cache.values()) {
+				// Find all voice channels that match our naming pattern
+				const dynamicChannels = guild.channels.cache.filter(
+					(channel) =>
+						channel.type === ChannelType.GuildVoice &&
+						channel.name.includes("'s Room | #"),
+				) as Collection<string, VoiceChannel>;
+
+				total += dynamicChannels.size;
+
+				for (const channel of dynamicChannels.values()) {
+					const owner = await this.getChannelOwner(channel.id);
+					const isEmpty = channel.members.size === 0;
+
+					details.push({
+						name: channel.name,
+						owner: owner?.userId || "No owner",
+						empty: isEmpty,
+					});
+
+					if (owner && isEmpty) {
+						orphaned++;
+					}
+				}
+			}
+		} catch (error) {
+			console.error("🔸 Error getting orphaned channel stats:", error);
+		}
+
+		return { total, orphaned, details };
+	}
+
+	/**
+	 * Cleanup method to stop watchers and clear resources
+	 */
+	async cleanup(): Promise<void> {
+		this.stopOrphanedChannelWatcher();
+		console.log("🔹 VoiceManager cleanup completed");
+	}
+
 	async getChannelState(channelId: string): Promise<{
 		owner: VoiceChannelOwner | null;
 		memberIds: string[];

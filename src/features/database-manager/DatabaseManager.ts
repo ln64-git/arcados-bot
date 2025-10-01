@@ -187,6 +187,10 @@ export class DatabaseManager {
 		return this.core.getGuildStats(guildId);
 	}
 
+	async cleanupStaleVoiceSessions() {
+		return this.core.cleanupStaleVoiceSessions();
+	}
+
 	// Delegate to syncer for sync operations
 	async checkGuildSyncStatus(guildId: string) {
 		return this.syncer.checkGuildSyncStatus(guildId);

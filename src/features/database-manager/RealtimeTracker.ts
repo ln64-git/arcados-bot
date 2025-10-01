@@ -279,7 +279,12 @@ export class RealtimeTracker {
 			) {
 				// Close previous session
 				const leftAt = new Date();
-				await this.core.updateVoiceSession(userId, guildId, leftAt);
+				await this.core.updateVoiceSession(
+					userId,
+					guildId,
+					leftAt,
+					oldState.channelId,
+				);
 				this.activeVoiceSessions.delete(userId);
 
 				await this.core.recordInteraction({
@@ -326,7 +331,12 @@ export class RealtimeTracker {
 				const session = this.activeVoiceSessions.get(userId);
 				if (session) {
 					const leftAt = new Date();
-					await this.core.updateVoiceSession(userId, guildId, leftAt);
+					await this.core.updateVoiceSession(
+						userId,
+						guildId,
+						leftAt,
+						oldState.channelId,
+					);
 					this.activeVoiceSessions.delete(userId);
 
 					// Record interaction for VC time
