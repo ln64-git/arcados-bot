@@ -2385,26 +2385,61 @@ export class VoiceManager implements IVoiceManager {
 			let mutedUsers: string[] = [];
 			let deafenedUsers: string[] = [];
 
-			// Get inheritance order using centralized database method
-			const { DatabaseManager } = await import(
-				"../database-manager/DatabaseManager"
-			);
-			const dbManager = new DatabaseManager(this.client);
-			await dbManager.initialize();
+			// Get inheritance order using direct database access (more efficient)
+			const db = await getDatabase();
+			const usersCollection = db.collection("users");
+			const voiceSessionsCollection = db.collection("voiceSessions");
 
 			if (owner) {
-				const modPreferences = await dbManager.getModPreferences(owner.userId);
-				if (modPreferences) {
-					bannedUsers = modPreferences.bannedUsers;
-					mutedUsers = modPreferences.mutedUsers;
-					deafenedUsers = modPreferences.deafenedUsers;
+				const userData = await usersCollection.findOne({
+					discordId: owner.userId,
+				});
+				if (userData?.modPreferences) {
+					bannedUsers = userData.modPreferences.bannedUsers;
+					mutedUsers = userData.modPreferences.mutedUsers;
+					deafenedUsers = userData.modPreferences.deafenedUsers;
 				}
 			}
 
-			const durations = await dbManager.getActiveVoiceDurations(
-				channelId,
-				channel.guild.id,
-			);
+			// Get active voice durations directly
+			const durations = await voiceSessionsCollection
+				.aggregate([
+					{
+						$match: {
+							channelId,
+							guildId: channel.guild.id,
+							$or: [
+								{ leftAt: { $exists: false } },
+								{ leftAt: { $type: "null" } },
+							],
+						},
+					},
+					{
+						$group: {
+							_id: "$userId",
+							duration: {
+								$sum: {
+									$cond: [
+										{ $ne: ["$leftAt", null] },
+										{
+											$divide: [{ $subtract: ["$leftAt", "$joinedAt"] }, 1000],
+										},
+										{
+											$divide: [{ $subtract: [new Date(), "$joinedAt"] }, 1000],
+										},
+									],
+								},
+							},
+						},
+					},
+					{
+						$project: {
+							userId: "$_id",
+							duration: { $floor: "$duration" },
+						},
+					},
+				])
+				.toArray();
 
 			// Build list of current members (non-bots)
 			const memberIds = Array.from(channel.members.keys()).filter(
@@ -2435,7 +2470,6 @@ export class VoiceManager implements IVoiceManager {
 				channelName: channel.name,
 			};
 
-			await dbManager.cleanup();
 			return result;
 		} catch (error) {
 			console.error("🔸 Error getting channel state:", error);

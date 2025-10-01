@@ -357,11 +357,23 @@ export class DatabaseCore {
 		const collections = this.getCollections();
 		const now = new Date();
 
-		await collections.voiceSessions.insertOne({
-			...session,
-			createdAt: now,
-			updatedAt: now,
-		});
+		// Use upsert to avoid duplicate sessions
+		await collections.voiceSessions.updateOne(
+			{
+				userId: session.userId,
+				guildId: session.guildId,
+				channelId: session.channelId,
+				leftAt: { $exists: false },
+			},
+			{
+				$setOnInsert: {
+					...session,
+					createdAt: now,
+					updatedAt: now,
+				},
+			},
+			{ upsert: true },
+		);
 	}
 
 	async updateVoiceSession(
@@ -495,7 +507,6 @@ export class DatabaseCore {
 			// Get user data from database
 			const userData = await collections.users.findOne({
 				discordId: member.id,
-				guildId: member.guild.id,
 			});
 
 			if (!userData || !userData.roles || userData.roles.length === 0) {
@@ -868,28 +879,23 @@ export class DatabaseCore {
 				{ upsert: true },
 			);
 
-			// Check if this avatar already exists in history
-			const existingAvatar = await collections.users.findOne({
-				discordId: userId,
-				"avatarHistory.avatarUrl": newAvatarUrl,
-			});
+			// Try to update existing avatar first (more efficient than separate check)
+			const updateResult = await collections.users.updateOne(
+				{
+					discordId: userId,
+					"avatarHistory.avatarUrl": newAvatarUrl,
+				},
+				{
+					$set: {
+						"avatarHistory.$.lastSeen": now,
+						avatar: newAvatarUrl,
+						updatedAt: now,
+					},
+				},
+			);
 
-			if (existingAvatar) {
-				// Update lastSeen for existing avatar
-				await collections.users.updateOne(
-					{
-						discordId: userId,
-						"avatarHistory.avatarUrl": newAvatarUrl,
-					},
-					{
-						$set: {
-							"avatarHistory.$.lastSeen": now,
-							avatar: newAvatarUrl,
-							updatedAt: now,
-						},
-					},
-				);
-			} else {
+			// If no existing avatar was updated, add new one
+			if (updateResult.matchedCount === 0) {
 				// Download and store image data
 				let imageData: string | undefined;
 				let contentType: string | undefined;
@@ -970,28 +976,23 @@ export class DatabaseCore {
 				{ upsert: true },
 			);
 
-			// Check if this status already exists in history
-			const existingStatus = await collections.users.findOne({
-				discordId: userId,
-				"statusHistory.status": newStatus,
-			});
+			// Try to update existing status first (more efficient than separate check)
+			const updateResult = await collections.users.updateOne(
+				{
+					discordId: userId,
+					"statusHistory.status": newStatus,
+				},
+				{
+					$set: {
+						"statusHistory.$.lastSeen": now,
+						status: newStatus,
+						updatedAt: now,
+					},
+				},
+			);
 
-			if (existingStatus) {
-				// Update lastSeen for existing status
-				await collections.users.updateOne(
-					{
-						discordId: userId,
-						"statusHistory.status": newStatus,
-					},
-					{
-						$set: {
-							"statusHistory.$.lastSeen": now,
-							status: newStatus,
-							updatedAt: now,
-						},
-					},
-				);
-			} else {
+			// If no existing status was updated, add new one
+			if (updateResult.matchedCount === 0) {
 				// Add new status to history
 				const newStatusEntry: UserStatus = {
 					status: newStatus,
