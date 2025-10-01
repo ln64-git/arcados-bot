@@ -61,7 +61,7 @@ function validateConfig(): BotConfig {
 		nodeEnv:
 			(process.env.NODE_ENV as "development" | "production" | "test") ||
 			"development",
-		port: parseInt(process.env.PORT || "3000", 10),
+		port: Number.parseInt(process.env.PORT || "3000", 10),
 
 		// Optional integrations
 		webhookUrl: process.env.WEBHOOK_URL,

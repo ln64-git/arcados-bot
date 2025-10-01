@@ -146,7 +146,7 @@ export const renameCommand: Command = {
 					console.log(
 						`🔍 Guild info: name="${channel.guild.name}", id=${channel.guild.id}`,
 					);
-					console.log(`🔍 Bot permissions: ${interaction.client.user.tag}`);
+					console.log("🔍 Bot permissions:", interaction.client.user.tag);
 
 					// Check bot permissions
 					const botMember = await channel.guild.members.fetch(
@@ -174,13 +174,13 @@ export const renameCommand: Command = {
 					);
 
 					// Additional diagnostics before rename attempt
-					console.log(`🔍 Pre-rename diagnostics:`);
-					console.log(`🔍 - Channel name: "${channel.name}"`);
-					console.log(`🔍 - Target name: "${newName}"`);
-					console.log(`🔍 - Channel type: ${channel.type}`);
-					console.log(`🔍 - Channel position: ${channel.position}`);
-					console.log(`🔍 - Guild member count: ${channel.guild.memberCount}`);
-					console.log(`🔍 - Channel member count: ${channel.members.size}`);
+					console.log("🔍 Pre-rename diagnostics:");
+					console.log("🔍 - Channel name:", channel.name);
+					console.log("🔍 - Target name:", newName);
+					console.log("🔍 - Channel type:", channel.type);
+					console.log("🔍 - Channel position:", channel.position);
+					console.log("🔍 - Guild member count:", channel.guild.memberCount);
+					console.log("🔍 - Channel member count:", channel.members.size);
 
 					// Implement retry mechanism with exponential backoff
 					// Note: Discord allows only 2 renames before rate limiting, so be conservative
@@ -190,18 +190,18 @@ export const renameCommand: Command = {
 					const baseDelay = 5000; // 5 seconds base delay (increased for safety)
 
 					for (let attempt = 1; attempt <= maxRetries; attempt++) {
-						console.log(`🔍 Rename attempt ${attempt}/${maxRetries}`);
+						console.log("🔍 Rename attempt", attempt, "/", maxRetries);
 
 						// Add exponential backoff delay (except for first attempt)
 						if (attempt > 1) {
 							const delay = baseDelay * 2 ** (attempt - 2); // 5s, 10s delays
-							console.log(`🔍 Waiting ${delay}ms before retry...`);
+							console.log("🔍 Waiting", delay, "ms before retry...");
 							await new Promise((resolve) => setTimeout(resolve, delay));
 						}
 
 						try {
 							// Try REST API first
-							console.log(`🔍 Attempting REST API rename...`);
+							console.log("🔍 Attempting REST API rename...");
 							const restStart = Date.now();
 							const restPromise = interaction.client.rest.patch(
 								`/channels/${channel.id}`,
@@ -217,7 +217,11 @@ export const renameCommand: Command = {
 							);
 							await Promise.race([restPromise, restTimeoutPromise]);
 							const restDuration = Date.now() - restStart;
-							console.log(`✅ REST API rename succeeded in ${restDuration}ms`);
+							console.log(
+								"✅ REST API rename succeeded in",
+								restDuration,
+								"ms",
+							);
 							renameSuccess = true;
 							break;
 						} catch (error) {
@@ -228,7 +232,7 @@ export const renameCommand: Command = {
 								error instanceof Error ? error : new Error(String(error));
 
 							// Try discord.js fallback
-							console.log(`🔍 Attempting discord.js fallback...`);
+							console.log("🔍 Attempting discord.js fallback...");
 							const discordjsStart = Date.now();
 							try {
 								const renamePromise = channel.setName(newName);
@@ -297,7 +301,7 @@ export const renameCommand: Command = {
 					}
 
 					// Update user preferences to remember this channel name
-					console.log(`🔍 Starting database operations...`);
+					console.log("🔍 Starting database operations...");
 					const dbStart = Date.now();
 
 					const preferences = (await voiceManager.getUserPreferences(
@@ -320,7 +324,7 @@ export const renameCommand: Command = {
 					const updateStart = Date.now();
 					await voiceManager.updateUserPreferences(preferences);
 					const updateDuration = Date.now() - updateStart;
-					console.log(`🔍 User preferences update took ${updateDuration}ms`);
+					console.log("🔍 User preferences update took", updateDuration, "ms");
 
 					const logStart = Date.now();
 					await voiceManager.logModerationAction({
@@ -332,10 +336,10 @@ export const renameCommand: Command = {
 						reason: `Changed channel name to: ${newName}`,
 					});
 					const logDuration = Date.now() - logStart;
-					console.log(`🔍 Moderation logging took ${logDuration}ms`);
+					console.log("🔍 Moderation logging took", logDuration, "ms");
 
 					const dbDuration = Date.now() - dbStart;
-					console.log(`🔍 Total database operations took ${dbDuration}ms`);
+					console.log("🔍 Total database operations took", dbDuration, "ms");
 
 					embed = new EmbedBuilder()
 						.setTitle("🔹 Channel Name Changed")
