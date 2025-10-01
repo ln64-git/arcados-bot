@@ -196,16 +196,7 @@ export class RealtimeTracker {
 				await message.fetch();
 			}
 
-			// Record interaction
-			await this.core.recordInteraction({
-				fromUserId: user.id,
-				toUserId: message.author?.id || "",
-				guildId: message.guild?.id || "",
-				interactionType: "reaction",
-				messageId: message.id,
-				channelId: message.channelId,
-				timestamp: new Date(),
-			});
+			// Note: Interaction tracking removed - using simplified relationship system
 		} catch (error) {
 			console.error("🔸 Error tracking reaction add:", error);
 		}
@@ -256,19 +247,7 @@ export class RealtimeTracker {
 				await this.core.createVoiceSession(session);
 				this.activeVoiceSessions.set(userId, session as VoiceSession);
 
-				// Record interaction for VC time
-				await this.core.recordInteraction({
-					fromUserId: userId,
-					toUserId: userId, // Self-interaction for VC time
-					guildId,
-					interactionType: "voice",
-					channelId: newState.channelId,
-					timestamp: new Date(),
-					metadata: {
-						action: "joined",
-						channelName: channel?.name,
-					},
-				});
+				// Note: Interaction tracking removed - using simplified relationship system
 			}
 
 			// User moved between voice channels
@@ -287,18 +266,7 @@ export class RealtimeTracker {
 				);
 				this.activeVoiceSessions.delete(userId);
 
-				await this.core.recordInteraction({
-					fromUserId: userId,
-					toUserId: userId,
-					guildId,
-					interactionType: "voice",
-					channelId: oldState.channelId,
-					timestamp: leftAt,
-					metadata: {
-						action: "moved_from",
-						channelName: oldState.channel?.name,
-					},
-				});
+				// Note: Interaction tracking removed - using simplified relationship system
 
 				// Open new session
 				const joinedAt = new Date();
@@ -315,15 +283,7 @@ export class RealtimeTracker {
 				await this.core.createVoiceSession(newSession);
 				this.activeVoiceSessions.set(userId, newSession as VoiceSession);
 
-				await this.core.recordInteraction({
-					fromUserId: userId,
-					toUserId: userId,
-					guildId,
-					interactionType: "voice",
-					channelId: newState.channelId,
-					timestamp: joinedAt,
-					metadata: { action: "moved_to", channelName: newState.channel?.name },
-				});
+				// Note: Interaction tracking removed - using simplified relationship system
 			}
 
 			// User left a voice channel (to no channel)
@@ -339,19 +299,7 @@ export class RealtimeTracker {
 					);
 					this.activeVoiceSessions.delete(userId);
 
-					// Record interaction for VC time
-					await this.core.recordInteraction({
-						fromUserId: userId,
-						toUserId: userId,
-						guildId,
-						interactionType: "voice",
-						channelId: oldState.channelId,
-						timestamp: new Date(),
-						metadata: {
-							action: "left",
-							channelName: oldState.channel?.name,
-						},
-					});
+					// Note: Interaction tracking removed - using simplified relationship system
 				}
 			}
 		} catch (error) {
@@ -365,6 +313,11 @@ export class RealtimeTracker {
 		try {
 			if (!newMember.guild) return;
 
+			const now = new Date();
+			const newAvatarUrl = newMember.user.displayAvatarURL();
+			const newStatus =
+				newMember.presence?.activities?.find((a) => a.type === 4)?.state || "";
+
 			// Update user data
 			const user: Omit<
 				import("../../types/database").User,
@@ -374,18 +327,42 @@ export class RealtimeTracker {
 				username: newMember.user.username,
 				displayName: newMember.displayName,
 				discriminator: newMember.user.discriminator,
-				avatar: newMember.user.avatar || undefined,
+				avatar: newAvatarUrl,
+				avatarHistory: [],
 				bot: newMember.user.bot,
-				aliases: [newMember.user.username, newMember.displayName].filter(
-					(name, index, arr) => arr.indexOf(name) === index,
-				),
+				usernameHistory: [],
+				displayNameHistory: [],
 				roles: newMember.roles.cache.map((role) => role.id),
-				joinedAt: newMember.joinedAt || new Date(),
-				lastSeen: new Date(),
-				guildId: newMember.guild.id,
+				joinedAt: newMember.joinedAt || now,
+				lastSeen: now,
+				statusHistory: [],
+				status: newStatus,
+				relationships: [],
+				modPreferences: {
+					bannedUsers: [],
+					mutedUsers: [],
+					kickedUsers: [],
+					deafenedUsers: [],
+					renamedUsers: [],
+					lastUpdated: now,
+				},
 			};
 
 			await this.core.upsertUser(user);
+
+			// Track avatar change if different
+			if (newAvatarUrl) {
+				await this.core.trackAvatarChange(
+					newMember.id,
+					newAvatarUrl,
+					newMember.user.avatar ?? undefined,
+				);
+			}
+
+			// Track status change if different
+			if (newStatus) {
+				await this.core.trackStatusChange(newMember.id, newStatus);
+			}
 		} catch (error) {
 			console.error("🔸 Error tracking guild member update:", error);
 		}
@@ -510,33 +487,14 @@ export class RealtimeTracker {
 		if (message.mentions && message.mentions.users.size > 0) {
 			for (const [, mentionedUser] of message.mentions.users) {
 				if (mentionedUser.id !== message.author.id) {
-					await this.core.recordInteraction({
-						fromUserId: message.author.id,
-						toUserId: mentionedUser.id,
-						guildId: message.guild?.id || "",
-						interactionType: "mention",
-						messageId: message.id,
-						channelId: message.channelId,
-						timestamp: message.createdAt,
-					});
+					// Note: Interaction tracking removed - using simplified relationship system
 				}
 			}
 		}
 
 		// Track replies
 		if (message.reference?.messageId) {
-			await this.core.recordInteraction({
-				fromUserId: message.author.id,
-				toUserId: message.reference.messageId, // This would need to be resolved to actual user ID
-				guildId: message.guild?.id || "",
-				interactionType: "reply",
-				messageId: message.id,
-				channelId: message.channelId,
-				timestamp: message.createdAt,
-				metadata: {
-					repliedToMessageId: message.reference.messageId,
-				},
-			});
+			// Note: Interaction tracking removed - using simplified relationship system
 		}
 	}
 }

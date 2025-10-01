@@ -1,11 +1,14 @@
 import type { Db } from "mongodb";
 import type {
+	AvatarHistory,
 	Message as DBMessage,
 	DatabaseCollections,
 	GuildSync,
+	ModPreferences,
+	RenamedUser,
 	Role,
 	User,
-	UserInteraction,
+	UserStatus,
 	VoiceSession,
 } from "../../types/database";
 import { memoryManager } from "../performance-monitoring/MemoryManager";
@@ -27,7 +30,6 @@ export class DatabaseCore {
 			messages: this.db.collection("messages"),
 			voiceSessions: this.db.collection("voiceSessions"),
 			guildSyncs: this.db.collection("guildSyncs"),
-			userInteractions: this.db.collection("userInteractions"),
 		};
 
 		// Create indexes for better performance
@@ -40,10 +42,9 @@ export class DatabaseCore {
 		try {
 			// User indexes
 			await this.collections.users.createIndex(
-				{ discordId: 1, guildId: 1 },
+				{ discordId: 1 },
 				{ unique: true },
 			);
-			await this.collections.users.createIndex({ guildId: 1 });
 			await this.collections.users.createIndex({ lastSeen: 1 });
 
 			// Role indexes
@@ -76,20 +77,6 @@ export class DatabaseCore {
 				{ guildId: 1 },
 				{ unique: true },
 			);
-
-			// User interaction indexes
-			await this.collections.userInteractions.createIndex({
-				fromUserId: 1,
-				toUserId: 1,
-				guildId: 1,
-			});
-			await this.collections.userInteractions.createIndex({
-				guildId: 1,
-				timestamp: 1,
-			});
-			await this.collections.userInteractions.createIndex({
-				interactionType: 1,
-			});
 		} catch (error) {
 			console.error("🔸 Error creating database indexes:", error);
 		}
@@ -154,7 +141,7 @@ export class DatabaseCore {
 		const now = new Date();
 
 		await collections.users.updateOne(
-			{ discordId: user.discordId, guildId: user.guildId },
+			{ discordId: user.discordId },
 			{
 				$set: {
 					...user,
@@ -258,7 +245,6 @@ export class DatabaseCore {
 			messages.map(async (message: DBMessage) => {
 				const user = await collections.users.findOne({
 					discordId: message.authorId,
-					guildId: message.guildId,
 				});
 				return { message, user };
 			}),
@@ -290,7 +276,6 @@ export class DatabaseCore {
 			messages.map(async (message: DBMessage) => {
 				const user = await collections.users.findOne({
 					discordId: message.authorId,
-					guildId: message.guildId,
 				});
 				return { message, user };
 			}),
@@ -391,7 +376,6 @@ export class DatabaseCore {
 		// Build filter to find the active session
 		const filter: Record<string, unknown> = {
 			userId,
-			guildId,
 			leftAt: { $exists: false },
 		};
 
@@ -424,35 +408,6 @@ export class DatabaseCore {
 	}
 
 	// ==================== INTERACTION OPERATIONS ====================
-
-	async recordInteraction(
-		interaction: Omit<UserInteraction, "_id" | "createdAt">,
-	): Promise<void> {
-		const collections = this.getCollections();
-		const now = new Date();
-
-		await collections.userInteractions.insertOne({
-			...interaction,
-			createdAt: now,
-		});
-	}
-
-	async getUserInteractions(
-		fromUserId: string,
-		toUserId: string,
-		guildId: string,
-	): Promise<UserInteraction[]> {
-		try {
-			const collections = this.getCollections();
-			return await collections.userInteractions
-				.find({ fromUserId, toUserId, guildId })
-				.sort({ timestamp: -1 })
-				.toArray();
-		} catch (error) {
-			console.error("🔸 Error getting user interactions:", error);
-			return [];
-		}
-	}
 
 	// ==================== GUILD SYNC OPERATIONS ====================
 
@@ -500,8 +455,7 @@ export class DatabaseCore {
 			// Only get the most recent active session per user to avoid duplicates
 			const activeFilter = {
 				channelId,
-				guildId,
-				$or: [{ leftAt: { $exists: false } }, { leftAt: null }], // Active session (hasn't left yet)
+				$or: [{ leftAt: { $exists: false } }, { leftAt: { $type: "null" } }], // Active session (hasn't left yet)
 			};
 
 			// Use aggregation to get only the most recent session per user
@@ -604,6 +558,648 @@ export class DatabaseCore {
 		};
 	}
 
+	// ==================== MODERATION PREFERENCES OPERATIONS ====================
+
+	/**
+	 * Get moderation preferences for a user
+	 */
+	async getModPreferences(userId: string): Promise<ModPreferences | null> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			const user = await collections.users.findOne({
+				discordId: userId,
+			});
+
+			return user?.modPreferences || null;
+		}, `getModPreferences(${userId})`);
+	}
+
+	/**
+	 * Update moderation preferences for a user
+	 */
+	async updateModPreferences(
+		userId: string,
+		preferences: Partial<ModPreferences>,
+	): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			const now = new Date();
+
+			// First, ensure the user exists with default mod preferences
+			await collections.users.updateOne(
+				{ discordId: userId },
+				{
+					$setOnInsert: {
+						discordId: userId,
+						modPreferences: {
+							bannedUsers: [],
+							mutedUsers: [],
+							kickedUsers: [],
+							deafenedUsers: [],
+							renamedUsers: [],
+							lastUpdated: now,
+						},
+						createdAt: now,
+						updatedAt: now,
+					},
+				},
+				{ upsert: true },
+			);
+
+			// Update mod preferences
+			await collections.users.updateOne(
+				{ discordId: userId },
+				{
+					$set: {
+						"modPreferences.lastUpdated": now,
+						updatedAt: now,
+						...Object.fromEntries(
+							Object.entries(preferences).map(([key, value]) => [
+								`modPreferences.${key}`,
+								value,
+							]),
+						),
+					},
+				},
+			);
+		}, `updateModPreferences(${userId})`);
+	}
+
+	/**
+	 * Add a user to a moderation list (banned, muted, etc.)
+	 */
+	async addUserToModerationList(
+		ownerId: string,
+		guildId: string,
+		listType: "bannedUsers" | "mutedUsers" | "kickedUsers" | "deafenedUsers",
+		targetUserId: string,
+	): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			const now = new Date();
+
+			// Ensure user exists with mod preferences
+			await collections.users.updateOne(
+				{ discordId: ownerId, guildId },
+				{
+					$setOnInsert: {
+						discordId: ownerId,
+						modPreferences: {
+							bannedUsers: [],
+							mutedUsers: [],
+							kickedUsers: [],
+							deafenedUsers: [],
+							renamedUsers: [],
+							lastUpdated: now,
+						},
+						createdAt: now,
+						updatedAt: now,
+					},
+				},
+				{ upsert: true },
+			);
+
+			// Add user to moderation list
+			await collections.users.updateOne(
+				{ discordId: ownerId, guildId },
+				{
+					$addToSet: {
+						[`modPreferences.${listType}`]: targetUserId,
+					},
+					$set: {
+						"modPreferences.lastUpdated": now,
+						updatedAt: now,
+					},
+				},
+			);
+		}, `addUserToModerationList(${ownerId}, ${guildId}, ${listType})`);
+	}
+
+	/**
+	 * Remove a user from a moderation list
+	 */
+	async removeUserFromModerationList(
+		ownerId: string,
+		guildId: string,
+		listType: "bannedUsers" | "mutedUsers" | "kickedUsers" | "deafenedUsers",
+		targetUserId: string,
+	): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			const now = new Date();
+
+			await collections.users.updateOne(
+				{ discordId: ownerId, guildId },
+				{
+					$pull: {
+						[`modPreferences.${listType}`]: targetUserId,
+					},
+					$set: {
+						"modPreferences.lastUpdated": now,
+						updatedAt: now,
+					},
+				},
+			);
+		}, `removeUserFromModerationList(${ownerId}, ${guildId}, ${listType})`);
+	}
+
+	/**
+	 * Add a renamed user to the mod preferences
+	 */
+	async addRenamedUser(
+		ownerId: string,
+		guildId: string,
+		renamedUser: RenamedUser,
+	): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			const now = new Date();
+
+			// Ensure user exists with mod preferences
+			await collections.users.updateOne(
+				{ discordId: ownerId, guildId },
+				{
+					$setOnInsert: {
+						discordId: ownerId,
+						modPreferences: {
+							bannedUsers: [],
+							mutedUsers: [],
+							kickedUsers: [],
+							deafenedUsers: [],
+							renamedUsers: [],
+							lastUpdated: now,
+						},
+						createdAt: now,
+						updatedAt: now,
+					},
+				},
+				{ upsert: true },
+			);
+
+			// Remove any existing rename for this user
+			await collections.users.updateOne(
+				{ discordId: ownerId, guildId },
+				{
+					$pull: {
+						"modPreferences.renamedUsers": {
+							userId: renamedUser.userId,
+						},
+					},
+				},
+			);
+
+			// Add the new rename
+			await collections.users.updateOne(
+				{ discordId: ownerId, guildId },
+				{
+					$push: {
+						"modPreferences.renamedUsers": renamedUser,
+					},
+					$set: {
+						"modPreferences.lastUpdated": now,
+						updatedAt: now,
+					},
+				},
+			);
+		}, `addRenamedUser(${ownerId}, ${guildId})`);
+	}
+
+	/**
+	 * Remove a renamed user from the mod preferences
+	 */
+	async removeRenamedUser(
+		ownerId: string,
+		guildId: string,
+		targetUserId: string,
+	): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			const now = new Date();
+
+			await collections.users.updateOne(
+				{ discordId: ownerId, guildId },
+				{
+					$pull: {
+						"modPreferences.renamedUsers": {
+							userId: targetUserId,
+						},
+					},
+					$set: {
+						"modPreferences.lastUpdated": now,
+						updatedAt: now,
+					},
+				},
+			);
+		}, `removeRenamedUser(${ownerId}, ${guildId})`);
+	}
+
+	/**
+	 * Check if a user is in a moderation list
+	 */
+	async isUserInModerationList(
+		ownerId: string,
+		guildId: string,
+		listType: "bannedUsers" | "mutedUsers" | "kickedUsers" | "deafenedUsers",
+		targetUserId: string,
+	): Promise<boolean> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			const user = await collections.users.findOne({
+				discordId: ownerId,
+				[`modPreferences.${listType}`]: targetUserId,
+			});
+
+			return !!user;
+		}, `isUserInModerationList(${ownerId}, ${guildId}, ${listType})`);
+	}
+
+	/**
+	 * Get all users in a moderation list
+	 */
+	async getUsersInModerationList(
+		ownerId: string,
+		guildId: string,
+		listType: "bannedUsers" | "mutedUsers" | "kickedUsers" | "deafenedUsers",
+	): Promise<string[]> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			const user = await collections.users.findOne({
+				discordId: ownerId,
+			});
+
+			return user?.modPreferences?.[listType] || [];
+		}, `getUsersInModerationList(${ownerId}, ${guildId}, ${listType})`);
+	}
+
+	// ==================== AVATAR AND STATUS TRACKING ====================
+
+	/**
+	 * Track avatar changes for a user
+	 */
+	async trackAvatarChange(
+		userId: string,
+		newAvatarUrl: string,
+		avatarHash?: string,
+	): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			const now = new Date();
+
+			// Ensure user exists
+			await collections.users.updateOne(
+				{ discordId: userId },
+				{
+					$setOnInsert: {
+						discordId: userId,
+						avatarHistory: [],
+						statusHistory: [],
+						modPreferences: {
+							bannedUsers: [],
+							mutedUsers: [],
+							kickedUsers: [],
+							deafenedUsers: [],
+							renamedUsers: [],
+							lastUpdated: now,
+						},
+						createdAt: now,
+						updatedAt: now,
+					},
+				},
+				{ upsert: true },
+			);
+
+			// Check if this avatar already exists in history
+			const existingAvatar = await collections.users.findOne({
+				discordId: userId,
+				"avatarHistory.avatarUrl": newAvatarUrl,
+			});
+
+			if (existingAvatar) {
+				// Update lastSeen for existing avatar
+				await collections.users.updateOne(
+					{
+						discordId: userId,
+						"avatarHistory.avatarUrl": newAvatarUrl,
+					},
+					{
+						$set: {
+							"avatarHistory.$.lastSeen": now,
+							avatar: newAvatarUrl,
+							updatedAt: now,
+						},
+					},
+				);
+			} else {
+				// Download and store image data
+				let imageData: string | undefined;
+				let contentType: string | undefined;
+				let fileSize: number | undefined;
+
+				try {
+					const response = await fetch(newAvatarUrl);
+					if (response.ok) {
+						const buffer = await response.arrayBuffer();
+						imageData = Buffer.from(buffer).toString("base64");
+						contentType = response.headers.get("content-type") || undefined;
+						fileSize = buffer.byteLength;
+					}
+				} catch (error) {
+					console.warn(
+						`🔸 Failed to download avatar for user ${userId}:`,
+						error,
+					);
+				}
+
+				// Add new avatar to history
+				const newAvatarEntry: AvatarHistory = {
+					avatarUrl: newAvatarUrl,
+					avatarHash,
+					imageData,
+					contentType,
+					fileSize,
+					firstSeen: now,
+					lastSeen: now,
+				};
+
+				await collections.users.updateOne(
+					{ discordId: userId },
+					{
+						$push: { avatarHistory: newAvatarEntry },
+						$set: {
+							avatar: newAvatarUrl,
+							updatedAt: now,
+						},
+					},
+				);
+
+				if (imageData) {
+					console.log(`📸 Stored avatar for user ${userId}: ${fileSize} bytes`);
+				}
+			}
+		}, `trackAvatarChange(${userId})`);
+	}
+
+	/**
+	 * Track status changes for a user (text status only)
+	 */
+	async trackStatusChange(userId: string, newStatus: string): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			const now = new Date();
+
+			// Ensure user exists
+			await collections.users.updateOne(
+				{ discordId: userId },
+				{
+					$setOnInsert: {
+						discordId: userId,
+						avatarHistory: [],
+						statusHistory: [],
+						modPreferences: {
+							bannedUsers: [],
+							mutedUsers: [],
+							kickedUsers: [],
+							deafenedUsers: [],
+							renamedUsers: [],
+							lastUpdated: now,
+						},
+						createdAt: now,
+						updatedAt: now,
+					},
+				},
+				{ upsert: true },
+			);
+
+			// Check if this status already exists in history
+			const existingStatus = await collections.users.findOne({
+				discordId: userId,
+				"statusHistory.status": newStatus,
+			});
+
+			if (existingStatus) {
+				// Update lastSeen for existing status
+				await collections.users.updateOne(
+					{
+						discordId: userId,
+						"statusHistory.status": newStatus,
+					},
+					{
+						$set: {
+							"statusHistory.$.lastSeen": now,
+							status: newStatus,
+							updatedAt: now,
+						},
+					},
+				);
+			} else {
+				// Add new status to history
+				const newStatusEntry: UserStatus = {
+					status: newStatus,
+					firstSeen: now,
+					lastSeen: now,
+				};
+
+				await collections.users.updateOne(
+					{ discordId: userId },
+					{
+						$push: { statusHistory: newStatusEntry },
+						$set: {
+							status: newStatus,
+							updatedAt: now,
+						},
+					},
+				);
+			}
+		}, `trackStatusChange(${userId})`);
+	}
+
+	/**
+	 * Get avatar history for a user
+	 */
+	async getAvatarHistory(userId: string): Promise<AvatarHistory[]> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			const user = await collections.users.findOne({
+				discordId: userId,
+			});
+
+			return user?.avatarHistory || [];
+		}, `getAvatarHistory(${userId})`);
+	}
+
+	/**
+	 * Get status history for a user
+	 */
+	async getStatusHistory(userId: string): Promise<UserStatus[]> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			const user = await collections.users.findOne({
+				discordId: userId,
+			});
+
+			return user?.statusHistory || [];
+		}, `getStatusHistory(${userId})`);
+	}
+
+	/**
+	 * Get current status for a user
+	 */
+	async getCurrentStatus(userId: string): Promise<string | null> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			const user = await collections.users.findOne({
+				discordId: userId,
+			});
+
+			return user?.status || null;
+		}, `getCurrentStatus(${userId})`);
+	}
+
+	/**
+	 * Clean up old avatar and status history (keep only last 50 entries each)
+	 */
+	async cleanupUserHistory(
+		userId: string,
+	): Promise<{ avatarsRemoved: number; statusesRemoved: number }> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			const now = new Date();
+
+			// Get current user data
+			const user = await collections.users.findOne({
+				discordId: userId,
+			});
+
+			if (!user) {
+				return { avatarsRemoved: 0, statusesRemoved: 0 };
+			}
+
+			let avatarsRemoved = 0;
+			let statusesRemoved = 0;
+
+			// Clean up avatar history (keep last 50)
+			if (user.avatarHistory && user.avatarHistory.length > 50) {
+				const avatarsToKeep = user.avatarHistory
+					.sort((a, b) => b.lastSeen.getTime() - a.lastSeen.getTime())
+					.slice(0, 50);
+
+				const avatarsToRemove = user.avatarHistory.slice(50);
+
+				// Note: No need to delete local files since images are stored in DB
+
+				avatarsRemoved = user.avatarHistory.length - avatarsToKeep.length;
+
+				await collections.users.updateOne(
+					{ discordId: userId },
+					{
+						$set: {
+							avatarHistory: avatarsToKeep,
+							updatedAt: now,
+						},
+					},
+				);
+			}
+
+			// Clean up status history (keep last 50)
+			if (user.statusHistory && user.statusHistory.length > 50) {
+				const statusesToKeep = user.statusHistory
+					.sort((a, b) => b.lastSeen.getTime() - a.lastSeen.getTime())
+					.slice(0, 50);
+
+				statusesRemoved = user.statusHistory.length - statusesToKeep.length;
+
+				await collections.users.updateOne(
+					{ discordId: userId },
+					{
+						$set: {
+							statusHistory: statusesToKeep,
+							updatedAt: now,
+						},
+					},
+				);
+			}
+
+			return { avatarsRemoved, statusesRemoved };
+		}, `cleanupUserHistory(${userId})`);
+	}
+
+	/**
+	 * Get avatar image as base64 for embedding
+	 */
+	async getAvatarAsBase64(
+		userId: string,
+		avatarIndex = 0,
+	): Promise<string | null> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+			const user = await collections.users.findOne({
+				discordId: userId,
+			});
+
+			if (!user?.avatarHistory || user.avatarHistory.length === 0) {
+				return null;
+			}
+
+			const avatar = user.avatarHistory[avatarIndex];
+			if (!avatar?.imageData) {
+				return null;
+			}
+
+			return avatar.imageData;
+		}, `getAvatarAsBase64(${userId}, ${avatarIndex})`);
+	}
+
+	/**
+	 * Get storage statistics
+	 */
+	async getStorageStats(): Promise<{
+		totalImages: number;
+		totalSize: number;
+		averageSize: number;
+	}> {
+		return this.withPerformanceTracking(async () => {
+			const collections = this.getCollections();
+
+			// Count total avatars with local paths
+			const usersWithAvatars = await collections.users
+				.find({
+					"avatarHistory.imageData": { $exists: true },
+				})
+				.toArray();
+
+			let totalImages = 0;
+			let totalSize = 0;
+
+			for (const user of usersWithAvatars) {
+				for (const avatar of user.avatarHistory) {
+					if (avatar.imageData && avatar.fileSize) {
+						totalImages++;
+						totalSize += avatar.fileSize;
+					}
+				}
+			}
+
+			return {
+				totalImages,
+				totalSize,
+				averageSize: totalImages > 0 ? Math.round(totalSize / totalImages) : 0,
+			};
+		}, "getStorageStats()");
+	}
+
+	/**
+	 * Clean up orphaned image files (files not referenced in database)
+	 */
+	async cleanupOrphanedImages(): Promise<{
+		orphanedFiles: number;
+		freedSpace: number;
+	}> {
+		return this.withPerformanceTracking(async () => {
+			// Since images are stored in DB, no orphaned files to clean up
+			return { orphanedFiles: 0, freedSpace: 0 };
+		}, "cleanupOrphanedImages()");
+	}
+
 	// ==================== VOICE SESSION CLEANUP ====================
 
 	async cleanupStaleVoiceSessions(): Promise<{
@@ -621,7 +1217,10 @@ export class DatabaseCore {
 				.aggregate([
 					{
 						$match: {
-							$or: [{ leftAt: { $exists: false } }, { leftAt: null }],
+							$or: [
+								{ leftAt: { $exists: false } },
+								{ leftAt: { $type: "null" } },
+							],
 						},
 					},
 					{
@@ -668,7 +1267,7 @@ export class DatabaseCore {
 			const oldActiveSessions = await collections.voiceSessions
 				.find({
 					joinedAt: { $lt: sevenDaysAgo },
-					$or: [{ leftAt: { $exists: false } }, { leftAt: null }],
+					$or: [{ leftAt: { $exists: false } }, { leftAt: { $type: "null" } }],
 				})
 				.toArray();
 
@@ -719,7 +1318,6 @@ export class DatabaseCore {
 			collections.messages.drop().catch(() => {}),
 			collections.voiceSessions.drop().catch(() => {}),
 			collections.guildSyncs.drop().catch(() => {}),
-			collections.userInteractions.drop().catch(() => {}),
 		]);
 
 		// Recreate indexes

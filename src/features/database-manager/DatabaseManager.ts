@@ -1,14 +1,18 @@
 import type { Client, Guild } from "discord.js";
 import { config } from "../../config";
 import type {
+	AvatarHistory,
 	Message as DBMessage,
+	ModPreferences,
+	RenamedUser,
 	Role,
 	User,
-	UserInteraction,
+	UserStatus,
 	VoiceSession,
 } from "../../types/database";
 import { DatabaseCore } from "./DatabaseCore";
 import { GuildSyncEngine } from "./GuildSyncEngine";
+import { MigrationManager } from "./MigrationManager";
 import { RealtimeTracker } from "./RealtimeTracker";
 
 export class DatabaseManager {
@@ -16,6 +20,7 @@ export class DatabaseManager {
 	private core: DatabaseCore;
 	private tracker: RealtimeTracker;
 	private syncer: GuildSyncEngine;
+	private migrationManager: MigrationManager;
 	private watchInterval: NodeJS.Timeout | null = null;
 	private isWatching = false;
 
@@ -24,6 +29,7 @@ export class DatabaseManager {
 		this.core = new DatabaseCore();
 		this.tracker = new RealtimeTracker(this.core);
 		this.syncer = new GuildSyncEngine(this.core);
+		this.migrationManager = new MigrationManager();
 	}
 
 	// ==================== INITIALIZATION ====================
@@ -31,6 +37,26 @@ export class DatabaseManager {
 	async initialize(): Promise<void> {
 		// Initialize core database
 		await this.core.initialize();
+
+		// Initialize migration manager
+		await this.migrationManager.initialize();
+
+		// Check if migration is needed
+		const needsMigration = await this.migrationManager.isMigrationNeeded();
+		if (needsMigration) {
+			console.log("🔧 Database migration needed, running migration...");
+			const migrationResult =
+				await this.migrationManager.migrateUserPreferencesToUsers();
+			if (migrationResult.success) {
+				console.log(
+					`✅ Migration completed: ${migrationResult.migratedUsers} users, ${migrationResult.migratedPreferences} preferences`,
+				);
+				// Clean up old collections after successful migration
+				await this.migrationManager.cleanupOldCollections();
+			} else {
+				console.error("🔸 Migration failed:", migrationResult.errors);
+			}
+		}
 
 		// Set up real-time tracking
 		this.tracker.setupEventHandlers(this.client);
@@ -161,20 +187,6 @@ export class DatabaseManager {
 		return this.core.updateVoiceSession(userId, guildId, leftAt);
 	}
 
-	async recordInteraction(
-		interaction: Omit<UserInteraction, "_id" | "createdAt">,
-	) {
-		return this.core.recordInteraction(interaction);
-	}
-
-	async getUserInteractions(
-		fromUserId: string,
-		toUserId: string,
-		guildId: string,
-	) {
-		return this.core.getUserInteractions(fromUserId, toUserId, guildId);
-	}
-
 	async getActiveVoiceDurations(channelId: string, guildId: string) {
 		return this.core.getActiveVoiceDurations(channelId, guildId);
 	}
@@ -189,6 +201,141 @@ export class DatabaseManager {
 
 	async cleanupStaleVoiceSessions() {
 		return this.core.cleanupStaleVoiceSessions();
+	}
+
+	// ==================== MODERATION PREFERENCES METHODS ====================
+
+	async getModPreferences(userId: string) {
+		return this.core.getModPreferences(userId);
+	}
+
+	async updateModPreferences(
+		userId: string,
+		preferences: Partial<ModPreferences>,
+	) {
+		return this.core.updateModPreferences(userId, preferences);
+	}
+
+	async addUserToModerationList(
+		ownerId: string,
+		guildId: string,
+		listType: "bannedUsers" | "mutedUsers" | "kickedUsers" | "deafenedUsers",
+		targetUserId: string,
+	) {
+		return this.core.addUserToModerationList(
+			ownerId,
+			guildId,
+			listType,
+			targetUserId,
+		);
+	}
+
+	async removeUserFromModerationList(
+		ownerId: string,
+		guildId: string,
+		listType: "bannedUsers" | "mutedUsers" | "kickedUsers" | "deafenedUsers",
+		targetUserId: string,
+	) {
+		return this.core.removeUserFromModerationList(
+			ownerId,
+			guildId,
+			listType,
+			targetUserId,
+		);
+	}
+
+	async addRenamedUser(
+		ownerId: string,
+		guildId: string,
+		renamedUser: RenamedUser,
+	) {
+		return this.core.addRenamedUser(ownerId, guildId, renamedUser);
+	}
+
+	async removeRenamedUser(
+		ownerId: string,
+		guildId: string,
+		targetUserId: string,
+	) {
+		return this.core.removeRenamedUser(ownerId, guildId, targetUserId);
+	}
+
+	async isUserInModerationList(
+		ownerId: string,
+		guildId: string,
+		listType: "bannedUsers" | "mutedUsers" | "kickedUsers" | "deafenedUsers",
+		targetUserId: string,
+	) {
+		return this.core.isUserInModerationList(
+			ownerId,
+			guildId,
+			listType,
+			targetUserId,
+		);
+	}
+
+	async getUsersInModerationList(
+		ownerId: string,
+		guildId: string,
+		listType: "bannedUsers" | "mutedUsers" | "kickedUsers" | "deafenedUsers",
+	) {
+		return this.core.getUsersInModerationList(ownerId, guildId, listType);
+	}
+
+	// ==================== AVATAR AND STATUS TRACKING METHODS ====================
+
+	async trackAvatarChange(
+		userId: string,
+		newAvatarUrl: string,
+		avatarHash?: string,
+	) {
+		return this.core.trackAvatarChange(userId, newAvatarUrl, avatarHash);
+	}
+
+	async trackStatusChange(userId: string, newStatus: string) {
+		return this.core.trackStatusChange(userId, newStatus);
+	}
+
+	async getAvatarHistory(userId: string) {
+		return this.core.getAvatarHistory(userId);
+	}
+
+	async getStatusHistory(userId: string) {
+		return this.core.getStatusHistory(userId);
+	}
+
+	async getCurrentStatus(userId: string) {
+		return this.core.getCurrentStatus(userId);
+	}
+
+	async cleanupUserHistory(userId: string) {
+		return this.core.cleanupUserHistory(userId);
+	}
+
+	async getAvatarAsBase64(userId: string, avatarIndex = 0) {
+		return this.core.getAvatarAsBase64(userId, avatarIndex);
+	}
+
+	async getStorageStats() {
+		return this.core.getStorageStats();
+	}
+
+	async cleanupOrphanedImages() {
+		return this.core.cleanupOrphanedImages();
+	}
+
+	// ==================== MIGRATION METHODS ====================
+
+	async getMigrationStatus() {
+		return this.migrationManager.getMigrationStatus();
+	}
+
+	async runMigration() {
+		return this.migrationManager.migrateUserPreferencesToUsers();
+	}
+
+	async cleanupOldCollections() {
+		return this.migrationManager.cleanupOldCollections();
 	}
 
 	// Delegate to syncer for sync operations

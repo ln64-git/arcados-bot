@@ -2385,24 +2385,21 @@ export class VoiceManager implements IVoiceManager {
 			let mutedUsers: string[] = [];
 			let deafenedUsers: string[] = [];
 
-			if (owner) {
-				const preferences = await this.getUserPreferences(
-					owner.userId,
-					channel.guild.id,
-				);
-				if (preferences) {
-					bannedUsers = preferences.bannedUsers;
-					mutedUsers = preferences.mutedUsers;
-					deafenedUsers = preferences.deafenedUsers;
-				}
-			}
-
 			// Get inheritance order using centralized database method
 			const { DatabaseManager } = await import(
 				"../database-manager/DatabaseManager"
 			);
 			const dbManager = new DatabaseManager(this.client);
 			await dbManager.initialize();
+
+			if (owner) {
+				const modPreferences = await dbManager.getModPreferences(owner.userId);
+				if (modPreferences) {
+					bannedUsers = modPreferences.bannedUsers;
+					mutedUsers = modPreferences.mutedUsers;
+					deafenedUsers = modPreferences.deafenedUsers;
+				}
+			}
 
 			const durations = await dbManager.getActiveVoiceDurations(
 				channelId,
@@ -2424,7 +2421,7 @@ export class VoiceManager implements IVoiceManager {
 				.map((userId) => ({ userId, duration: durationMap.get(userId) ?? 0 }))
 				.sort((a, b) => b.duration - a.duration);
 
-			return {
+			const result = {
 				owner,
 				memberIds,
 				moderationInfo: {
@@ -2437,6 +2434,9 @@ export class VoiceManager implements IVoiceManager {
 				guildId: channel.guild.id,
 				channelName: channel.name,
 			};
+
+			await dbManager.cleanup();
+			return result;
 		} catch (error) {
 			console.error("🔸 Error getting channel state:", error);
 			throw error;
