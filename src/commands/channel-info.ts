@@ -12,20 +12,21 @@ export const channelInfoCommand: Command = {
 		.setDescription("Get detailed information about the current voice channel"),
 
 	async execute(interaction: ChatInputCommandInteraction) {
+		// Defer the interaction to prevent timeout
+		await interaction.deferReply({ ephemeral: true });
+
 		const member = interaction.member;
 		if (!isGuildMember(member)) {
-			await interaction.reply({
+			await interaction.editReply({
 				content: "🔸 This command can only be used in a server!",
-				ephemeral: true,
 			});
 			return;
 		}
 
 		const voiceChannel = member.voice.channel;
 		if (!voiceChannel || !voiceChannel.isVoiceBased()) {
-			await interaction.reply({
+			await interaction.editReply({
 				content: "🔸 You must be in a voice channel to get its information!",
-				ephemeral: true,
 			});
 			return;
 		}
@@ -34,9 +35,8 @@ export const channelInfoCommand: Command = {
 		const voiceManager = client.voiceManager;
 
 		if (!voiceManager) {
-			await interaction.reply({
+			await interaction.editReply({
 				content: "🔸 Voice manager not available!",
-				ephemeral: true,
 			});
 			return;
 		}
@@ -115,20 +115,18 @@ export const channelInfoCommand: Command = {
 				});
 			}
 
-			await interaction.reply({ embeds: [embed], ephemeral: true });
+			await interaction.editReply({ embeds: [embed], ephemeral: true });
 		} catch (error) {
 			console.error("🔸 Error getting channel info:", error);
-			await interaction.reply({
+			await interaction.editReply({
 				content:
 					"🔸 An error occurred while getting channel information. Please try again later.",
-				ephemeral: true,
 			});
 		}
 	},
 };
 
-function formatDuration(milliseconds: number): string {
-	const seconds = Math.floor(milliseconds / 1000);
+function formatDuration(seconds: number): string {
 	const minutes = Math.floor(seconds / 60);
 	const hours = Math.floor(minutes / 60);
 	const days = Math.floor(hours / 24);

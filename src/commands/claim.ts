@@ -30,6 +30,9 @@ export const claimCommand: Command = {
 		),
 
 	async execute(interaction: ChatInputCommandInteraction) {
+		// Defer the interaction to prevent timeout
+		await interaction.deferReply({ ephemeral: true });
+
 		const action = interaction.options.getString("action") || "claim";
 		const reason =
 			interaction.options.getString("reason") ||
@@ -39,18 +42,16 @@ export const claimCommand: Command = {
 
 		const member = interaction.member;
 		if (!isGuildMember(member)) {
-			await interaction.reply({
+			await interaction.editReply({
 				content: "🔸 This command can only be used in a server!",
-				ephemeral: true,
 			});
 			return;
 		}
 
 		const voiceChannel = member.voice.channel;
 		if (!voiceChannel) {
-			await interaction.reply({
+			await interaction.editReply({
 				content: "🔸 You must be in a voice channel to claim it!",
-				ephemeral: true,
 			});
 			return;
 		}
@@ -59,9 +60,8 @@ export const claimCommand: Command = {
 		const voiceManager = client.voiceManager;
 
 		if (!voiceManager) {
-			await interaction.reply({
+			await interaction.editReply({
 				content: "🔸 Voice manager not available!",
-				ephemeral: true,
 			});
 			return;
 		}
@@ -74,24 +74,19 @@ export const claimCommand: Command = {
 					voiceChannel.id,
 				);
 				if (!currentOwner) {
-					await interaction.reply({
+					await interaction.editReply({
 						content: "🔸 This channel doesn't have an owner to unclaim!",
-						ephemeral: true,
 					});
 					return;
 				}
 
 				// Check if the user is the current owner
 				if (currentOwner.userId !== member.id) {
-					await interaction.reply({
+					await interaction.editReply({
 						content: "🔸 Only the current owner can unclaim this channel!",
-						ephemeral: true,
 					});
 					return;
 				}
-
-				// Remove ownership
-				await voiceManager.removeChannelOwner(voiceChannel.id);
 
 				// Change channel name to indicate it's available (in background)
 				const availableName = "Available Channel";
@@ -135,6 +130,9 @@ export const claimCommand: Command = {
 					}
 				})();
 
+				// Remove ownership AFTER renaming to avoid ownership detection issues
+				await voiceManager.removeChannelOwner(voiceChannel.id);
+
 				const embed = new EmbedBuilder()
 					.setColor(0xffa500)
 					.setTitle("🔹 Channel Unclaimed Successfully")
@@ -160,7 +158,7 @@ export const claimCommand: Command = {
 					)
 					.setTimestamp();
 
-				await interaction.reply({ embeds: [embed] });
+				await interaction.editReply({ embeds: [embed] });
 				return;
 			}
 			// Check if channel already has an owner
@@ -186,7 +184,7 @@ export const claimCommand: Command = {
 						})
 						.setTimestamp();
 
-					await interaction.reply({ embeds: [embed], ephemeral: true });
+					await interaction.editReply({ embeds: [embed] });
 					return;
 				}
 
@@ -233,7 +231,7 @@ export const claimCommand: Command = {
 					.setTimestamp();
 
 				// Respond immediately to avoid timeout
-				await interaction.reply({ embeds: [embed] });
+				await interaction.editReply({ embeds: [embed] });
 
 				// Apply preferences in background (non-blocking)
 				console.log(
@@ -287,7 +285,7 @@ export const claimCommand: Command = {
 				.setTimestamp();
 
 			// Respond immediately to avoid timeout
-			await interaction.reply({ embeds: [embed] });
+			await interaction.editReply({ embeds: [embed] });
 
 			// Apply preferences in background (non-blocking)
 			console.log(
@@ -305,7 +303,7 @@ export const claimCommand: Command = {
 				});
 		} catch (error) {
 			console.error("Error claiming channel:", error);
-			await interaction.reply({
+			await interaction.editReply({
 				content:
 					"🔸 An error occurred while claiming the channel. Please try again later.",
 				ephemeral: true,

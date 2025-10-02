@@ -236,11 +236,18 @@ export class RealtimeTracker {
 
 			// User joined a voice channel (from no channel)
 			if (!oldState.channelId && newState.channelId) {
+				// Close any existing active sessions for this user (fixes multiple active sessions bug)
+				await this.closeAllActiveSessionsForUser(userId, guildId);
+
 				const session: Omit<VoiceSession, "_id" | "createdAt" | "updatedAt"> = {
 					userId,
 					guildId,
 					channelId: newState.channelId,
 					channelName: channel?.name || "Unknown Channel",
+					displayName:
+						newState.member?.displayName ||
+						newState.member?.user.username ||
+						"Unknown User",
 					joinedAt: new Date(),
 				};
 
@@ -278,6 +285,10 @@ export class RealtimeTracker {
 					guildId,
 					channelId: newState.channelId,
 					channelName: newState.channel?.name || "Unknown Channel",
+					displayName:
+						newState.member?.displayName ||
+						newState.member?.user.username ||
+						"Unknown User",
 					joinedAt,
 				};
 				await this.core.createVoiceSession(newSession);
@@ -389,6 +400,45 @@ export class RealtimeTracker {
 
 	private isAFKChannel(channel: { name?: string }): boolean {
 		return channel?.name?.toLowerCase().includes("afk") || false;
+	}
+
+	/**
+	 * Close all active voice sessions for a user
+	 * This fixes the bug where users can have multiple active sessions
+	 */
+	private async closeAllActiveSessionsForUser(
+		userId: string,
+		guildId: string,
+	): Promise<void> {
+		try {
+			// Get all active sessions for this user in this guild
+			const activeSessions = await this.core.getActiveVoiceSessionsByUser(
+				userId,
+				guildId,
+			);
+
+			if (activeSessions.length > 0) {
+				console.log(
+					`🔹 Closing ${activeSessions.length} active sessions for user ${userId}`,
+				);
+
+				// Close each active session
+				for (const session of activeSessions) {
+					const leftAt = new Date();
+					await this.core.updateVoiceSession(
+						userId,
+						guildId,
+						leftAt,
+						session.channelId,
+					);
+				}
+			}
+		} catch (error) {
+			console.error(
+				`🔸 Error closing active sessions for user ${userId}:`,
+				error,
+			);
+		}
 	}
 
 	private convertMessageToDB(

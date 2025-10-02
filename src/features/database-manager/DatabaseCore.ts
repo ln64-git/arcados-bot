@@ -351,6 +351,26 @@ export class DatabaseCore {
 		}
 	}
 
+	async getActiveVoiceSessionsByUser(
+		userId: string,
+		guildId: string,
+	): Promise<VoiceSession[]> {
+		try {
+			const collections = this.getCollections();
+			return await collections.voiceSessions
+				.find({
+					userId,
+					guildId,
+					$or: [{ leftAt: { $exists: false } }, { leftAt: { $type: "null" } }],
+				})
+				.sort({ joinedAt: -1 })
+				.toArray();
+		} catch (error) {
+			console.error("🔸 Error getting active voice sessions by user:", error);
+			return [];
+		}
+	}
+
 	async createVoiceSession(
 		session: Omit<VoiceSession, "_id" | "createdAt" | "updatedAt">,
 	): Promise<void> {

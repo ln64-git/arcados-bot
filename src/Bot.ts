@@ -9,10 +9,12 @@ import {
 } from "discord.js";
 import { config } from "./config";
 import { getRedisClient } from "./features/cache-management/RedisManager";
+import { DatabaseCore } from "./features/database-manager/DatabaseCore.js";
 import { DatabaseManager } from "./features/database-manager/DatabaseManager";
 import { memoryManager } from "./features/performance-monitoring/MemoryManager";
 import { speakVoiceCall } from "./features/speak-voice-call/speakVoiceCall";
 import { starboardManager } from "./features/starboard/StarboardManager";
+import { VCLogsWatcher } from "./features/vc-logs-watcher/VCLogsWatcher.js";
 import { voiceManager } from "./features/voice-manager/VoiceManager";
 import type { ClientWithVoiceManager, Command } from "./types";
 import { loadCommands } from "./utils/loadCommands";
@@ -21,6 +23,7 @@ export class Bot {
 	public client: Client;
 	public commands = new Collection<string, Command>();
 	private databaseManager: DatabaseManager;
+	private vcLogsWatcher: VCLogsWatcher | null = null;
 
 	constructor() {
 		this.client = new Client({
@@ -78,6 +81,21 @@ export class Bot {
 			);
 			(this.client as ClientWithVoiceManager).starboardManager =
 				starboardManager(this.client);
+
+			// Initialize VC Logs Watcher
+			try {
+				const dbCore = new DatabaseCore();
+				await dbCore.initialize();
+				this.vcLogsWatcher = new VCLogsWatcher(
+					this.client,
+					dbCore,
+					"1254696036988092437",
+				);
+				await this.vcLogsWatcher.startWatching();
+				console.log("✅ VC Logs Watcher initialized");
+			} catch (error) {
+				console.error("🔸 VC Logs Watcher initialization failed:", error);
+			}
 
 			// Check guild sync status after bot is ready
 		});

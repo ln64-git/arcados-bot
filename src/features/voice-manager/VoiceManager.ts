@@ -140,29 +140,37 @@ export class VoiceManager implements IVoiceManager {
 		try {
 			const orphanedChannels: VoiceChannel[] = [];
 
-			// Check all guilds
-			for (const guild of this.client.guilds.cache.values()) {
-				// Find all voice channels that match our naming pattern
-				const dynamicChannels = guild.channels.cache.filter(
-					(channel) =>
-						channel.type === ChannelType.GuildVoice &&
-						channel.name.includes("'s Room | #"),
-				) as Collection<string, VoiceChannel>;
+			// Get all channels tracked in our database
+			const db = await getDatabase();
+			const trackedChannels = await db
+				.collection("voiceChannelOwners")
+				.find({})
+				.toArray();
 
-				for (const channel of dynamicChannels.values()) {
-					// Check if channel is empty
-					if (channel.members.size === 0) {
-						// Check if channel has an owner in our database
-						const owner = await this.getChannelOwner(channel.id);
+			for (const trackedChannel of trackedChannels) {
+				const channel = this.client.channels.cache.get(
+					trackedChannel.channelId,
+				) as VoiceChannel;
 
-						if (owner) {
-							// Channel has an owner but is empty - this is an orphaned channel
-							orphanedChannels.push(channel);
-							console.log(
-								`🔸 Found orphaned channel: ${channel.name} (owner: ${owner.userId})`,
-							);
-						}
-					}
+				// Check if channel still exists in Discord
+				if (!channel) {
+					// Channel was deleted from Discord but still tracked in our DB
+					console.log(
+						`🔸 Found orphaned channel in DB: ${trackedChannel.channelId} (owner: ${trackedChannel.userId}) - channel no longer exists`,
+					);
+
+					// Clean up the database entry
+					await this.removeChannelOwner(trackedChannel.channelId);
+					continue;
+				}
+
+				// Check if channel is empty
+				if (channel.members.size === 0) {
+					// Channel exists but is empty - this is an orphaned channel
+					orphanedChannels.push(channel);
+					console.log(
+						`🔸 Found orphaned channel: ${channel.name} (owner: ${trackedChannel.userId})`,
+					);
 				}
 			}
 
@@ -189,6 +197,9 @@ export class VoiceManager implements IVoiceManager {
 					}
 				}
 			}
+
+			// Also clean up any stale database entries for channels that no longer exist
+			await this.cleanupStaleChannelEntries();
 		} catch (error) {
 			console.error("🔸 Error checking for orphaned channels:", error);
 		}
@@ -200,6 +211,43 @@ export class VoiceManager implements IVoiceManager {
 			this.orphanedChannelWatcher = null;
 		}
 		this.isWatchingOrphanedChannels = false;
+	}
+
+	private async cleanupStaleChannelEntries(): Promise<void> {
+		try {
+			const db = await getDatabase();
+			const trackedChannels = await db
+				.collection("voiceChannelOwners")
+				.find({})
+				.toArray();
+
+			let staleEntries = 0;
+
+			for (const trackedChannel of trackedChannels) {
+				const channel = this.client.channels.cache.get(
+					trackedChannel.channelId,
+				);
+
+				if (!channel) {
+					// Channel no longer exists in Discord, remove from database
+					await db.collection("voiceChannelOwners").deleteOne({
+						channelId: trackedChannel.channelId,
+					});
+					staleEntries++;
+					console.log(
+						`🧹 Cleaned up stale DB entry for channel: ${trackedChannel.channelId}`,
+					);
+				}
+			}
+
+			if (staleEntries > 0) {
+				console.log(
+					`✅ Cleaned up ${staleEntries} stale channel entries from database`,
+				);
+			}
+		} catch (error) {
+			console.error("🔸 Error cleaning up stale channel entries:", error);
+		}
 	}
 
 	private async handleVoiceStateUpdate(
@@ -217,6 +265,9 @@ export class VoiceManager implements IVoiceManager {
 					newState.member.id,
 				);
 			}
+
+			// Check for auto-assignment when user joins any voice channel
+			await this.checkAndAutoAssignOwnership(newState.channelId);
 		}
 		// User left a voice channel
 
@@ -238,6 +289,9 @@ export class VoiceManager implements IVoiceManager {
 					newState.member.id,
 				);
 			}
+
+			// Check for auto-assignment when user moves to a different channel
+			await this.checkAndAutoAssignOwnership(newState.channelId);
 		}
 	}
 
@@ -311,7 +365,11 @@ export class VoiceManager implements IVoiceManager {
 		}
 
 		const owner = await this.getChannelOwner(channel.id);
-		if (!owner || owner.userId !== oldState.member.id) return;
+		if (!owner || owner.userId !== oldState.member.id) {
+			// Check if this channel needs an owner (orphaned channel)
+			await this.handleOrphanedChannel(channel as VoiceChannel);
+			return;
+		}
 
 		await this.handleOwnerLeft(channel as VoiceChannel);
 	}
@@ -451,7 +509,8 @@ export class VoiceManager implements IVoiceManager {
 			denyBitfield: spawnChannelPermissions?.deny.bitfield?.toString(),
 		});
 
-		// Build permission overwrites array - Grant full channel management to the creator
+		// Build permission overwrites array - Grant CHANNEL-SPECIFIC permissions only
+		// NOTE: MoveMembers, MuteMembers, DeafenMembers, ManageRoles are SERVER-WIDE permissions and should NOT be granted to channel owners
 		let permissionOverwrites: Array<{
 			id: string;
 			allow?: bigint[];
@@ -460,17 +519,14 @@ export class VoiceManager implements IVoiceManager {
 			{
 				id: member.id,
 				allow: [
-					PermissionFlagsBits.ManageChannels, // Allows renaming, deleting, etc.
-					PermissionFlagsBits.MoveMembers, // Move users between channels
-					PermissionFlagsBits.MuteMembers, // Mute/unmute users
-					PermissionFlagsBits.DeafenMembers, // Deafen/undeafen users
-					PermissionFlagsBits.ManageRoles, // Manage channel-specific roles
-					PermissionFlagsBits.CreateInstantInvite, // Create invites
+					PermissionFlagsBits.ManageChannels, // Allows renaming, deleting, etc. (channel-specific)
+					PermissionFlagsBits.CreateInstantInvite, // Create invites for this channel
 					PermissionFlagsBits.Connect, // Connect to voice
 					PermissionFlagsBits.Speak, // Speak in voice
 					PermissionFlagsBits.UseVAD, // Use voice activity detection
 					PermissionFlagsBits.PrioritySpeaker, // Priority speaker
 					PermissionFlagsBits.Stream, // Stream video
+					// REMOVED: MoveMembers, MuteMembers, DeafenMembers, ManageRoles (these are server-wide permissions!)
 				],
 			},
 		];
@@ -563,22 +619,44 @@ export class VoiceManager implements IVoiceManager {
 			const newOwner = await this.findLongestStandingUser(channel, members);
 			if (!newOwner) return;
 
-			// Clear all permission overwrites except for the new owner
+			// Clear user-specific permission overwrites but preserve role-based permissions
+			// This fixes the issue where verified role permissions were being lost during ownership transfers
 			const permissionOverwrites = channel.permissionOverwrites.cache;
+			let deletedUserPermissions = 0;
+			let preservedRolePermissions = 0;
+
 			for (const [id, overwrite] of permissionOverwrites) {
-				if (id !== newOwner.id && id !== channel.guild.roles.everyone.id) {
+				// Skip new owner, @everyone role, and all other roles
+				if (
+					id !== newOwner.id &&
+					id !== channel.guild.roles.everyone.id &&
+					!channel.guild.roles.cache.has(id)
+				) {
+					// Only delete user-specific permissions, not role-based ones
 					await overwrite.delete(
-						"Ownership transfer - clearing old permissions",
+						"Ownership transfer - clearing old user permissions",
 					);
+					deletedUserPermissions++;
+				} else if (channel.guild.roles.cache.has(id)) {
+					preservedRolePermissions++;
 				}
 			}
 
-			// Set new owner permissions
+			console.log(
+				`🔹 Ownership transfer: Deleted ${deletedUserPermissions} user permissions, preserved ${preservedRolePermissions} role permissions`,
+			);
+
+			// Set new owner permissions - CHANNEL-SPECIFIC ONLY
+			// NOTE: Do NOT grant server-wide moderation permissions to channel owners
 			await channel.permissionOverwrites.create(newOwner.id, {
-				ManageChannels: true,
-				MoveMembers: true,
-				MuteMembers: true,
-				DeafenMembers: true,
+				ManageChannels: true, // Channel-specific: rename, delete channel
+				CreateInstantInvite: true, // Channel-specific: create invites
+				Connect: true, // Channel-specific: connect to voice
+				Speak: true, // Channel-specific: speak in voice
+				UseVAD: true, // Channel-specific: use voice activity detection
+				PrioritySpeaker: true, // Channel-specific: priority speaker
+				Stream: true, // Channel-specific: stream video
+				// REMOVED: MoveMembers, MuteMembers, DeafenMembers, ManageRoles (server-wide permissions!)
 			});
 
 			await this.setChannelOwner(channel.id, newOwner.id, channel.guild.id);
@@ -617,6 +695,261 @@ export class VoiceManager implements IVoiceManager {
 		}
 	}
 
+	/**
+	 * Handle channels that don't have owners (orphaned channels)
+	 * This assigns ownership to the longest-standing user and renames the channel
+	 */
+	private async handleOrphanedChannel(channel: VoiceChannel): Promise<void> {
+		try {
+			// Skip "Available Channel" - these should remain unowned
+			if (channel.name.toLowerCase().includes("available")) {
+				return;
+			}
+
+			// Skip if channel is empty
+			const members = channel.members.filter((member) => !member.user.bot);
+			if (members.size === 0) {
+				return;
+			}
+
+			// Check if current owner is actually in the channel
+			const currentOwner = await this.getChannelOwner(channel.id);
+			if (currentOwner) {
+				const ownerInChannel = members.has(currentOwner.userId);
+				if (ownerInChannel) {
+					// Owner is present, no need to reassign
+					return;
+				}
+				// Owner is not in channel - remove their ownership
+				console.log(
+					`🔸 Owner ${currentOwner.userId} is not in channel, removing ownership`,
+				);
+				await this.removeChannelOwner(channel.id);
+			}
+
+			// Find the longest standing user
+			const longestUser = await this.findLongestStandingUser(channel, members);
+			if (!longestUser) {
+				return;
+			}
+
+			console.log(
+				`🤖 Auto-assigning ownership of orphaned channel "${channel.name}" to ${longestUser.displayName || longestUser.user.username}`,
+			);
+
+			// Assign ownership to the longest-standing user
+			await this.setChannelOwner(channel.id, longestUser.id, channel.guild.id);
+
+			// Set owner permissions
+			await channel.permissionOverwrites.create(longestUser.id, {
+				ManageChannels: true,
+				CreateInstantInvite: true,
+				Connect: true,
+				Speak: true,
+				UseVAD: true,
+				PrioritySpeaker: true,
+				Stream: true,
+			});
+
+			// Apply user preferences to the channel
+			await this.applyUserPreferencesToChannel(channel.id, longestUser.id);
+
+			// Apply nicknames to all current members based on new owner's preferences
+			for (const [userId, member] of channel.members) {
+				if (!member.user.bot) {
+					await this.applyNicknamesToNewJoiner(channel.id, userId);
+				}
+			}
+
+			const embed = new EmbedBuilder()
+				.setTitle("🤖 Auto-Assigned Ownership")
+				.setDescription(
+					`**${longestUser.displayName || longestUser.user.username}** has been automatically assigned as the owner of this channel based on their total time spent here.`,
+				)
+				.setColor(0x51cf66)
+				.setTimestamp();
+
+			try {
+				await channel.send({ embeds: [embed] });
+			} catch (_error) {
+				// Continue without sending the message - ownership assignment still succeeded
+			}
+		} catch (error) {
+			console.error(`🔸 Error handling orphaned channel ${channel.id}:`, error);
+		}
+	}
+
+	/**
+	 * Universal ownership synchronization system
+	 * Handles all miscalibrations between different sources of truth
+	 */
+	private async universalOwnershipSync(channelId: string): Promise<void> {
+		try {
+			console.log(`🔍 Universal ownership sync for channel ${channelId}`);
+
+			// Get all sources of ownership information
+			const dbOwner = await this.getChannelOwner(channelId);
+			const channel = this.client.channels.cache.get(channelId) as VoiceChannel;
+
+			if (!channel || !channel.isVoiceBased()) {
+				return;
+			}
+
+			// Get current active members
+			const currentMembers = new Set<string>();
+			for (const [userId, member] of channel.members) {
+				if (!member.user.bot) {
+					currentMembers.add(userId);
+				}
+			}
+
+			// Get longest-standing user from voice sessions
+			const longestUser = await this.findLongestStandingUser(
+				channel,
+				channel.members,
+			);
+
+			let correctOwner: string | null = null;
+			let ownershipSource = "";
+
+			// Priority 1: Owner must be currently in the channel
+			if (dbOwner && currentMembers.has(dbOwner.userId)) {
+				correctOwner = dbOwner.userId;
+				ownershipSource = "Database (owner is active)";
+			} else if (dbOwner && !currentMembers.has(dbOwner.userId)) {
+				console.log(
+					`🔸 Database owner ${dbOwner.userId} is not in channel - invalidating`,
+				);
+				await this.removeChannelOwner(channelId);
+			}
+
+			// Priority 2: If no valid owner, assign to longest-standing user in channel
+			if (!correctOwner && longestUser && currentMembers.has(longestUser.id)) {
+				correctOwner = longestUser.id;
+				ownershipSource = "Longest-standing user (active)";
+			}
+
+			// Priority 3: If no one is active, assign to longest-standing user overall
+			if (!correctOwner && longestUser) {
+				correctOwner = longestUser.id;
+				ownershipSource = "Longest-standing user (inactive)";
+			}
+
+			// Apply correct ownership if different from current
+			if (correctOwner && (!dbOwner || dbOwner.userId !== correctOwner)) {
+				console.log(
+					`🤖 Universal sync: Assigning ownership to ${correctOwner} (${ownershipSource})`,
+				);
+
+				await this.setChannelOwner(channelId, correctOwner, channel.guild.id);
+
+				// Set owner permissions
+				const newOwnerMember = channel.members.get(correctOwner);
+				if (newOwnerMember) {
+					await channel.permissionOverwrites.create(correctOwner, {
+						ManageChannels: true,
+						CreateInstantInvite: true,
+						Connect: true,
+						Speak: true,
+						UseVAD: true,
+						PrioritySpeaker: true,
+						Stream: true,
+					});
+				}
+
+				// Apply user preferences
+				await this.applyUserPreferencesToChannel(channelId, correctOwner);
+
+				console.log(
+					`✅ Universal sync completed: ${correctOwner} is now owner`,
+				);
+			}
+		} catch (error) {
+			console.error(
+				`🔸 Error in universal ownership sync for ${channelId}:`,
+				error,
+			);
+		}
+	}
+	private async checkAndAutoAssignOwnership(channelId: string): Promise<void> {
+		try {
+			// Use universal sync instead of the old logic
+			await this.universalOwnershipSync(channelId);
+
+			// Find user with longest total duration in this channel
+			const longestUser = await this.findLongestStandingUser(
+				voiceChannel,
+				voiceChannel.members,
+			);
+			if (!longestUser) {
+				return; // Couldn't determine longest-standing user
+			}
+
+			console.log(
+				`🤖 Auto-assigning ownership of "${voiceChannel.name}" to ${longestUser.displayName || longestUser.user.username}`,
+			);
+
+			// Set ownership
+			await this.setChannelOwner(
+				channelId,
+				longestUser.id,
+				voiceChannel.guild.id,
+			);
+
+			// Set permissions for the new owner
+			await voiceChannel.permissionOverwrites.create(longestUser.id, {
+				ManageChannels: true,
+				CreateInstantInvite: true,
+				Connect: true,
+				Speak: true,
+				UseVAD: true,
+				PrioritySpeaker: true,
+				Stream: true,
+			});
+
+			// Apply new owner's preferences
+			await this.applyUserPreferencesToChannel(channelId, longestUser.id);
+
+			// Try to rename channel to owner's name if it's not already properly named
+			const ownerDisplayName =
+				longestUser.displayName || longestUser.user.username;
+			const expectedChannelName = `${ownerDisplayName}'s Channel`;
+
+			if (
+				!voiceChannel.name.includes(ownerDisplayName) &&
+				!voiceChannel.name.toLowerCase().includes("available")
+			) {
+				try {
+					await voiceChannel.setName(expectedChannelName);
+					console.log(`🔹 Renamed channel to "${expectedChannelName}"`);
+				} catch (error) {
+					console.log(`🔸 Could not rename channel: ${error}`);
+					// Continue without renaming - ownership assignment still succeeded
+				}
+			}
+
+			// Send notification
+			const embed = new EmbedBuilder()
+				.setTitle("🤖 Auto-Assigned Ownership")
+				.setDescription(
+					`**${ownerDisplayName}** has been automatically assigned as the owner of this channel based on their total time spent here.`,
+				)
+				.setColor(0x51cf66)
+				.setTimestamp();
+
+			try {
+				await voiceChannel.send({ embeds: [embed] });
+			} catch (_error) {
+				// Failed to send message, but ownership assignment still succeeded
+			}
+		} catch (error) {
+			console.error(
+				`🔸 Error in auto-assignment for channel ${channelId}:`,
+				error,
+			);
+		}
+	}
+
 	async deleteTemporaryChannel(channel: VoiceChannel): Promise<void> {
 		try {
 			await channel.delete();
@@ -648,16 +981,43 @@ export class VoiceManager implements IVoiceManager {
 		// User-specific preferences (mutes, blocks) will only affect incoming users
 		const channel = this.client.channels.cache.get(channelId);
 		if (channel?.isVoiceBased()) {
+			const voiceChannel = channel as VoiceChannel;
 			const preferences = await this.getUserPreferences(userId, guildId);
-			if (preferences) {
-				// Channel name - changes immediately for everyone to see
-				if (preferences.preferredChannelName) {
+
+			// Determine the channel name to use
+			let channelNameToUse: string | null = null;
+
+			if (preferences?.preferredChannelName) {
+				// Use user's preferred channel name
+				channelNameToUse = preferences.preferredChannelName;
+			} else {
+				// Auto-generate channel name based on owner's display name
+				const member = voiceChannel.guild.members.cache.get(userId);
+				if (member) {
+					const ownerDisplayName = member.displayName || member.user.username;
+					channelNameToUse = `${ownerDisplayName}'s Channel`;
+				}
+			}
+
+			// Rename the channel if we have a name and it's different from current
+			if (channelNameToUse && voiceChannel.name !== channelNameToUse) {
+				// Skip renaming if channel is named "Available" or similar
+				if (!voiceChannel.name.toLowerCase().includes("available")) {
 					try {
-						await channel.setName(preferences.preferredChannelName);
-					} catch (_error) {
-						// Insufficient permissions to change channel name
+						await voiceChannel.setName(channelNameToUse);
+						console.log(
+							`🔹 Renamed channel to "${channelNameToUse}" for owner ${userId}`,
+						);
+					} catch (error) {
+						console.log(
+							`🔸 Could not rename channel to "${channelNameToUse}": ${error}`,
+						);
+						// Continue without renaming - ownership assignment still succeeded
 					}
 				}
+			}
+
+			if (preferences) {
 				// User limit - applies immediately to channel capacity
 				if (preferences.preferredUserLimit) {
 					try {
@@ -793,41 +1153,53 @@ export class VoiceManager implements IVoiceManager {
 				preferredChannelName: preferences.preferredChannelName,
 				lastUpdated: preferences.lastUpdated,
 			});
-			try {
-				// Use REST API first with timeout
-				const restPromise = this.client.rest.patch(`/channels/${channel.id}`, {
-					body: { name: preferences.preferredChannelName },
-				});
-				const restTimeoutPromise = new Promise((_, reject) =>
-					setTimeout(
-						() => reject(new Error("REST API rename timeout")),
-						8000, // 8 second timeout for REST API
-					),
-				);
-				await Promise.race([restPromise, restTimeoutPromise]);
-				console.log("🔹 Channel name restored successfully");
-			} catch (error) {
-				console.log(
-					`🔸 Failed to restore channel name via REST API: ${error instanceof Error ? error.message : String(error)}`,
-				);
-				// Fallback to discord.js method with timeout
+
+			// Only rename if the current name is different
+			if (channel.name !== preferences.preferredChannelName) {
 				try {
-					const renamePromise = channel.setName(
-						preferences.preferredChannelName,
+					// Use REST API first with longer timeout
+					const restPromise = this.client.rest.patch(
+						`/channels/${channel.id}`,
+						{
+							body: { name: preferences.preferredChannelName },
+						},
 					);
-					const timeoutPromise = new Promise((_, reject) =>
+					const restTimeoutPromise = new Promise((_, reject) =>
 						setTimeout(
-							() => reject(new Error("Channel rename timeout")),
-							5000, // 5 second timeout for discord.js fallback
+							() => reject(new Error("REST API rename timeout")),
+							15000, // Increased to 15 second timeout
 						),
 					);
-					await Promise.race([renamePromise, timeoutPromise]);
-					console.log("🔹 Channel name restored via fallback");
-				} catch (fallbackError) {
+					await Promise.race([restPromise, restTimeoutPromise]);
+					console.log("🔹 Channel name restored successfully");
+				} catch (error) {
 					console.log(
-						`🔸 Failed to restore channel name: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
+						`🔸 Failed to restore channel name via REST API: ${error instanceof Error ? error.message : String(error)}`,
 					);
+					// Fallback to discord.js method with longer timeout
+					try {
+						const renamePromise = channel.setName(
+							preferences.preferredChannelName,
+						);
+						const timeoutPromise = new Promise((_, reject) =>
+							setTimeout(
+								() => reject(new Error("Channel rename timeout")),
+								10000, // Increased to 10 second timeout
+							),
+						);
+						await Promise.race([renamePromise, timeoutPromise]);
+						console.log("🔹 Channel name restored via fallback");
+					} catch (fallbackError) {
+						console.log(
+							`🔸 Failed to restore channel name: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
+						);
+						// Don't throw error, just log it - the claim should still succeed
+					}
 				}
+			} else {
+				console.log(
+					"🔹 Channel name already matches preferred name, skipping rename",
+				);
 			}
 		} else {
 			// Default to "{Display Name}'s Channel" if no preferred name is set
@@ -837,40 +1209,59 @@ export class VoiceManager implements IVoiceManager {
 				const defaultName = `${displayName}'s Channel`;
 				console.log(`🔹 Setting default channel name to: ${defaultName}`);
 
-				// Use REST API first with timeout
-				const restPromise = this.client.rest.patch(`/channels/${channel.id}`, {
-					body: { name: defaultName },
-				});
-				const restTimeoutPromise = new Promise((_, reject) =>
-					setTimeout(
-						() => reject(new Error("REST API rename timeout")),
-						8000, // 8 second timeout for REST API
-					),
-				);
-				await Promise.race([restPromise, restTimeoutPromise]);
-				console.log("🔹 Default channel name set successfully");
+				// Only rename if the current name is different
+				if (channel.name !== defaultName) {
+					// Use REST API first with longer timeout
+					const restPromise = this.client.rest.patch(
+						`/channels/${channel.id}`,
+						{
+							body: { name: defaultName },
+						},
+					);
+					const restTimeoutPromise = new Promise((_, reject) =>
+						setTimeout(
+							() => reject(new Error("REST API rename timeout")),
+							15000, // Increased to 15 second timeout
+						),
+					);
+					await Promise.race([restPromise, restTimeoutPromise]);
+					console.log("🔹 Default channel name set successfully");
+				} else {
+					console.log(
+						"🔹 Channel name already matches default name, skipping rename",
+					);
+				}
 			} catch (error) {
 				console.log(
 					`🔸 Failed to set default channel name via REST API: ${error instanceof Error ? error.message : String(error)}`,
 				);
-				// Fallback to discord.js method with timeout
+				// Fallback to discord.js method with longer timeout
 				try {
 					const member = await channel.guild.members.fetch(ownerId);
 					const displayName = member.displayName || member.user.username;
 					const defaultName = `${displayName}'s Channel`;
-					const renamePromise = channel.setName(defaultName);
-					const timeoutPromise = new Promise((_, reject) =>
-						setTimeout(
-							() => reject(new Error("Channel rename timeout")),
-							5000, // 5 second timeout for discord.js fallback
-						),
-					);
-					await Promise.race([renamePromise, timeoutPromise]);
-					console.log("🔹 Default channel name set via fallback");
+
+					// Only rename if the current name is different
+					if (channel.name !== defaultName) {
+						const renamePromise = channel.setName(defaultName);
+						const timeoutPromise = new Promise((_, reject) =>
+							setTimeout(
+								() => reject(new Error("Channel rename timeout")),
+								10000, // Increased to 10 second timeout
+							),
+						);
+						await Promise.race([renamePromise, timeoutPromise]);
+						console.log("🔹 Default channel name set via fallback");
+					} else {
+						console.log(
+							"🔹 Channel name already matches default name, skipping rename",
+						);
+					}
 				} catch (fallbackError) {
 					console.log(
 						`🔸 Failed to set default channel name: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
 					);
+					// Don't throw error, just log it - the claim should still succeed
 				}
 			}
 		}
@@ -934,24 +1325,27 @@ export class VoiceManager implements IVoiceManager {
 		userId: string,
 	): Promise<void> {
 		const callState = await this.getCallState(channelId);
-		if (!callState) {
+		if (!callState || !callState.currentOwner) {
+			// No call state or no current owner - skip preference application
 			return;
 		}
 
-		const preferences = await this.getUserPreferences(
-			callState.currentOwner,
-			"",
-		);
-		if (!preferences) {
-			return;
-		}
-
+		// Get the guild ID from the channel
 		const channel = await this.client.channels.fetch(channelId);
 		if (
 			!channel ||
 			!channel.isVoiceBased() ||
 			channel.type !== ChannelType.GuildVoice
 		) {
+			return;
+		}
+
+		const preferences = await this.getUserPreferences(
+			callState.currentOwner,
+			channel.guild.id,
+		);
+		if (!preferences) {
+			// No preferences found - this is normal for new users
 			return;
 		}
 
@@ -962,10 +1356,14 @@ export class VoiceManager implements IVoiceManager {
 
 		// Check if user should be banned
 		if (preferences.bannedUsers.includes(userId)) {
+			console.log(
+				`🔹 Applying owner preferences: Disconnecting banned user ${userId} from channel ${channelId}`,
+			);
 			try {
 				await member.voice.disconnect("Owner preferences: pre-banned");
 				return;
-			} catch (_error) {
+			} catch (error) {
+				console.warn(`🔸 Failed to disconnect banned user ${userId}: ${error}`);
 				// Failed to disconnect banned user - they may have left or bot lacks permissions
 			}
 		}
@@ -2396,7 +2794,7 @@ export class VoiceManager implements IVoiceManager {
 				}
 			}
 
-			// Get active voice durations directly
+			// Get current active voice durations only (not cumulative)
 			const durations = await voiceSessionsCollection
 				.aggregate([
 					{
@@ -2412,17 +2810,9 @@ export class VoiceManager implements IVoiceManager {
 					{
 						$group: {
 							_id: "$userId",
-							duration: {
+							currentDuration: {
 								$sum: {
-									$cond: [
-										{ $ne: ["$leftAt", null] },
-										{
-											$divide: [{ $subtract: ["$leftAt", "$joinedAt"] }, 1000],
-										},
-										{
-											$divide: [{ $subtract: [new Date(), "$joinedAt"] }, 1000],
-										},
-									],
+									$divide: [{ $subtract: [new Date(), "$joinedAt"] }, 1000],
 								},
 							},
 						},
@@ -2430,7 +2820,7 @@ export class VoiceManager implements IVoiceManager {
 					{
 						$project: {
 							userId: "$_id",
-							duration: { $floor: "$duration" },
+							duration: { $floor: "$currentDuration" },
 						},
 					},
 				])

@@ -129,6 +129,7 @@ export interface VoiceSession {
 	guildId: string;
 	channelId: string;
 	channelName: string;
+	displayName?: string; // User's display name when they joined
 	joinedAt: Date;
 	leftAt?: Date;
 	duration?: number; // in seconds
