@@ -1,5 +1,6 @@
 import type {
 	AvatarHistory,
+	Channel,
 	Message as DBMessage,
 	DatabaseTables,
 	GuildSync,
@@ -9,6 +10,7 @@ import type {
 	Role,
 	User,
 	UserStatus,
+	VoiceChannelSession,
 	VoiceInteraction,
 } from "../../types/database";
 import { memoryManager } from "../performance-monitoring/MemoryManager";
@@ -32,6 +34,8 @@ export class DatabaseCore {
 		guildSyncs: "guild_syncs",
 		relationships: "relationships",
 		interactionRecords: "interaction_records",
+		channels: "channels",
+		voiceChannelSessions: "voice_channel_sessions",
 	};
 
 	async initialize(): Promise<void> {
@@ -91,18 +95,19 @@ export class DatabaseCore {
 	): Promise<void> {
 		const query = `
 			INSERT INTO ${this.tables.users} (
-				discord_id, guild_id, bot, username, display_name, discriminator,
+				discord_id, guild_id, bot, username, display_name, nickname, discriminator,
 				avatar, status, roles, joined_at, last_seen, avatar_history,
-				username_history, display_name_history, status_history, emoji,
+				username_history, display_name_history, nickname_history, status_history, emoji,
 				title, summary, keywords, notes, relationships, mod_preferences, voice_interactions
 			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25
 			)
 			ON CONFLICT (discord_id, guild_id) 
 			DO UPDATE SET
 				bot = EXCLUDED.bot,
 				username = EXCLUDED.username,
 				display_name = EXCLUDED.display_name,
+				nickname = EXCLUDED.nickname,
 				discriminator = EXCLUDED.discriminator,
 				avatar = EXCLUDED.avatar,
 				status = EXCLUDED.status,
@@ -112,6 +117,7 @@ export class DatabaseCore {
 				avatar_history = EXCLUDED.avatar_history,
 				username_history = EXCLUDED.username_history,
 				display_name_history = EXCLUDED.display_name_history,
+				nickname_history = EXCLUDED.nickname_history,
 				status_history = EXCLUDED.status_history,
 				emoji = EXCLUDED.emoji,
 				title = EXCLUDED.title,
@@ -130,6 +136,7 @@ export class DatabaseCore {
 			user.bot,
 			user.username,
 			user.displayName,
+			user.nickname,
 			user.discriminator,
 			user.avatar,
 			user.status,
@@ -139,6 +146,7 @@ export class DatabaseCore {
 			JSON.stringify(user.avatarHistory),
 			user.usernameHistory,
 			user.displayNameHistory,
+			user.nicknameHistory,
 			JSON.stringify(user.statusHistory),
 			user.emoji,
 			user.title,
@@ -842,6 +850,283 @@ export class DatabaseCore {
 			`;
 			return await executeQuery<User>(query, [guildId, userIds]);
 		}, `getUsersInGuild(${guildId}, ${userIds.length} users)`);
+	}
+
+	// ==================== CHANNEL OPERATIONS ====================
+
+	async upsertChannel(
+		channel: Omit<Channel, "id" | "createdAt" | "updatedAt">,
+	): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				INSERT INTO ${this.tables.channels} (
+					discord_id, guild_id, channel_name, position, is_active, active_user_ids, member_count
+				) VALUES (
+					$1, $2, $3, $4, $5, $6, $7
+				)
+				ON CONFLICT (discord_id, guild_id)
+				DO UPDATE SET
+					channel_name = EXCLUDED.channel_name,
+					position = EXCLUDED.position,
+					is_active = EXCLUDED.is_active,
+					active_user_ids = EXCLUDED.active_user_ids,
+					member_count = EXCLUDED.member_count,
+					updated_at = CURRENT_TIMESTAMP
+			`;
+			await executeQuery(query, [
+				channel.discordId,
+				channel.guildId,
+				channel.channelName,
+				channel.position,
+				channel.isActive,
+				channel.activeUserIds,
+				channel.memberCount,
+			]);
+		}, `upsertChannel(${channel.discordId})`);
+	}
+
+	async getChannel(
+		discordId: string,
+		guildId: string,
+	): Promise<Channel | null> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				SELECT * FROM ${this.tables.channels}
+				WHERE discord_id = $1 AND guild_id = $2
+			`;
+			return await executeQueryOne<Channel>(query, [discordId, guildId]);
+		}, `getChannel(${discordId})`);
+	}
+
+	async getActiveChannels(guildId: string): Promise<Channel[]> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				SELECT * FROM ${this.tables.channels}
+				WHERE guild_id = $1 AND is_active = TRUE
+				ORDER BY member_count DESC, created_at ASC
+			`;
+			return await executeQuery<Channel>(query, [guildId]);
+		}, `getActiveChannels(${guildId})`);
+	}
+
+	async addChannelMember(
+		discordId: string,
+		guildId: string,
+		userId: string,
+	): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				UPDATE ${this.tables.channels}
+				SET 
+					active_user_ids = CASE 
+						WHEN $3 = ANY(active_user_ids) THEN active_user_ids
+						ELSE active_user_ids || $3
+					END,
+					member_count = CASE 
+						WHEN $3 = ANY(active_user_ids) THEN member_count
+						ELSE member_count + 1
+					END,
+					is_active = TRUE,
+					updated_at = CURRENT_TIMESTAMP
+				WHERE discord_id = $1 AND guild_id = $2
+			`;
+			await executeQuery(query, [discordId, guildId, userId]);
+		}, `addChannelMember(${discordId}, ${userId})`);
+	}
+
+	async removeChannelMember(
+		discordId: string,
+		guildId: string,
+		userId: string,
+	): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				UPDATE ${this.tables.channels}
+				SET 
+					active_user_ids = array_remove(active_user_ids, $3),
+					member_count = GREATEST(member_count - 1, 0),
+					is_active = CASE 
+						WHEN array_length(array_remove(active_user_ids, $3), 1) IS NULL THEN FALSE
+						ELSE TRUE
+					END,
+					updated_at = CURRENT_TIMESTAMP
+				WHERE discord_id = $1 AND guild_id = $2
+			`;
+			await executeQuery(query, [discordId, guildId, userId]);
+		}, `removeChannelMember(${discordId}, ${userId})`);
+	}
+
+	async setChannelInactive(discordId: string, guildId: string): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				UPDATE ${this.tables.channels}
+				SET 
+					is_active = FALSE,
+					active_user_ids = '{}',
+					member_count = 0,
+					updated_at = CURRENT_TIMESTAMP
+				WHERE discord_id = $1 AND guild_id = $2
+			`;
+			await executeQuery(query, [discordId, guildId]);
+		}, `setChannelInactive(${discordId})`);
+	}
+
+	async deleteChannel(discordId: string, guildId: string): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				DELETE FROM ${this.tables.channels}
+				WHERE discord_id = $1 AND guild_id = $2
+			`;
+			await executeQuery(query, [discordId, guildId]);
+		}, `deleteChannel(${discordId})`);
+	}
+
+	// ==================== VOICE CHANNEL SESSION OPERATIONS ====================
+
+	async createVoiceChannelSession(
+		session: Omit<VoiceChannelSession, "id" | "createdAt" | "updatedAt">,
+	): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				INSERT INTO ${this.tables.voiceChannelSessions} (
+					user_id, guild_id, channel_id, channel_name, joined_at, left_at, duration, is_active
+				) VALUES (
+					$1, $2, $3, $4, $5, $6, $7, $8
+				)
+			`;
+			await executeQuery(query, [
+				session.userId,
+				session.guildId,
+				session.channelId,
+				session.channelName,
+				session.joinedAt,
+				session.leftAt,
+				session.duration,
+				session.isActive,
+			]);
+		}, `createVoiceChannelSession(${session.userId})`);
+	}
+
+	async endVoiceChannelSession(
+		userId: string,
+		channelId: string,
+		leftAt: Date,
+	): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				UPDATE ${this.tables.voiceChannelSessions}
+				SET 
+					left_at = $3,
+					duration = EXTRACT(EPOCH FROM ($3 - joined_at))::INTEGER,
+					is_active = FALSE,
+					updated_at = CURRENT_TIMESTAMP
+				WHERE user_id = $1 AND channel_id = $2 AND is_active = TRUE
+			`;
+			await executeQuery(query, [userId, channelId, leftAt]);
+		}, `endVoiceChannelSession(${userId})`);
+	}
+
+	async getActiveVoiceChannelSessions(
+		channelId: string,
+	): Promise<VoiceChannelSession[]> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				SELECT * FROM ${this.tables.voiceChannelSessions}
+				WHERE channel_id = $1 AND is_active = TRUE
+				ORDER BY joined_at ASC
+			`;
+			return await executeQuery<VoiceChannelSession>(query, [channelId]);
+		}, `getActiveVoiceChannelSessions(${channelId})`);
+	}
+
+	async getUserVoiceChannelSessions(
+		userId: string,
+		guildId: string,
+		limit = 50,
+	): Promise<VoiceChannelSession[]> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				SELECT * FROM ${this.tables.voiceChannelSessions}
+				WHERE user_id = $1 AND guild_id = $2
+				ORDER BY joined_at DESC
+				LIMIT $3
+			`;
+			return await executeQuery<VoiceChannelSession>(query, [
+				userId,
+				guildId,
+				limit,
+			]);
+		}, `getUserVoiceChannelSessions(${userId})`);
+	}
+
+	async getChannelVoiceChannelSessions(
+		channelId: string,
+		limit = 100,
+	): Promise<VoiceChannelSession[]> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				SELECT * FROM ${this.tables.voiceChannelSessions}
+				WHERE channel_id = $1
+				ORDER BY joined_at DESC
+				LIMIT $2
+			`;
+			return await executeQuery<VoiceChannelSession>(query, [channelId, limit]);
+		}, `getChannelVoiceChannelSessions(${channelId})`);
+	}
+
+	async getCurrentVoiceChannelSession(
+		userId: string,
+	): Promise<VoiceChannelSession | null> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				SELECT * FROM ${this.tables.voiceChannelSessions}
+				WHERE user_id = $1 AND is_active = TRUE
+				ORDER BY joined_at DESC
+				LIMIT 1
+			`;
+			return await executeQueryOne<VoiceChannelSession>(query, [userId]);
+		}, `getCurrentVoiceChannelSession(${userId})`);
+	}
+
+	// ==================== DATA SYNCHRONIZATION ====================
+
+	async syncChannelActiveUsers(channelId: string): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			// Get all active sessions for this channel
+			const activeSessions =
+				await this.getActiveVoiceChannelSessions(channelId);
+			const activeUserIds = activeSessions.map((session) => session.userId);
+
+			// Update the channel's active_user_ids and member_count
+			const query = `
+				UPDATE ${this.tables.channels}
+				SET 
+					active_user_ids = $2,
+					member_count = $3,
+					updated_at = CURRENT_TIMESTAMP
+				WHERE discord_id = $1
+			`;
+			await executeQuery(query, [
+				channelId,
+				activeUserIds,
+				activeUserIds.length,
+			]);
+		}, `syncChannelActiveUsers(${channelId})`);
+	}
+
+	async syncAllChannelsActiveUsers(): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			// Get all active channels
+			const channels = await executeQuery<Channel>(`
+				SELECT discord_id FROM ${this.tables.channels} 
+				WHERE is_active = TRUE
+			`);
+
+			// Sync each channel
+			for (const channel of channels) {
+				await this.syncChannelActiveUsers(channel.discordId);
+			}
+		}, `syncAllChannelsActiveUsers()`);
 	}
 
 	// ==================== MAINTENANCE ====================

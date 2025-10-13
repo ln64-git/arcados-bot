@@ -558,6 +558,56 @@ export class DatabaseManager {
 
 	// ==================== CLEANUP ====================
 
+	async cleanupActiveSessions(): Promise<void> {
+		try {
+			console.log("🔧 Cleaning up active voice sessions...");
+
+			// Get all active voice channel sessions
+			const activeSessions = await this.postgresCore.query(`
+				SELECT * FROM voice_channel_sessions 
+				WHERE is_active = TRUE
+			`);
+
+			let cleanedCount = 0;
+
+			for (const session of activeSessions) {
+				// Check if the user is actually in the voice channel
+				const channel = this.client.channels.cache.get(session.channel_id);
+
+				if (!channel || !channel.isVoiceBased()) {
+					// Channel doesn't exist or isn't a voice channel, mark session as ended
+					await this.postgresCore.endVoiceChannelSession(
+						session.user_id,
+						session.channel_id,
+						new Date(),
+					);
+					cleanedCount++;
+					continue;
+				}
+
+				// Check if user is actually in the channel
+				const member = channel.members.get(session.user_id);
+				if (!member) {
+					// User is not in the channel, mark session as ended
+					await this.postgresCore.endVoiceChannelSession(
+						session.user_id,
+						session.channel_id,
+						new Date(),
+					);
+					cleanedCount++;
+				}
+			}
+
+			if (cleanedCount > 0) {
+				console.log(`🔧 Cleaned up ${cleanedCount} stale voice sessions`);
+			} else {
+				console.log("🔧 No stale voice sessions found");
+			}
+		} catch (error) {
+			console.error("🔸 Failed to cleanup active sessions:", error);
+		}
+	}
+
 	async cleanup(): Promise<void> {
 		// Stop autonomous watching
 		if (this.watchInterval) {

@@ -15,7 +15,7 @@ import {
 	type VoiceChannel,
 	type VoiceState,
 } from "discord.js";
-import { config } from "../../config";
+import { config, isDevelopment } from "../../config";
 import type {
 	CallState,
 	CoupSession,
@@ -36,6 +36,7 @@ import { getEventQueue } from "../event-system/EventQueue";
 export class VoiceManager implements IVoiceManager {
 	private client: Client;
 	private cache = getCacheManager();
+	private readonly debugEnabled = isDevelopment;
 	private channelCreationQueue: Array<{
 		member: GuildMember;
 		config: VoiceChannelConfig;
@@ -51,6 +52,13 @@ export class VoiceManager implements IVoiceManager {
 	private activeVoiceSessions: Map<string, VoiceInteraction> = new Map();
 	private eventQueue = getEventQueue();
 
+	// Channels that should be tracked but not modified by the voice manager
+	private readonly readOnlyChannels = new Set([
+		"1287323426465513512",
+		"1427152903260344350",
+		"1423746690342588516",
+	]);
+
 	constructor(client: Client) {
 		this.client = client;
 		this.dbCore = new DatabaseCore();
@@ -63,6 +71,13 @@ export class VoiceManager implements IVoiceManager {
 		await this.clearCorruptedCacheEntries();
 		await this.forceClearKnownCorruptedEntries();
 		await this.checkAndSyncDatabase();
+	}
+
+	/**
+	 * Check if a channel should be treated as read-only (tracked but not modified)
+	 */
+	private isReadOnlyChannel(channelId: string): boolean {
+		return this.readOnlyChannels.has(channelId);
 	}
 
 	/**
@@ -854,9 +869,7 @@ export class VoiceManager implements IVoiceManager {
 	}
 
 	private async checkForOrphanedChannels(): Promise<void> {
-		// TODO: Update to work with Redis-only ownership tracking
-		// For now, this method is disabled as we don't have a way to list all Redis keys
-		// In a production environment, you might want to maintain a separate Redis set of active channels
+		// Currently a no-op until we maintain a Redis set of active channels.
 		return;
 	}
 
@@ -869,11 +882,11 @@ export class VoiceManager implements IVoiceManager {
 	}
 
 	private async cleanupStaleChannelEntries(): Promise<void> {
-		// TODO: Update to work with Redis-only ownership tracking
-		// This method is disabled as we're using Redis-only ownership tracking
-		console.log(
-			"🔹 Stale channel entries cleanup disabled - using Redis-only ownership tracking",
-		);
+		// No-op with Redis-only ownership tracking.
+		if (this.debugEnabled)
+			console.log(
+				"🔹 Stale channel entries cleanup disabled - using Redis-only ownership tracking",
+			);
 		return;
 	}
 
@@ -881,8 +894,19 @@ export class VoiceManager implements IVoiceManager {
 		oldState: VoiceState,
 		newState: VoiceState,
 	) {
+		if (this.debugEnabled) {
+			console.log("🔍 Voice state update detected:");
+			console.log(
+				`   User: ${oldState.member?.user.username || newState.member?.user.username}`,
+			);
+			console.log(`   Old channel: ${oldState.channelId || "none"}`);
+			console.log(`   New channel: ${newState.channelId || "none"}`);
+		}
+
 		// User joined a voice channel
 		if (!oldState.channelId && newState.channelId) {
+			if (this.debugEnabled)
+				console.log(`   → User joined channel ${newState.channelId}`);
 			await this.handleUserJoined(newState);
 
 			// Apply preferences to new joiner
@@ -899,6 +923,8 @@ export class VoiceManager implements IVoiceManager {
 		// User left a voice channel
 
 		if (oldState.channelId && !newState.channelId) {
+			if (this.debugEnabled)
+				console.log(`   → User left channel ${oldState.channelId}`);
 			await this.handleUserLeft(oldState);
 		}
 		// User moved between channels
@@ -907,6 +933,10 @@ export class VoiceManager implements IVoiceManager {
 			newState.channelId &&
 			oldState.channelId !== newState.channelId
 		) {
+			if (this.debugEnabled)
+				console.log(
+					`   → User moved from ${oldState.channelId} to ${newState.channelId}`,
+				);
 			await this.handleUserMoved(oldState, newState);
 
 			// Apply preferences to new joiner if they moved to a different channel
@@ -955,6 +985,37 @@ export class VoiceManager implements IVoiceManager {
 				newState.member.id,
 				new Date(),
 			);
+
+			// Track channel in database (all channels are tracked, including read-only ones)
+			// First upsert the channel to ensure it exists
+			await this.dbCore.upsertChannel({
+				discordId: channel.id,
+				guildId: channel.guild.id,
+				channelName: channel.name,
+				position: channel.position,
+				isActive: true,
+				activeUserIds: [], // Will be populated by addChannelMember
+				memberCount: 0, // Will be updated by addChannelMember
+			});
+
+			// Then add the member to the channel
+			await this.dbCore.addChannelMember(
+				channel.id,
+				channel.guild.id,
+				newState.member.id,
+			);
+
+			// Create voice channel session record
+			await this.dbCore.createVoiceChannelSession({
+				userId: newState.member.id,
+				guildId: channel.guild.id,
+				channelId: channel.id,
+				channelName: channel.name,
+				joinedAt: new Date(),
+				leftAt: undefined,
+				duration: undefined,
+				isActive: true,
+			});
 		} catch (error) {
 			console.warn(`🔸 Failed to track voice interaction: ${error}`);
 		}
@@ -1009,6 +1070,10 @@ export class VoiceManager implements IVoiceManager {
 		const channel = oldState.channel;
 		if (!channel || !oldState.member) return;
 
+		console.log(
+			`🔍 handleUserLeft called for user ${oldState.member.user.username} leaving channel ${channel.id}`,
+		);
+
 		// Update voice interaction in database
 		try {
 			const activeSession = await this.cache.getActiveVoiceSession(
@@ -1031,6 +1096,20 @@ export class VoiceManager implements IVoiceManager {
 				// Remove from Redis caches
 				await this.cache.removeActiveVoiceSession(oldState.member.id);
 				await this.cache.removeChannelMember(channel.id, oldState.member.id);
+
+				// Remove from channel tracking in database (all channels are tracked)
+				await this.dbCore.removeChannelMember(
+					channel.id,
+					channel.guild.id,
+					oldState.member.id,
+				);
+
+				// End voice channel session
+				await this.dbCore.endVoiceChannelSession(
+					oldState.member.id,
+					channel.id,
+					leftAt,
+				);
 			}
 		} catch (error) {
 			console.warn(`🔸 Failed to update voice interaction: ${error}`);
@@ -1077,10 +1156,22 @@ export class VoiceManager implements IVoiceManager {
 		const oldVoiceChannel = oldChannel as VoiceChannel;
 		const newVoiceChannel = newChannel as VoiceChannel;
 
+		// Skip ALL processing for read-only channels
+		if (this.isReadOnlyChannel(newVoiceChannel.id)) {
+			console.log(
+				`🔸 Channel ${newVoiceChannel.name} (${newVoiceChannel.id}) is read-only, skipping ALL processing`,
+			);
+			return;
+		}
+
 		// Only log if the name actually changed
 		if (oldVoiceChannel.name !== newVoiceChannel.name) {
 			console.log(
 				`🔍 Channel renamed: "${oldVoiceChannel.name}" → "${newVoiceChannel.name}"`,
+			);
+			console.log(`🔍 Channel ID: ${newVoiceChannel.id}`);
+			console.log(
+				`🔍 Is read-only: ${this.isReadOnlyChannel(newVoiceChannel.id)}`,
 			);
 		}
 
@@ -1101,6 +1192,23 @@ export class VoiceManager implements IVoiceManager {
 		// Check if the channel name changed
 		if (oldVoiceChannel.name === newVoiceChannel.name) {
 			return;
+		}
+
+		// Update channel name in database (all channels are tracked)
+		try {
+			await this.dbCore.upsertChannel({
+				discordId: newVoiceChannel.id,
+				guildId: newVoiceChannel.guild.id,
+				channelName: newVoiceChannel.name,
+				position: newVoiceChannel.position,
+				isActive: true,
+				activeUserIds: Array.from(newVoiceChannel.members.keys()).filter(
+					(id) => !newVoiceChannel.members.get(id)?.user.bot,
+				),
+				memberCount: newVoiceChannel.members.filter((m) => !m.user.bot).size,
+			});
+		} catch (error) {
+			console.warn(`🔸 Failed to update channel name in database: ${error}`);
 		}
 
 		// Update the user's preferred channel name in the database using the new system
@@ -1126,12 +1234,14 @@ export class VoiceManager implements IVoiceManager {
 							discordId: owner.userId,
 							username: member.user.username,
 							displayName: member.displayName,
+							nickname: member.nickname || undefined,
 							discriminator: member.user.discriminator,
 							avatar: member.user.displayAvatarURL(),
 							avatarHistory: [],
 							bot: member.user.bot,
 							usernameHistory: [],
 							displayNameHistory: [],
+							nicknameHistory: [],
 							roles: member.roles.cache.map((role) => role.id),
 							joinedAt: member.joinedAt || new Date(),
 							lastSeen: new Date(),
@@ -1309,6 +1419,21 @@ export class VoiceManager implements IVoiceManager {
 		await member.voice.setChannel(channel as VoiceChannel);
 		await this.setChannelOwner(channel.id, member.id, member.guild.id);
 
+		// Track channel in database (newly created channels are not excluded)
+		try {
+			await this.dbCore.upsertChannel({
+				discordId: channel.id,
+				guildId: channel.guild.id,
+				channelName: channel.name,
+				position: channel.position,
+				isActive: true,
+				activeUserIds: [member.id],
+				memberCount: 1,
+			});
+		} catch (error) {
+			console.warn(`🔸 Failed to track new channel in database: ${error}`);
+		}
+
 		// Wait a moment for Discord to fully process the channel creation
 		await new Promise((resolve) => setTimeout(resolve, 1000));
 
@@ -1349,6 +1474,14 @@ export class VoiceManager implements IVoiceManager {
 	}
 
 	private async handleOwnerLeft(channel: VoiceChannel) {
+		// Skip read-only channels
+		if (this.isReadOnlyChannel(channel.id)) {
+			console.log(
+				`🔸 Channel ${channel.name} (${channel.id}) is read-only, skipping owner left handling`,
+			);
+			return;
+		}
+
 		const members = channel.members.filter((member) => !member.user.bot);
 
 		if (members.size === 0) {
@@ -1441,6 +1574,14 @@ export class VoiceManager implements IVoiceManager {
 	 */
 	private async handleOrphanedChannel(channel: VoiceChannel): Promise<void> {
 		try {
+			// Skip read-only channels
+			if (this.isReadOnlyChannel(channel.id)) {
+				console.log(
+					`🔸 Channel ${channel.name} (${channel.id}) is read-only, skipping orphaned channel handling`,
+				);
+				return;
+			}
+
 			// Skip "Available Channel" - these should remain unowned
 			if (channel.name.toLowerCase().includes("available")) {
 				return;
@@ -1523,6 +1664,14 @@ export class VoiceManager implements IVoiceManager {
 	 */
 	private async universalOwnershipSync(channelId: string): Promise<void> {
 		try {
+			// Skip read-only channels
+			if (this.isReadOnlyChannel(channelId)) {
+				console.log(
+					`🔸 Channel ${channelId} is read-only, skipping universal ownership sync`,
+				);
+				return;
+			}
+
 			// Get all sources of ownership information
 			const dbOwner = await this.getChannelOwner(channelId);
 			const channel = this.client.channels.cache.get(channelId) as VoiceChannel;
@@ -1601,6 +1750,14 @@ export class VoiceManager implements IVoiceManager {
 	}
 	private async checkAndAutoAssignOwnership(channelId: string): Promise<void> {
 		try {
+			// Skip read-only channels
+			if (this.isReadOnlyChannel(channelId)) {
+				console.log(
+					`🔸 Channel ${channelId} is read-only, skipping auto-assign ownership`,
+				);
+				return;
+			}
+
 			// Get the channel from the guild
 			const channel = this.client.channels.cache.get(channelId) as VoiceChannel;
 			if (!channel) {
@@ -1681,6 +1838,13 @@ export class VoiceManager implements IVoiceManager {
 
 	async deleteTemporaryChannel(channel: VoiceChannel): Promise<void> {
 		try {
+			// Remove channel from database tracking (all channels are tracked)
+			try {
+				await this.dbCore.deleteChannel(channel.id, channel.guild.id);
+			} catch (error) {
+				console.warn(`🔸 Failed to remove channel from database: ${error}`);
+			}
+
 			await channel.delete();
 		} catch (_error) {
 			// Channel may have been manually deleted
@@ -1692,6 +1856,14 @@ export class VoiceManager implements IVoiceManager {
 		userId: string,
 		guildId: string,
 	): Promise<void> {
+		// Skip ownership changes for read-only channels
+		if (this.isReadOnlyChannel(channelId)) {
+			console.log(
+				`🔸 Channel ${channelId} is read-only, skipping ownership assignment`,
+			);
+			return;
+		}
+
 		// Get current owner to track as previous owner
 		const currentOwner = await this.getChannelOwner(channelId);
 
@@ -1847,6 +2019,14 @@ export class VoiceManager implements IVoiceManager {
 		channelId: string,
 		ownerId: string,
 	): Promise<void> {
+		// Skip preference application for read-only channels
+		if (this.isReadOnlyChannel(channelId)) {
+			console.log(
+				`🔸 Channel ${channelId} is read-only, skipping preference application`,
+			);
+			return;
+		}
+
 		let channel: VoiceChannel | null = null;
 		try {
 			const fetchedChannel = await this.client.channels.fetch(channelId);
@@ -3256,6 +3436,11 @@ export class VoiceManager implements IVoiceManager {
 		channelId: string,
 		userId: string,
 	): Promise<void> {
+		// Skip nickname application for read-only channels
+		if (this.isReadOnlyChannel(channelId)) {
+			return;
+		}
+
 		try {
 			const channel = this.client.channels.cache.get(channelId) as VoiceChannel;
 			if (!channel) return;
@@ -3320,7 +3505,6 @@ export class VoiceManager implements IVoiceManager {
 
 	/**
 	 * Manually trigger orphaned channel cleanup
-	 * @returns Promise<{ cleaned: number; errors: string[] }>
 	 */
 	async cleanupOrphanedChannels(): Promise<{
 		cleaned: number;
@@ -3330,7 +3514,8 @@ export class VoiceManager implements IVoiceManager {
 		let cleaned = 0;
 
 		try {
-			console.log("🔧 Manual orphaned channel cleanup triggered");
+			if (this.debugEnabled)
+				console.log("🔧 Manual orphaned channel cleanup triggered");
 
 			const orphanedChannels: VoiceChannel[] = [];
 
@@ -3375,9 +3560,10 @@ export class VoiceManager implements IVoiceManager {
 				}
 			}
 
-			console.log(
-				`🔧 Manual cleanup completed: ${cleaned} channels cleaned, ${errors.length} errors`,
-			);
+			if (this.debugEnabled)
+				console.log(
+					`🔧 Manual cleanup completed: ${cleaned} channels cleaned, ${errors.length} errors`,
+				);
 		} catch (error) {
 			const errorMsg = `Manual orphaned channel cleanup failed: ${error}`;
 			errors.push(errorMsg);
@@ -3640,12 +3826,14 @@ export class VoiceManager implements IVoiceManager {
 				discordId: newMember.id,
 				username: newMember.user.username,
 				displayName: newMember.displayName,
+				nickname: newMember.nickname || undefined,
 				discriminator: newMember.user.discriminator,
 				avatar: newAvatarUrl,
 				avatarHistory: [],
 				bot: newMember.user.bot,
 				usernameHistory: [],
 				displayNameHistory: [],
+				nicknameHistory: [],
 				roles: newMember.roles.cache.map((role) => role.id),
 				joinedAt: newMember.joinedAt || now,
 				lastSeen: now,
@@ -3856,7 +4044,7 @@ export class VoiceManager implements IVoiceManager {
 	async cleanup(): Promise<void> {
 		this.stopOrphanedChannelWatcher();
 		await this.cleanupActiveSessions();
-		console.log("🔹 VoiceManager cleanup completed");
+		if (this.debugEnabled) console.log("🔹 VoiceManager cleanup completed");
 	}
 
 	async getChannelState(channelId: string): Promise<{
@@ -3886,8 +4074,7 @@ export class VoiceManager implements IVoiceManager {
 				(id) => !channel.members.get(id)?.user.bot,
 			);
 
-			// TODO: Implement PostgreSQL version of this method
-			// For now, return basic state without inheritance order
+			// PostgreSQL implementation pending; return basic state without inheritance order
 			return {
 				owner,
 				memberIds,
@@ -3896,7 +4083,7 @@ export class VoiceManager implements IVoiceManager {
 					mutedUsers: [],
 					deafenedUsers: [],
 				},
-				inheritanceOrder: [], // TODO: Implement using PostgreSQL
+				inheritanceOrder: [],
 				createdAt: channel.createdAt,
 				guildId: channel.guild.id,
 				channelName: channel.name,

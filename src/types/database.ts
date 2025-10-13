@@ -7,6 +7,7 @@ export interface User {
 	discordId: string;
 	username: string;
 	displayName: string;
+	nickname?: string; // Server-specific nickname (null if no nickname set)
 	discriminator: string;
 	avatar?: string; // Current avatar
 	status?: string; // Current text status
@@ -16,6 +17,7 @@ export interface User {
 	avatarHistory: AvatarHistory[]; // Previous avatars
 	usernameHistory: string[]; // Track username changes
 	displayNameHistory: string[]; // Track display name changes
+	nicknameHistory: string[]; // Track nickname changes
 	statusHistory: UserStatus[]; // Track text status changes
 
 	// metadata
@@ -215,6 +217,35 @@ export interface GuildSync {
 	updatedAt: Date;
 }
 
+// Channel tracking
+export interface Channel {
+	id?: number;
+	discordId: string;
+	guildId: string;
+	channelName: string;
+	position: number; // Channel position in the guild's channel list
+	isActive: boolean;
+	activeUserIds: string[]; // Array of user Discord IDs currently in the channel
+	memberCount: number; // Denormalized count for quick queries
+	createdAt: Date;
+	updatedAt: Date;
+}
+
+// Voice channel session tracking
+export interface VoiceChannelSession {
+	id?: number;
+	userId: string;
+	guildId: string;
+	channelId: string;
+	channelName: string;
+	joinedAt: Date;
+	leftAt?: Date; // null if user is still in the channel
+	duration?: number; // Duration in seconds (calculated when user leaves)
+	isActive: boolean; // true if user is currently in the channel
+	createdAt: Date;
+	updatedAt: Date;
+}
+
 // Database tables interface (PostgreSQL)
 export interface DatabaseTables {
 	users: string;
@@ -223,4 +254,6 @@ export interface DatabaseTables {
 	guildSyncs: string;
 	relationships: string;
 	interactionRecords: string;
+	channels: string;
+	voiceChannelSessions: string;
 }

@@ -4,35 +4,37 @@ export async function createPostgresTables(): Promise<void> {
 	const tables = [
 		// Users table
 		`
-			CREATE TABLE IF NOT EXISTS users (
-				id SERIAL PRIMARY KEY,
-				discord_id VARCHAR(20) NOT NULL,
-				guild_id VARCHAR(20) NOT NULL,
-				bot BOOLEAN DEFAULT FALSE,
-				username VARCHAR(100) NOT NULL,
-				display_name VARCHAR(100) NOT NULL,
-				discriminator VARCHAR(4) NOT NULL,
-				avatar TEXT,
-				status TEXT,
-				roles TEXT[] DEFAULT '{}',
-				joined_at TIMESTAMP NOT NULL,
-				last_seen TIMESTAMP NOT NULL,
-				avatar_history JSONB DEFAULT '[]',
-				username_history TEXT[] DEFAULT '{}',
-				display_name_history TEXT[] DEFAULT '{}',
-				status_history JSONB DEFAULT '[]',
-				emoji VARCHAR(10),
-				title VARCHAR(200),
-				summary TEXT,
-				keywords TEXT[] DEFAULT '{}',
-				notes TEXT[] DEFAULT '{}',
-				relationships JSONB DEFAULT '[]',
-				mod_preferences JSONB DEFAULT '{}',
-				voice_interactions JSONB DEFAULT '[]',
-				created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-				updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-				UNIQUE(discord_id, guild_id)
-			)
+		CREATE TABLE IF NOT EXISTS users (
+			id SERIAL PRIMARY KEY,
+			discord_id VARCHAR(20) NOT NULL,
+			guild_id VARCHAR(20) NOT NULL,
+			bot BOOLEAN DEFAULT FALSE,
+			username VARCHAR(100) NOT NULL,
+			display_name VARCHAR(100) NOT NULL,
+			nickname VARCHAR(100),
+			discriminator VARCHAR(4) NOT NULL,
+			avatar TEXT,
+			status TEXT,
+			roles TEXT[] DEFAULT '{}',
+			joined_at TIMESTAMP NOT NULL,
+			last_seen TIMESTAMP NOT NULL,
+			avatar_history JSONB DEFAULT '[]',
+			username_history TEXT[] DEFAULT '{}',
+			display_name_history TEXT[] DEFAULT '{}',
+			nickname_history TEXT[] DEFAULT '{}',
+			status_history JSONB DEFAULT '[]',
+			emoji VARCHAR(10),
+			title VARCHAR(200),
+			summary TEXT,
+			keywords TEXT[] DEFAULT '{}',
+			notes TEXT[] DEFAULT '{}',
+			relationships JSONB DEFAULT '[]',
+			mod_preferences JSONB DEFAULT '{}',
+			voice_interactions JSONB DEFAULT '[]',
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(discord_id, guild_id)
+		)
 			`,
 
 		// Roles table
@@ -130,6 +132,40 @@ export async function createPostgresTables(): Promise<void> {
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)
 		`,
+
+		// Channels table
+		`
+		CREATE TABLE IF NOT EXISTS channels (
+			id SERIAL PRIMARY KEY,
+			discord_id VARCHAR(20) NOT NULL,
+			guild_id VARCHAR(20) NOT NULL,
+			channel_name VARCHAR(100) NOT NULL,
+			position INTEGER NOT NULL DEFAULT 0,
+			is_active BOOLEAN DEFAULT TRUE,
+			active_user_ids TEXT[] DEFAULT '{}',
+			member_count INTEGER DEFAULT 0,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(discord_id, guild_id)
+		)
+		`,
+
+		// Voice channel sessions table
+		`
+		CREATE TABLE IF NOT EXISTS voice_channel_sessions (
+			id SERIAL PRIMARY KEY,
+			user_id VARCHAR(20) NOT NULL,
+			guild_id VARCHAR(20) NOT NULL,
+			channel_id VARCHAR(20) NOT NULL,
+			channel_name VARCHAR(100) NOT NULL,
+			joined_at TIMESTAMP NOT NULL,
+			left_at TIMESTAMP NULL,
+			duration INTEGER NULL,
+			is_active BOOLEAN DEFAULT TRUE,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)
+		`,
 	];
 
 	for (const table of tables) {
@@ -142,6 +178,7 @@ export async function createPostgresIndexes(): Promise<void> {
 		// Users indexes
 		"CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id)",
 		"CREATE INDEX IF NOT EXISTS idx_users_guild_id ON users(guild_id)",
+		"CREATE INDEX IF NOT EXISTS idx_users_nickname ON users(nickname)",
 		"CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen)",
 		"CREATE INDEX IF NOT EXISTS idx_users_voice_interactions ON users USING GIN(voice_interactions)",
 		"CREATE INDEX IF NOT EXISTS idx_users_mod_preferences ON users USING GIN(mod_preferences)",
@@ -172,6 +209,23 @@ export async function createPostgresIndexes(): Promise<void> {
 		"CREATE INDEX IF NOT EXISTS idx_interaction_records_to_user ON interaction_records(to_user_id)",
 		"CREATE INDEX IF NOT EXISTS idx_interaction_records_timestamp ON interaction_records(timestamp)",
 		"CREATE INDEX IF NOT EXISTS idx_interaction_records_type ON interaction_records(interaction_type)",
+
+		// Channels indexes
+		"CREATE INDEX IF NOT EXISTS idx_channels_discord_id ON channels(discord_id)",
+		"CREATE INDEX IF NOT EXISTS idx_channels_guild_id ON channels(guild_id)",
+		"CREATE INDEX IF NOT EXISTS idx_channels_position ON channels(position)",
+		"CREATE INDEX IF NOT EXISTS idx_channels_is_active ON channels(is_active)",
+		"CREATE INDEX IF NOT EXISTS idx_channels_active_user_ids ON channels USING GIN(active_user_ids)",
+		"CREATE INDEX IF NOT EXISTS idx_channels_member_count ON channels(member_count)",
+
+		// Voice channel sessions indexes
+		"CREATE INDEX IF NOT EXISTS idx_voice_sessions_user_id ON voice_channel_sessions(user_id)",
+		"CREATE INDEX IF NOT EXISTS idx_voice_sessions_guild_id ON voice_channel_sessions(guild_id)",
+		"CREATE INDEX IF NOT EXISTS idx_voice_sessions_channel_id ON voice_channel_sessions(channel_id)",
+		"CREATE INDEX IF NOT EXISTS idx_voice_sessions_joined_at ON voice_channel_sessions(joined_at)",
+		"CREATE INDEX IF NOT EXISTS idx_voice_sessions_left_at ON voice_channel_sessions(left_at)",
+		"CREATE INDEX IF NOT EXISTS idx_voice_sessions_is_active ON voice_channel_sessions(is_active)",
+		"CREATE INDEX IF NOT EXISTS idx_voice_sessions_duration ON voice_channel_sessions(duration)",
 	];
 
 	for (const index of indexes) {
@@ -181,6 +235,8 @@ export async function createPostgresIndexes(): Promise<void> {
 
 export async function dropPostgresTables(): Promise<void> {
 	const tables = [
+		"channels",
+		"voice_channel_sessions",
 		"interaction_records",
 		"relationships",
 		"guild_syncs",
@@ -194,7 +250,45 @@ export async function dropPostgresTables(): Promise<void> {
 	}
 }
 
+export async function migratePostgresSchema(): Promise<void> {
+	// Add position column to existing channels table if it doesn't exist
+	try {
+		await executeQuery(`
+			ALTER TABLE channels 
+			ADD COLUMN IF NOT EXISTS position INTEGER NOT NULL DEFAULT 0
+		`);
+		console.log("🔹 Added position column to channels table");
+	} catch (error) {
+		console.warn("🔸 Failed to add position column to channels table:", error);
+	}
+
+	// Add nickname columns to existing users table if they don't exist
+	try {
+		await executeQuery(`
+			ALTER TABLE users 
+			ADD COLUMN IF NOT EXISTS nickname VARCHAR(100)
+		`);
+		console.log("🔹 Added nickname column to users table");
+	} catch (error) {
+		console.warn("🔸 Failed to add nickname column to users table:", error);
+	}
+
+	try {
+		await executeQuery(`
+			ALTER TABLE users 
+			ADD COLUMN IF NOT EXISTS nickname_history TEXT[] DEFAULT '{}'
+		`);
+		console.log("🔹 Added nickname_history column to users table");
+	} catch (error) {
+		console.warn(
+			"🔸 Failed to add nickname_history column to users table:",
+			error,
+		);
+	}
+}
+
 export async function initializePostgresSchema(): Promise<void> {
 	await createPostgresTables();
+	await migratePostgresSchema();
 	await createPostgresIndexes();
 }
