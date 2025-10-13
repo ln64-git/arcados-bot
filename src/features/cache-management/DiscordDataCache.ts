@@ -40,7 +40,12 @@ export class DiscordDataCache {
 		if (this.redisAvailable && this.redisCache) {
 			const cached = await this.redisCache.get(`channel_owner:${channelId}`);
 			if (cached) {
-				return JSON.parse(cached);
+				const parsed = JSON.parse(cached);
+				// Convert ownedSince back to Date object
+				if (parsed.ownedSince) {
+					parsed.ownedSince = new Date(parsed.ownedSince);
+				}
+				return parsed;
 			}
 		}
 		return null;
