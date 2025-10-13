@@ -96,7 +96,7 @@ export class DatabaseCore {
 				username_history, display_name_history, status_history, emoji,
 				title, summary, keywords, notes, relationships, mod_preferences, voice_interactions
 			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
 			)
 			ON CONFLICT (discord_id, guild_id) 
 			DO UPDATE SET
@@ -538,11 +538,13 @@ export class DatabaseCore {
 		totalUsers: number;
 		totalMessages: number;
 		totalRoles: number;
+		totalVoiceSessions: number;
 	}> {
 		const queries = [
 			`SELECT COUNT(*) as count FROM ${this.tables.users} WHERE guild_id = $1`,
 			`SELECT COUNT(*) as count FROM ${this.tables.messages} WHERE guild_id = $1`,
 			`SELECT COUNT(*) as count FROM ${this.tables.roles} WHERE guild_id = $1`,
+			`SELECT COUNT(*) as count FROM ${this.tables.users} WHERE guild_id = $1 AND voice_interactions != '[]'::jsonb`,
 		];
 
 		const results = await Promise.all(
@@ -553,6 +555,7 @@ export class DatabaseCore {
 			totalUsers: Number.parseInt(results[0]?.count || "0"),
 			totalMessages: Number.parseInt(results[1]?.count || "0"),
 			totalRoles: Number.parseInt(results[2]?.count || "0"),
+			totalVoiceSessions: Number.parseInt(results[3]?.count || "0"),
 		};
 	}
 
@@ -568,19 +571,131 @@ export class DatabaseCore {
 
 	async updateModPreferences(
 		userId: string,
+		guildId: string,
 		preferences: Partial<ModPreferences>,
 	): Promise<void> {
 		return this.withPerformanceTracking(async () => {
+			// First, ensure the user exists with proper data
+			const user = await this.getUser(userId, guildId);
+			if (!user) {
+				// User doesn't exist, we need to create them with minimal required data
+				// Get user data from Discord if possible
+				try {
+					const guild = this.client?.guilds?.cache?.get(guildId);
+					if (guild) {
+						const member = await guild.members.fetch(userId);
+						if (member) {
+							// Create user with Discord data
+							const userData: Omit<User, "_id" | "createdAt" | "updatedAt"> = {
+								discordId: userId,
+								username: member.user.username,
+								displayName: member.displayName,
+								discriminator: member.user.discriminator,
+								avatar: member.user.displayAvatarURL(),
+								avatarHistory: [],
+								bot: member.user.bot,
+								usernameHistory: [],
+								displayNameHistory: [],
+								roles: member.roles.cache.map((role) => role.id),
+								joinedAt: member.joinedAt || new Date(),
+								lastSeen: new Date(),
+								statusHistory: [],
+								status: "",
+								relationships: [],
+								voiceInteractions: [],
+								modPreferences: {
+									bannedUsers: [],
+									mutedUsers: [],
+									kickedUsers: [],
+									deafenedUsers: [],
+									renamedUsers: [],
+									modHistory: [],
+									lastUpdated: new Date(),
+									...preferences,
+								},
+							};
+							await this.upsertUser(userData);
+							return;
+						}
+					}
+				} catch (error) {
+					console.warn(
+						`🔸 Could not fetch Discord data for user ${userId}:`,
+						error,
+					);
+				}
+
+				// Fallback: create user with minimal data
+				const minimalUserData: Omit<User, "_id" | "createdAt" | "updatedAt"> = {
+					discordId: userId,
+					username: `user_${userId}`, // Fallback username
+					displayName: `User ${userId}`,
+					discriminator: "0000",
+					avatar: "",
+					avatarHistory: [],
+					bot: false,
+					usernameHistory: [],
+					displayNameHistory: [],
+					roles: [],
+					joinedAt: new Date(),
+					lastSeen: new Date(),
+					statusHistory: [],
+					status: "",
+					relationships: [],
+					voiceInteractions: [],
+					modPreferences: {
+						bannedUsers: [],
+						mutedUsers: [],
+						kickedUsers: [],
+						deafenedUsers: [],
+						renamedUsers: [],
+						modHistory: [],
+						lastUpdated: new Date(),
+						...preferences,
+					},
+				};
+				await this.upsertUser(minimalUserData);
+				return;
+			}
+
+			// User exists, update their preferences
 			const query = `
-				INSERT INTO ${this.tables.users} (discord_id, mod_preferences, created_at, updated_at)
-				VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-				ON CONFLICT (discord_id, guild_id)
-				DO UPDATE SET
-					mod_preferences = COALESCE($2, mod_preferences),
-					updated_at = CURRENT_TIMESTAMP
+				UPDATE ${this.tables.users}
+				SET mod_preferences = jsonb_set(
+					COALESCE(mod_preferences, '{}'::jsonb),
+					'{lastUpdated}',
+					to_jsonb(CURRENT_TIMESTAMP)
+				),
+				updated_at = CURRENT_TIMESTAMP
+				WHERE discord_id = $1 AND guild_id = $2
 			`;
 
-			await executeQuery(query, [userId, JSON.stringify(preferences)]);
+			// Merge preferences with existing ones
+			const existingPreferences = user.modPreferences || {};
+			const mergedPreferences = { ...existingPreferences, ...preferences };
+
+			await executeQuery(query, [userId, guildId]);
+
+			// Update specific preference fields
+			for (const [key, value] of Object.entries(preferences)) {
+				if (value !== undefined) {
+					const updateQuery = `
+						UPDATE ${this.tables.users}
+						SET mod_preferences = jsonb_set(
+							COALESCE(mod_preferences, '{}'::jsonb),
+							'{${key}}',
+							$1::jsonb
+						),
+						updated_at = CURRENT_TIMESTAMP
+						WHERE discord_id = $2 AND guild_id = $3
+					`;
+					await executeQuery(updateQuery, [
+						JSON.stringify(value),
+						userId,
+						guildId,
+					]);
+				}
+			}
 		}, `updateModPreferences(${userId})`);
 	}
 
@@ -614,27 +729,34 @@ export class DatabaseCore {
 		duration: number,
 	): Promise<void> {
 		return this.withPerformanceTracking(async () => {
+			// First, get the current user data to find the interaction
+			const user = await this.getUser(userId, guildId);
+			if (!user) {
+				console.warn(`User ${userId} not found in guild ${guildId}`);
+				return;
+			}
+
+			// Find and update the specific voice interaction
+			const updatedInteractions = user.voiceInteractions.map((interaction) => {
+				if (interaction.channelId === channelId && !interaction.leftAt) {
+					return {
+						...interaction,
+						leftAt,
+						duration,
+					};
+				}
+				return interaction;
+			});
+
+			// Update the user with the modified interactions
 			const query = `
 				UPDATE ${this.tables.users}
-				SET voice_interactions = jsonb_set(
-					voice_interactions,
-					(SELECT jsonb_path_query_array(voice_interactions, '$[*] ? (@.channelId == $1 && @.leftAt == null)', '$1', $1)::text)::text[],
-					jsonb_build_object(
-						'channelId', channelId,
-						'channelName', channelName,
-						'guildId', guildId,
-						'joinedAt', joinedAt,
-						'leftAt', $2,
-						'duration', $3
-					)
-				),
-				updated_at = CURRENT_TIMESTAMP
-				WHERE discord_id = $4 AND guild_id = $5
+				SET voice_interactions = $1,
+					updated_at = CURRENT_TIMESTAMP
+				WHERE discord_id = $2 AND guild_id = $3
 			`;
 			await executeQuery(query, [
-				channelId,
-				leftAt.toISOString(),
-				duration,
+				JSON.stringify(updatedInteractions),
 				userId,
 				guildId,
 			]);

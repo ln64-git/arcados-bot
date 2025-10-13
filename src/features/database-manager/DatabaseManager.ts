@@ -13,12 +13,10 @@ import type {
 import { GuildSyncEngine } from "./GuildSyncEngine";
 import { MigrationManager } from "./MigrationManager";
 import { DatabaseCore } from "./PostgresCore";
-import { RealtimeTracker } from "./RealtimeTracker";
 
 export class DatabaseManager {
 	private client: Client;
 	private core: DatabaseCore;
-	private tracker: RealtimeTracker;
 	private syncer: GuildSyncEngine;
 	private migrationManager: MigrationManager;
 	private watchInterval: NodeJS.Timeout | null = null;
@@ -27,7 +25,6 @@ export class DatabaseManager {
 	constructor(client: Client) {
 		this.client = client;
 		this.core = new DatabaseCore();
-		this.tracker = new RealtimeTracker(this.core);
 		this.syncer = new GuildSyncEngine(this.core);
 		this.migrationManager = new MigrationManager();
 	}
@@ -57,9 +54,6 @@ export class DatabaseManager {
 				console.error("🔸 Migration failed:", migrationResult.errors);
 			}
 		}
-
-		// Set up real-time tracking
-		this.tracker.setupEventHandlers(this.client);
 
 		// Start autonomous watching
 		await this.startAutonomousWatching();
@@ -347,15 +341,6 @@ export class DatabaseManager {
 		return this.syncer.syncGuild(guild, forceFullSync, messageLimit);
 	}
 
-	// Delegate to tracker for real-time operations
-	getActiveVoiceSessions() {
-		return this.tracker.getActiveVoiceSessions();
-	}
-
-	async cleanupActiveSessions() {
-		return this.tracker.cleanupActiveSessions();
-	}
-
 	// ==================== UTILITY METHODS ====================
 
 	private async getTargetGuild(): Promise<Guild | null> {
@@ -410,7 +395,7 @@ export class DatabaseManager {
 			const discordUsers = guild.memberCount;
 			const discordRoles = guild.roles.cache.size;
 
-			// Calculate sync percentages
+			// Calculate sync percentages using actual database stats
 			const userSyncPercent =
 				stats.totalUsers > 0
 					? Math.round((stats.totalUsers / discordUsers) * 100)
@@ -420,11 +405,11 @@ export class DatabaseManager {
 					? Math.round((stats.totalRoles / discordRoles) * 100)
 					: 0;
 
-			// Determine health status
+			// Determine health status based on actual data
 			const isHealthy =
 				syncStatus.isSynced && userSyncPercent >= 95 && roleSyncPercent >= 95;
 
-			// Generate recommendations
+			// Generate recommendations based on actual database stats
 			const recommendations: string[] = [];
 			if (userSyncPercent < 95)
 				recommendations.push(`Users sync: ${userSyncPercent}% (needs refresh)`);
@@ -434,9 +419,29 @@ export class DatabaseManager {
 			if (stats.totalVoiceSessions === 0)
 				recommendations.push("No voice sessions tracked");
 
+			// Check if sync record is stale (actual counts differ from sync record)
+			if (
+				syncStatus.stats.totalUsers !== stats.totalUsers ||
+				syncStatus.stats.totalMessages !== stats.totalMessages ||
+				syncStatus.stats.totalRoles !== stats.totalRoles
+			) {
+				recommendations.push("Sync record is stale (needs refresh)");
+			}
+
+			// Update sync status with actual stats to fix stale data
+			const updatedSyncStatus = {
+				...syncStatus,
+				stats: {
+					totalUsers: stats.totalUsers,
+					totalMessages: stats.totalMessages,
+					totalRoles: stats.totalRoles,
+					totalVoiceSessions: stats.totalVoiceSessions,
+				},
+			};
+
 			return {
 				isHealthy,
-				syncStatus,
+				syncStatus: updatedSyncStatus,
 				recommendations,
 				stats,
 			};

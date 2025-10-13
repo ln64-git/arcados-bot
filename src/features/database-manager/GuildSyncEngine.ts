@@ -32,8 +32,8 @@ export class GuildSyncEngine {
 
 	async syncGuild(
 		guild: Guild,
-		forceFullSync: boolean = false,
-		messageLimit: number = 1000,
+		forceFullSync = false,
+		messageLimit = 1000,
 	): Promise<{
 		success: boolean;
 		syncedUsers: number;
@@ -164,7 +164,7 @@ export class GuildSyncEngine {
 				try {
 					const user: Omit<
 						import("../../types/database").User,
-						"_id" | "createdAt" | "updatedAt"
+						"id" | "createdAt" | "updatedAt"
 					> = {
 						discordId: member.id,
 						username: member.user.username,
@@ -172,12 +172,30 @@ export class GuildSyncEngine {
 						discriminator: member.user.discriminator,
 						avatar: member.user.avatar || undefined,
 						bot: member.user.bot,
-						aliases: [member.user.username, member.displayName].filter(
-							(name, index, arr) => arr.indexOf(name) === index,
-						),
+						status: "online",
 						roles: member.roles.cache.map((role) => role.id),
 						joinedAt: member.joinedAt || new Date(),
 						lastSeen: new Date(),
+						avatarHistory: [],
+						usernameHistory: [member.user.username],
+						displayNameHistory: [member.displayName],
+						statusHistory: [],
+						emoji: undefined,
+						title: undefined,
+						summary: undefined,
+						keywords: [],
+						notes: [],
+						relationships: [],
+						modPreferences: {
+							bannedUsers: [],
+							mutedUsers: [],
+							kickedUsers: [],
+							deafenedUsers: [],
+							renamedUsers: [],
+							modHistory: [],
+							lastUpdated: new Date(),
+						},
+						voiceInteractions: [],
 						guildId: guild.id,
 					};
 
@@ -200,7 +218,7 @@ export class GuildSyncEngine {
 
 	private async syncMessages(
 		guild: Guild,
-		limit: number = 1000,
+		limit = 1000,
 	): Promise<{ synced: number; errors: string[] }> {
 		const errors: string[] = [];
 		let synced = 0;

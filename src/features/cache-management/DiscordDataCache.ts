@@ -38,14 +38,41 @@ export class DiscordDataCache {
 		previousOwnerId?: string;
 	} | null> {
 		if (this.redisAvailable && this.redisCache) {
-			const cached = await this.redisCache.get(`channel_owner:${channelId}`);
-			if (cached) {
-				const parsed = JSON.parse(cached);
-				// Convert ownedSince back to Date object
-				if (parsed.ownedSince) {
-					parsed.ownedSince = new Date(parsed.ownedSince);
+			try {
+				const cached = await this.redisCache.get(`channel_owner:${channelId}`);
+				if (cached) {
+					// Handle corrupted cache data
+					if (
+						cached === "[object Object]" ||
+						cached === "null" ||
+						cached === "undefined"
+					) {
+						console.warn(
+							`🔸 Corrupted cache data for channel_owner:${channelId}, removing...`,
+						);
+						await this.redisCache.del(`channel_owner:${channelId}`);
+						return null;
+					}
+
+					const parsed = JSON.parse(cached);
+					// Convert ownedSince back to Date object
+					if (parsed.ownedSince) {
+						parsed.ownedSince = new Date(parsed.ownedSince);
+					}
+					return parsed;
 				}
-				return parsed;
+			} catch (error) {
+				console.warn(
+					`🔸 Error parsing channel ownership cache for ${channelId}:`,
+					error,
+				);
+				// Remove corrupted cache entry
+				try {
+					await this.redisCache.del(`channel_owner:${channelId}`);
+				} catch (delError) {
+					console.warn("🔸 Error removing corrupted cache entry:", delError);
+				}
+				return null;
 			}
 		}
 		return null;
@@ -60,11 +87,39 @@ export class DiscordDataCache {
 		},
 	): Promise<void> {
 		if (this.redisAvailable && this.redisCache) {
-			await this.redisCache.set(
-				`channel_owner:${channelId}`,
-				JSON.stringify(data),
-				3600, // 1 hour TTL
-			);
+			try {
+				// Validate data before storing
+				if (!data.userId || !data.ownedSince) {
+					console.warn(
+						`🔸 Invalid channel ownership data for ${channelId}:`,
+						data,
+					);
+					return;
+				}
+
+				// Ensure ownedSince is a valid Date
+				const ownedSince =
+					data.ownedSince instanceof Date
+						? data.ownedSince
+						: new Date(data.ownedSince);
+
+				const dataToStore = {
+					userId: data.userId,
+					ownedSince: ownedSince.toISOString(),
+					previousOwnerId: data.previousOwnerId,
+				};
+
+				await this.redisCache.set(
+					`channel_owner:${channelId}`,
+					JSON.stringify(dataToStore),
+					3600, // 1 hour TTL
+				);
+			} catch (error) {
+				console.warn(
+					`🔸 Error setting channel ownership cache for ${channelId}:`,
+					error,
+				);
+			}
 		}
 	}
 
@@ -82,13 +137,40 @@ export class DiscordDataCache {
 		joinedAt: Date;
 	} | null> {
 		if (this.redisAvailable && this.redisCache) {
-			const cached = await this.redisCache.get(`active_voice:${userId}`);
-			if (cached) {
-				const data = JSON.parse(cached);
-				return {
-					...data,
-					joinedAt: new Date(data.joinedAt),
-				};
+			try {
+				const cached = await this.redisCache.get(`active_voice:${userId}`);
+				if (cached) {
+					// Handle corrupted cache data
+					if (
+						cached === "[object Object]" ||
+						cached === "null" ||
+						cached === "undefined"
+					) {
+						console.warn(
+							`🔸 Corrupted cache data for active_voice:${userId}, removing...`,
+						);
+						await this.redisCache.del(`active_voice:${userId}`);
+						return null;
+					}
+
+					const data = JSON.parse(cached);
+					return {
+						...data,
+						joinedAt: new Date(data.joinedAt),
+					};
+				}
+			} catch (error) {
+				console.warn(
+					`🔸 Error parsing active voice session cache for ${userId}:`,
+					error,
+				);
+				// Remove corrupted cache entry
+				try {
+					await this.redisCache.del(`active_voice:${userId}`);
+				} catch (delError) {
+					console.warn("🔸 Error removing corrupted cache entry:", delError);
+				}
+				return null;
 			}
 		}
 		return null;

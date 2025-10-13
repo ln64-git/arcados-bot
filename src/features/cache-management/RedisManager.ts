@@ -320,6 +320,34 @@ export class RedisCache {
 	async deleteRollData(userId: string, guildId: string): Promise<void> {
 		await this.del(`roll_data:${guildId}:${userId}`);
 	}
+
+	// Redis Set operations for channel members
+	async sadd(key: string, ...members: string[]): Promise<number> {
+		try {
+			return await this.client.sAdd(key, members);
+		} catch (error) {
+			console.warn(`🔸 Redis sadd error for key ${key}: ${error}`);
+			return 0;
+		}
+	}
+
+	async smembers(key: string): Promise<string[]> {
+		try {
+			return await this.client.sMembers(key);
+		} catch (error) {
+			console.warn(`🔸 Redis smembers error for key ${key}: ${error}`);
+			return [];
+		}
+	}
+
+	async srem(key: string, ...members: string[]): Promise<number> {
+		try {
+			return await this.client.sRem(key, members);
+		} catch (error) {
+			console.warn(`🔸 Redis srem error for key ${key}: ${error}`);
+			return 0;
+		}
+	}
 }
 
 // Graceful shutdown

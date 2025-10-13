@@ -93,6 +93,22 @@ export async function closePostgresPool(): Promise<void> {
 	}
 }
 
+// Helper function to convert snake_case to camelCase
+function snakeToCamel(str: string): string {
+	return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+// Helper function to map database row to camelCase object
+function mapRowToCamelCase(
+	row: Record<string, unknown>,
+): Record<string, unknown> {
+	const mapped: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(row)) {
+		mapped[snakeToCamel(key)] = value;
+	}
+	return mapped;
+}
+
 // Helper function to execute queries with automatic client management
 export async function executeQuery<T = unknown>(
 	query: string,
@@ -101,7 +117,9 @@ export async function executeQuery<T = unknown>(
 	const client = await getPostgresClient();
 	try {
 		const result = await client.query(query, params);
-		return result.rows;
+		return result.rows.map((row: Record<string, unknown>) =>
+			mapRowToCamelCase(row),
+		) as T[];
 	} finally {
 		client.release();
 	}

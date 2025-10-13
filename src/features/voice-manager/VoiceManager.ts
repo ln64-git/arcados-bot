@@ -3,8 +3,14 @@ import {
 	ChannelType,
 	type Client,
 	type Collection,
+	Message as DiscordMessage,
+	type User as DiscordUser,
 	EmbedBuilder,
 	type GuildMember,
+	type MessageReaction,
+	type PartialMessage,
+	type PartialMessageReaction,
+	type PartialUser,
 	PermissionFlagsBits,
 	type VoiceChannel,
 	type VoiceState,
@@ -21,9 +27,11 @@ import type {
 	VoiceChannelConfig,
 	VoiceChannelOwner,
 } from "../../types";
+import type { VoiceInteraction } from "../../types/database";
 import { clonePermissionOverwrites } from "../../utils/permissions";
 import { getCacheManager } from "../cache-management/DiscordDataCache";
 import { DatabaseCore } from "../database-manager/PostgresCore";
+import { getEventQueue } from "../event-system/EventQueue";
 
 export class VoiceManager implements IVoiceManager {
 	private client: Client;
@@ -40,6 +48,8 @@ export class VoiceManager implements IVoiceManager {
 	private orphanedChannelWatcher: NodeJS.Timeout | null = null;
 	private isWatchingOrphanedChannels = false;
 	private dbCore: DatabaseCore;
+	private activeVoiceSessions: Map<string, VoiceInteraction> = new Map();
+	private eventQueue = getEventQueue();
 
 	constructor(client: Client) {
 		this.client = client;
@@ -50,9 +60,623 @@ export class VoiceManager implements IVoiceManager {
 
 	async initialize(): Promise<void> {
 		await this.dbCore.initialize();
+		await this.clearCorruptedCacheEntries();
+		await this.forceClearKnownCorruptedEntries();
+		await this.checkAndSyncDatabase();
+	}
+
+	/**
+	 * Force clear known corrupted cache entries that might be missed by the general cleanup
+	 */
+	private async forceClearKnownCorruptedEntries(): Promise<void> {
+		try {
+			const { getRedisClient } = await import(
+				"../cache-management/RedisManager"
+			);
+			const redis = await getRedisClient();
+
+			if (redis) {
+				// Known corrupted entries that have been causing issues
+				const knownCorruptedKeys = [
+					"channel_owner:1427044495345717399",
+					"channel_owner:1427118373812306042",
+					"channel_members:1423746690342588516",
+					// Add other known corrupted keys here as they're discovered
+				];
+
+				for (const key of knownCorruptedKeys) {
+					try {
+						const exists = await redis.exists(key);
+						if (exists) {
+							await redis.del(key);
+							console.log(
+								`🔹 Force removed known corrupted cache entry: ${key}`,
+							);
+						}
+					} catch (error) {
+						console.warn(`🔸 Error force removing ${key}:`, error);
+					}
+				}
+			}
+		} catch (error) {
+			console.warn("🔸 Error force clearing known corrupted entries:", error);
+		}
+	}
+
+	/**
+	 * Clear any corrupted cache entries on startup
+	 */
+	private async clearCorruptedCacheEntries(): Promise<void> {
+		try {
+			// Get Redis client to check for corrupted entries
+			const { getRedisClient } = await import(
+				"../cache-management/RedisManager"
+			);
+			const redis = await getRedisClient();
+
+			if (redis) {
+				// Get all Redis keys that might contain corrupted data
+				const allKeys = await redis.keys("*");
+				let corruptedCount = 0;
+
+				// Filter for our specific key patterns
+				const channelKeys = allKeys.filter((key) =>
+					key.startsWith("channel_owner:"),
+				);
+				const voiceKeys = allKeys.filter((key) =>
+					key.startsWith("active_voice:"),
+				);
+				const userKeys = allKeys.filter((key) => key.startsWith("user_prefs:"));
+				const callStateKeys = allKeys.filter((key) =>
+					key.startsWith("call_state:"),
+				);
+				const channelMemberKeys = allKeys.filter((key) =>
+					key.startsWith("channel_members:"),
+				);
+
+				// Check for corrupted entries silently
+
+				for (const key of channelKeys) {
+					try {
+						const value = await redis.get(key);
+						if (
+							value === "[object Object]" ||
+							value === "null" ||
+							value === "undefined" ||
+							!value ||
+							value.trim() === ""
+						) {
+							await redis.del(key);
+							corruptedCount++;
+							console.log(`🔹 Removed corrupted cache entry: ${key}`);
+						} else {
+							// Try to parse as JSON to catch other corruption
+							try {
+								JSON.parse(value);
+							} catch (parseError) {
+								await redis.del(key);
+								corruptedCount++;
+								console.log(
+									`🔹 Removed corrupted cache entry (JSON parse failed): ${key}`,
+								);
+							}
+						}
+					} catch (error) {
+						// If we can't get the value, it's likely corrupted
+						await redis.del(key);
+						corruptedCount++;
+						console.log(
+							`🔹 Removed corrupted cache entry (get failed): ${key}`,
+						);
+					}
+				}
+
+				// Check voice session keys
+				for (const key of voiceKeys) {
+					try {
+						const value = await redis.get(key);
+						if (
+							value === "[object Object]" ||
+							value === "null" ||
+							value === "undefined" ||
+							!value ||
+							value.trim() === ""
+						) {
+							await redis.del(key);
+							corruptedCount++;
+							console.log(`🔹 Removed corrupted cache entry: ${key}`);
+						} else {
+							// Try to parse as JSON to catch other corruption
+							try {
+								JSON.parse(value);
+							} catch (parseError) {
+								await redis.del(key);
+								corruptedCount++;
+								console.log(
+									`🔹 Removed corrupted cache entry (JSON parse failed): ${key}`,
+								);
+							}
+						}
+					} catch (error) {
+						// If we can't get the value, it's likely corrupted
+						await redis.del(key);
+						corruptedCount++;
+						console.log(
+							`🔹 Removed corrupted cache entry (get failed): ${key}`,
+						);
+					}
+				}
+
+				// Check user preference keys
+				for (const key of userKeys) {
+					try {
+						const value = await redis.get(key);
+						if (
+							value === "[object Object]" ||
+							value === "null" ||
+							value === "undefined" ||
+							!value ||
+							value.trim() === ""
+						) {
+							await redis.del(key);
+							corruptedCount++;
+							console.log(`🔹 Removed corrupted cache entry: ${key}`);
+						} else {
+							// Try to parse as JSON to catch other corruption
+							try {
+								JSON.parse(value);
+							} catch (parseError) {
+								await redis.del(key);
+								corruptedCount++;
+								console.log(
+									`🔹 Removed corrupted cache entry (JSON parse failed): ${key}`,
+								);
+							}
+						}
+					} catch (error) {
+						// If we can't get the value, it's likely corrupted
+						await redis.del(key);
+						corruptedCount++;
+						console.log(
+							`🔹 Removed corrupted cache entry (get failed): ${key}`,
+						);
+					}
+				}
+
+				// Check call state keys
+				for (const key of callStateKeys) {
+					try {
+						const value = await redis.get(key);
+						if (
+							value === "[object Object]" ||
+							value === "null" ||
+							value === "undefined" ||
+							!value ||
+							value.trim() === ""
+						) {
+							await redis.del(key);
+							corruptedCount++;
+							console.log(`🔹 Removed corrupted cache entry: ${key}`);
+						} else {
+							// Try to parse as JSON to catch other corruption
+							try {
+								JSON.parse(value);
+							} catch (parseError) {
+								await redis.del(key);
+								corruptedCount++;
+								console.log(
+									`🔹 Removed corrupted cache entry (JSON parse failed): ${key}`,
+								);
+							}
+						}
+					} catch (error) {
+						// If we can't get the value, it's likely corrupted
+						await redis.del(key);
+						corruptedCount++;
+						console.log(
+							`🔹 Removed corrupted cache entry (get failed): ${key}`,
+						);
+					}
+				}
+
+				// Check channel member keys
+				for (const key of channelMemberKeys) {
+					try {
+						const value = await redis.get(key);
+						if (
+							value === "[object Object]" ||
+							value === "null" ||
+							value === "undefined" ||
+							!value ||
+							value.trim() === ""
+						) {
+							await redis.del(key);
+							corruptedCount++;
+							console.log(`🔹 Removed corrupted cache entry: ${key}`);
+						} else {
+							// Try to parse as JSON to catch other corruption
+							try {
+								JSON.parse(value);
+							} catch (parseError) {
+								await redis.del(key);
+								corruptedCount++;
+								console.log(
+									`🔹 Removed corrupted cache entry (JSON parse failed): ${key}`,
+								);
+							}
+						}
+					} catch (error) {
+						// If we can't get the value, it's likely corrupted
+						await redis.del(key);
+						corruptedCount++;
+						console.log(
+							`🔹 Removed corrupted cache entry (get failed): ${key}`,
+						);
+					}
+				}
+
+				if (corruptedCount > 0) {
+					console.log(
+						`🔧 Cleaned up ${corruptedCount} corrupted cache entries`,
+					);
+				}
+			}
+		} catch (error) {
+			console.warn("🔸 Error clearing corrupted cache entries:", error);
+		}
+	}
+
+	/**
+	 * Check database sync status and sync any inconsistencies on startup
+	 */
+	private async checkAndSyncDatabase(): Promise<void> {
+		try {
+			console.log("🔍 Checking database sync status...");
+			const syncResult = await this.performDatabaseSyncCheck();
+
+			if (syncResult.needsSync) {
+				console.log(
+					`🔧 Database sync needed: ${syncResult.issues.length} issues found`,
+				);
+				console.log("Issues:", syncResult.issues);
+				await this.performIncrementalSync(syncResult.issues);
+				console.log("✅ Database sync completed");
+			} else {
+				console.log("✅ Database is in sync");
+			}
+		} catch (error) {
+			console.error("🔸 Error during database sync check:", error);
+		}
+	}
+
+	/**
+	 * Perform database sync check to identify inconsistencies
+	 */
+	private async performDatabaseSyncCheck(): Promise<{
+		needsSync: boolean;
+		issues: string[];
+	}> {
+		const issues: string[] = [];
+
+		try {
+			// Check for orphaned voice sessions (users in channels but no active session)
+			const orphanedSessions = await this.findOrphanedVoiceSessions();
+			if (orphanedSessions.length > 0) {
+				issues.push(`Found ${orphanedSessions.length} orphaned voice sessions`);
+			}
+
+			// Check for missing voice sessions (active sessions but user not in channel)
+			const missingSessions = await this.findMissingVoiceSessions();
+			if (missingSessions.length > 0) {
+				issues.push(`Found ${missingSessions.length} missing voice sessions`);
+			}
+
+			// Check for inconsistent channel ownership
+			const ownershipIssues = await this.findOwnershipInconsistencies();
+			if (ownershipIssues.length > 0) {
+				issues.push(
+					`Found ${ownershipIssues.length} ownership inconsistencies`,
+				);
+			}
+
+			return {
+				needsSync: issues.length > 0,
+				issues,
+			};
+		} catch (error) {
+			console.error("🔸 Error performing sync check:", error);
+			return { needsSync: false, issues: [`Sync check failed: ${error}`] };
+		}
+	}
+
+	/**
+	 * Find orphaned voice sessions (users in channels but no active session)
+	 */
+	private async findOrphanedVoiceSessions(): Promise<string[]> {
+		const orphaned: string[] = [];
+
+		for (const guild of this.client.guilds.cache.values()) {
+			for (const channel of guild.channels.cache.values()) {
+				if (channel.isVoiceBased() && channel.type === ChannelType.GuildVoice) {
+					const voiceChannel = channel as VoiceChannel;
+
+					for (const [userId, member] of voiceChannel.members) {
+						if (!member.user.bot) {
+							const user = await this.dbCore.getUser(userId, guild.id);
+							if (user) {
+								const hasActiveSessionInThisChannel =
+									user.voiceInteractions.some(
+										(interaction) =>
+											interaction.channelId === channel.id &&
+											!interaction.leftAt,
+									);
+
+								if (!hasActiveSessionInThisChannel) {
+									orphaned.push(
+										`User ${userId} in channel ${channel.name} has no active session`,
+									);
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		return orphaned;
+	}
+
+	/**
+	 * Find missing voice sessions (active sessions but user not in channel)
+	 */
+	private async findMissingVoiceSessions(): Promise<string[]> {
+		const missing: string[] = [];
+
+		try {
+			// Check all guilds for users with active voice interactions
+			for (const guild of this.client.guilds.cache.values()) {
+				const users = await this.dbCore.getUsersByGuild(guild.id);
+
+				for (const user of users) {
+					const activeSessions = user.voiceInteractions.filter(
+						(interaction) => !interaction.leftAt,
+					);
+
+					for (const session of activeSessions) {
+						const channel = guild.channels.cache.get(session.channelId);
+						if (!channel || !channel.isVoiceBased()) {
+							missing.push(
+								`Active session for user ${user.discordId} in non-existent channel ${session.channelId}`,
+							);
+							continue;
+						}
+
+						const voiceChannel = channel as VoiceChannel;
+						const member = voiceChannel.members.get(user.discordId);
+
+						if (!member) {
+							missing.push(
+								`Active session for user ${user.discordId} but user not in channel ${session.channelName}`,
+							);
+						}
+					}
+				}
+			}
+		} catch (error) {
+			console.error("🔸 Error finding missing voice sessions:", error);
+		}
+
+		return missing;
+	}
+
+	/**
+	 * Find ownership inconsistencies
+	 */
+	private async findOwnershipInconsistencies(): Promise<string[]> {
+		const inconsistencies: string[] = [];
+
+		for (const guild of this.client.guilds.cache.values()) {
+			for (const channel of guild.channels.cache.values()) {
+				if (channel.isVoiceBased() && channel.type === ChannelType.GuildVoice) {
+					const voiceChannel = channel as VoiceChannel;
+					const owner = await this.getChannelOwner(channel.id);
+
+					if (owner) {
+						const ownerInChannel = voiceChannel.members.has(owner.userId);
+						if (!ownerInChannel) {
+							inconsistencies.push(
+								`Channel ${channel.name} has owner ${owner.userId} who is not in the channel`,
+							);
+						}
+					}
+				}
+			}
+		}
+
+		return inconsistencies;
+	}
+
+	/**
+	 * Perform incremental sync to fix identified issues
+	 */
+	private async performIncrementalSync(issues: string[]): Promise<void> {
+		try {
+			console.log("🔄 Starting incremental sync...");
+
+			// Sync orphaned voice sessions
+			const orphanedSessions = await this.findOrphanedVoiceSessions();
+			if (orphanedSessions.length > 0) {
+				console.log(
+					`🔧 Syncing ${orphanedSessions.length} orphaned voice sessions...`,
+				);
+				await this.syncOrphanedVoiceSessions();
+			}
+
+			// Sync missing voice sessions
+			const missingSessions = await this.findMissingVoiceSessions();
+			if (missingSessions.length > 0) {
+				console.log(
+					`🔧 Closing ${missingSessions.length} missing voice sessions...`,
+				);
+				await this.closeMissingVoiceSessions();
+			}
+
+			// Sync ownership inconsistencies
+			const ownershipIssues = await this.findOwnershipInconsistencies();
+			if (ownershipIssues.length > 0) {
+				console.log(
+					`🔧 Fixing ${ownershipIssues.length} ownership inconsistencies...`,
+				);
+				await this.fixOwnershipInconsistencies();
+			}
+
+			console.log("✅ Incremental sync completed");
+		} catch (error) {
+			console.error("🔸 Error during incremental sync:", error);
+		}
+	}
+
+	/**
+	 * Sync orphaned voice sessions by creating missing sessions
+	 */
+	private async syncOrphanedVoiceSessions(): Promise<void> {
+		for (const guild of this.client.guilds.cache.values()) {
+			for (const channel of guild.channels.cache.values()) {
+				if (channel.isVoiceBased() && channel.type === ChannelType.GuildVoice) {
+					const voiceChannel = channel as VoiceChannel;
+
+					for (const [userId, member] of voiceChannel.members) {
+						if (!member.user.bot) {
+							const user = await this.dbCore.getUser(userId, guild.id);
+							if (user) {
+								const hasActiveSessionInThisChannel =
+									user.voiceInteractions.some(
+										(interaction) =>
+											interaction.channelId === channel.id &&
+											!interaction.leftAt,
+									);
+
+								if (!hasActiveSessionInThisChannel) {
+									// Create missing voice session
+									const session: VoiceInteraction = {
+										channelId: channel.id,
+										channelName: channel.name,
+										guildId: guild.id,
+										joinedAt: new Date(), // Use current time as approximation
+									};
+
+									await this.dbCore.addVoiceInteraction(
+										userId,
+										guild.id,
+										session,
+									);
+									console.log(
+										`🔹 Created missing voice session for user ${userId} in channel ${channel.name}`,
+									);
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	/**
+	 * Close missing voice sessions
+	 */
+	private async closeMissingVoiceSessions(): Promise<void> {
+		try {
+			// Check all guilds for users with active voice interactions
+			for (const guild of this.client.guilds.cache.values()) {
+				const users = await this.dbCore.getUsersByGuild(guild.id);
+
+				for (const user of users) {
+					const activeSessions = user.voiceInteractions.filter(
+						(interaction) => !interaction.leftAt,
+					);
+
+					for (const session of activeSessions) {
+						try {
+							const channel = guild.channels.cache.get(session.channelId);
+							if (!channel || !channel.isVoiceBased()) {
+								// Close session for non-existent channel
+								await this.dbCore.updateVoiceInteraction(
+									user.discordId,
+									guild.id,
+									session.channelId,
+									new Date(),
+									0,
+								);
+								console.log(
+									`🔹 Closed session for user ${user.discordId} in non-existent channel`,
+								);
+								continue;
+							}
+
+							const voiceChannel = channel as VoiceChannel;
+							const member = voiceChannel.members.get(user.discordId);
+
+							if (!member) {
+								// Close session for user not in channel
+								await this.dbCore.updateVoiceInteraction(
+									user.discordId,
+									guild.id,
+									session.channelId,
+									new Date(),
+									0,
+								);
+								console.log(
+									`🔹 Closed session for user ${user.discordId} not in channel ${session.channelName}`,
+								);
+							}
+						} catch (sessionError) {
+							console.warn(
+								`🔸 Error closing session for user ${user.discordId} in channel ${session.channelId}:`,
+								sessionError,
+							);
+							// Continue with other sessions even if one fails
+						}
+					}
+				}
+			}
+		} catch (error) {
+			console.error("🔸 Error closing missing voice sessions:", error);
+		}
+	}
+
+	/**
+	 * Fix ownership inconsistencies
+	 */
+	private async fixOwnershipInconsistencies(): Promise<void> {
+		for (const guild of this.client.guilds.cache.values()) {
+			for (const channel of guild.channels.cache.values()) {
+				if (channel.isVoiceBased() && channel.type === ChannelType.GuildVoice) {
+					const voiceChannel = channel as VoiceChannel;
+					const owner = await this.getChannelOwner(channel.id);
+
+					if (owner) {
+						const ownerInChannel = voiceChannel.members.has(owner.userId);
+						if (!ownerInChannel) {
+							// Remove ownership for user not in channel
+							await this.removeChannelOwner(channel.id);
+							console.log(
+								`🔹 Removed ownership for user ${owner.userId} not in channel ${channel.name}`,
+							);
+
+							// Try to assign new ownership if channel has members
+							if (voiceChannel.members.size > 0) {
+								await this.universalOwnershipSync(channel.id);
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
 	private setupEventHandlers() {
+		// Voice state events - handled directly
 		this.client.on("voiceStateUpdate", async (oldState, newState) => {
 			await this.handleVoiceStateUpdate(oldState, newState);
 		});
@@ -60,6 +684,93 @@ export class VoiceManager implements IVoiceManager {
 		// Listen for channel updates to capture manual renames
 		this.client.on("channelUpdate", async (oldChannel, newChannel) => {
 			await this.handleChannelUpdate(oldChannel, newChannel);
+		});
+
+		// Message events - Non-blocking queue
+		this.client.on("messageCreate", (message) => {
+			this.eventQueue.enqueueMessage(message);
+		});
+
+		this.client.on("messageUpdate", (_, newMessage) => {
+			if (newMessage instanceof DiscordMessage) {
+				this.eventQueue.enqueueMessageUpdate(_, newMessage);
+			}
+		});
+
+		this.client.on("messageDelete", (message) => {
+			this.eventQueue.enqueueMessageDelete(message);
+		});
+
+		// Reaction events - Non-blocking queue
+		this.client.on("messageReactionAdd", (reaction, user) => {
+			this.eventQueue.enqueueReactionAdd(reaction, user);
+		});
+
+		this.client.on("messageReactionRemove", (reaction, user) => {
+			this.eventQueue.enqueueReactionRemove(reaction, user);
+		});
+
+		// Guild member events - Non-blocking queue
+		this.client.on("guildMemberUpdate", (oldMember, newMember) => {
+			this.eventQueue.enqueueGuildMemberUpdate(
+				oldMember as GuildMember,
+				newMember,
+			);
+		});
+
+		// Process queued events
+		this.eventQueue.on("messageCreate", async (message) => {
+			await this.trackMessage(message);
+		});
+
+		this.eventQueue.on("messageUpdate", async ({ newMessage }) => {
+			if (newMessage instanceof DiscordMessage) {
+				await this.trackMessageUpdate(newMessage);
+			}
+		});
+
+		this.eventQueue.on("messageDelete", async (message) => {
+			await this.trackMessageDelete(message);
+		});
+
+		this.eventQueue.on("messageReactionAdd", async ({ reaction, user }) => {
+			if (reaction.partial) {
+				try {
+					await reaction.fetch();
+				} catch (error) {
+					console.error("🔸 Error fetching reaction:", error);
+					return;
+				}
+			}
+			await this.trackReactionAdd(reaction, user);
+		});
+
+		this.eventQueue.on("messageReactionRemove", async ({ reaction, user }) => {
+			if (reaction.partial) {
+				try {
+					await reaction.fetch();
+				} catch (error) {
+					console.error("🔸 Error fetching reaction:", error);
+					return;
+				}
+			}
+			await this.trackReactionRemove(reaction, user);
+		});
+
+		this.eventQueue.on("voiceStateUpdate", async ({ oldState, newState }) => {
+			await this.trackVoiceStateUpdate(oldState, newState);
+		});
+
+		this.eventQueue.on("guildMemberUpdate", async ({ newMember }) => {
+			if (newMember.partial) {
+				try {
+					await newMember.fetch();
+				} catch (error) {
+					console.error("🔸 Error fetching member:", error);
+					return;
+				}
+			}
+			await this.trackGuildMemberUpdate(newMember);
 		});
 	}
 
@@ -146,9 +857,6 @@ export class VoiceManager implements IVoiceManager {
 		// TODO: Update to work with Redis-only ownership tracking
 		// For now, this method is disabled as we don't have a way to list all Redis keys
 		// In a production environment, you might want to maintain a separate Redis set of active channels
-		console.log(
-			"🔹 Orphaned channel check disabled - using Redis-only ownership tracking",
-		);
 		return;
 	}
 
@@ -369,9 +1077,12 @@ export class VoiceManager implements IVoiceManager {
 		const oldVoiceChannel = oldChannel as VoiceChannel;
 		const newVoiceChannel = newChannel as VoiceChannel;
 
-		console.log(
-			`🔍 Channel update detected: "${oldVoiceChannel.name}" → "${newVoiceChannel.name}"`,
-		);
+		// Only log if the name actually changed
+		if (oldVoiceChannel.name !== newVoiceChannel.name) {
+			console.log(
+				`🔍 Channel renamed: "${oldVoiceChannel.name}" → "${newVoiceChannel.name}"`,
+			);
+		}
 
 		// Check if this channel has an owner (regardless of naming pattern)
 		// This allows us to capture renames for any channel that has been claimed/owned
@@ -392,10 +1103,6 @@ export class VoiceManager implements IVoiceManager {
 			return;
 		}
 
-		console.log(
-			`🔹 Channel renamed: "${oldVoiceChannel.name}" → "${newVoiceChannel.name}"`,
-		);
-
 		// Update the user's preferred channel name in the database using the new system
 		try {
 			// Use DatabaseCore to update mod preferences in the users collection
@@ -403,18 +1110,77 @@ export class VoiceManager implements IVoiceManager {
 			const dbCore = new DatabaseCore();
 			await dbCore.initialize();
 
-			await dbCore.updateModPreferences(owner.userId, {
-				preferredChannelName: newVoiceChannel.name,
-			});
+			// First, ensure the user exists in the database
+			const user = await dbCore.getUser(owner.userId, newVoiceChannel.guild.id);
+			if (!user) {
+				// User doesn't exist, create them with Discord data
+				try {
+					const member = await newVoiceChannel.guild.members.fetch(
+						owner.userId,
+					);
+					if (member) {
+						const userData: Omit<
+							import("../../types/database").User,
+							"_id" | "createdAt" | "updatedAt"
+						> = {
+							discordId: owner.userId,
+							username: member.user.username,
+							displayName: member.displayName,
+							discriminator: member.user.discriminator,
+							avatar: member.user.displayAvatarURL(),
+							avatarHistory: [],
+							bot: member.user.bot,
+							usernameHistory: [],
+							displayNameHistory: [],
+							roles: member.roles.cache.map((role) => role.id),
+							joinedAt: member.joinedAt || new Date(),
+							lastSeen: new Date(),
+							statusHistory: [],
+							status: "",
+							relationships: [],
+							voiceInteractions: [],
+							modPreferences: {
+								bannedUsers: [],
+								mutedUsers: [],
+								kickedUsers: [],
+								deafenedUsers: [],
+								renamedUsers: [],
+								modHistory: [],
+								lastUpdated: new Date(),
+								preferredChannelName: newVoiceChannel.name,
+							},
+						};
+						await dbCore.upsertUser(userData);
+						console.log(
+							`✅ Created user ${owner.userId} with preferred channel name: "${newVoiceChannel.name}"`,
+						);
+					}
+				} catch (memberError) {
+					console.warn(
+						`🔸 Could not fetch Discord member data for ${owner.userId}:`,
+						memberError,
+					);
+					// Skip updating preferences if we can't get user data
+					return;
+				}
+			} else {
+				// User exists, update their preferences
+				await dbCore.updateModPreferences(
+					owner.userId,
+					newVoiceChannel.guild.id,
+					{
+						preferredChannelName: newVoiceChannel.name,
+					},
+				);
+				console.log(
+					`✅ Updated preferred channel name for user ${owner.userId}: "${newVoiceChannel.name}"`,
+				);
+			}
 
 			// Invalidate cache to ensure fresh data is fetched
 			await this.cache.invalidateUserPreferences(
 				owner.userId,
 				newVoiceChannel.guild.id,
-			);
-
-			console.log(
-				`✅ Updated preferred channel name for user ${owner.userId}: "${newVoiceChannel.name}"`,
 			);
 		} catch (error) {
 			console.error(
@@ -707,9 +1473,7 @@ export class VoiceManager implements IVoiceManager {
 				return;
 			}
 
-			console.log(
-				`🤖 Auto-assigning ownership of orphaned channel "${channel.name}" to ${longestUser.displayName || longestUser.user.username}`,
-			);
+			// Auto-assigning ownership to longest-standing user
 
 			// Assign ownership to the longest-standing user
 			await this.setChannelOwner(channel.id, longestUser.id, channel.guild.id);
@@ -759,8 +1523,6 @@ export class VoiceManager implements IVoiceManager {
 	 */
 	private async universalOwnershipSync(channelId: string): Promise<void> {
 		try {
-			console.log(`🔍 Universal ownership sync for channel ${channelId}`);
-
 			// Get all sources of ownership information
 			const dbOwner = await this.getChannelOwner(channelId);
 			const channel = this.client.channels.cache.get(channelId) as VoiceChannel;
@@ -811,10 +1573,6 @@ export class VoiceManager implements IVoiceManager {
 
 			// Apply correct ownership if different from current
 			if (correctOwner && (!dbOwner || dbOwner.userId !== correctOwner)) {
-				console.log(
-					`🤖 Universal sync: Assigning ownership to ${correctOwner} (${ownershipSource})`,
-				);
-
 				await this.setChannelOwner(channelId, correctOwner, channel.guild.id);
 
 				// Set owner permissions
@@ -833,10 +1591,6 @@ export class VoiceManager implements IVoiceManager {
 
 				// Apply user preferences
 				await this.applyUserPreferencesToChannel(channelId, correctOwner);
-
-				console.log(
-					`✅ Universal sync completed: ${correctOwner} is now owner`,
-				);
 			}
 		} catch (error) {
 			console.error(
@@ -866,9 +1620,7 @@ export class VoiceManager implements IVoiceManager {
 				return; // Couldn't determine longest-standing user
 			}
 
-			console.log(
-				`🤖 Auto-assigning ownership of "${channel.name}" to ${longestUser.displayName || longestUser.user.username}`,
-			);
+			// Auto-assigning ownership to longest-standing user
 
 			// Set ownership
 			await this.setChannelOwner(channel.id, longestUser.id, channel.guild.id);
@@ -1123,12 +1875,6 @@ export class VoiceManager implements IVoiceManager {
 			console.log(
 				`🔹 Restoring channel name to: ${preferences.preferredChannelName}`,
 			);
-			console.log("🔍 Cache debug - preferences from cache:", {
-				userId: ownerId,
-				guildId: channel.guild.id,
-				preferredChannelName: preferences.preferredChannelName,
-				lastUpdated: preferences.lastUpdated,
-			});
 
 			// Only rename if the current name is different
 			if (channel.name !== preferences.preferredChannelName) {
@@ -1147,11 +1893,7 @@ export class VoiceManager implements IVoiceManager {
 						),
 					);
 					await Promise.race([restPromise, restTimeoutPromise]);
-					console.log("🔹 Channel name restored successfully");
 				} catch (error) {
-					console.log(
-						`🔸 Failed to restore channel name via REST API: ${error instanceof Error ? error.message : String(error)}`,
-					);
 					// Fallback to discord.js method with longer timeout
 					try {
 						const renamePromise = channel.setName(
@@ -1164,7 +1906,6 @@ export class VoiceManager implements IVoiceManager {
 							),
 						);
 						await Promise.race([renamePromise, timeoutPromise]);
-						console.log("🔹 Channel name restored via fallback");
 					} catch (fallbackError) {
 						console.log(
 							`🔸 Failed to restore channel name: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
@@ -1172,10 +1913,6 @@ export class VoiceManager implements IVoiceManager {
 						// Don't throw error, just log it - the claim should still succeed
 					}
 				}
-			} else {
-				console.log(
-					"🔹 Channel name already matches preferred name, skipping rename",
-				);
 			}
 		} else {
 			// Default to "{Display Name}'s Channel" if no preferred name is set
@@ -1183,7 +1920,6 @@ export class VoiceManager implements IVoiceManager {
 				const member = await channel.guild.members.fetch(ownerId);
 				const displayName = member.displayName || member.user.username;
 				const defaultName = `${displayName}'s Channel`;
-				console.log(`🔹 Setting default channel name to: ${defaultName}`);
 
 				// Only rename if the current name is different
 				if (channel.name !== defaultName) {
@@ -1201,11 +1937,6 @@ export class VoiceManager implements IVoiceManager {
 						),
 					);
 					await Promise.race([restPromise, restTimeoutPromise]);
-					console.log("🔹 Default channel name set successfully");
-				} else {
-					console.log(
-						"🔹 Channel name already matches default name, skipping rename",
-					);
 				}
 			} catch (error) {
 				console.log(
@@ -1227,11 +1958,6 @@ export class VoiceManager implements IVoiceManager {
 							),
 						);
 						await Promise.race([renamePromise, timeoutPromise]);
-						console.log("🔹 Default channel name set via fallback");
-					} else {
-						console.log(
-							"🔹 Channel name already matches default name, skipping rename",
-						);
 					}
 				} catch (fallbackError) {
 					console.log(
@@ -2708,11 +3434,428 @@ export class VoiceManager implements IVoiceManager {
 		return { total, orphaned, details };
 	}
 
+	// ==================== REALTIME TRACKING METHODS ====================
+
+	// ==================== MESSAGE TRACKING ====================
+
+	private async trackMessage(message: DiscordMessage): Promise<void> {
+		try {
+			if (!message.guild || !message.author || message.author.bot) return;
+
+			// Check if user has "bot" role
+			const member = message.member;
+			if (
+				member?.roles.cache.some((role) => role.name.toLowerCase() === "bot")
+			) {
+				return;
+			}
+
+			// Skip messages that start with "m!"
+			if (message.content.startsWith("m!")) {
+				return;
+			}
+
+			const dbMessage = this.convertMessageToDB(message);
+			await this.dbCore.upsertMessage(dbMessage);
+
+			// Track user interactions
+			if (message.guild) {
+				await this.trackMessageInteractions(message);
+			}
+		} catch (error) {
+			console.error("🔸 Error tracking message:", error);
+		}
+	}
+
+	private async trackMessageUpdate(newMessage: DiscordMessage): Promise<void> {
+		try {
+			if (!newMessage.guild || newMessage.author.bot) return;
+
+			// Check if user has "bot" role
+			const member = newMessage.member;
+			if (
+				member?.roles.cache.some((role) => role.name.toLowerCase() === "bot")
+			) {
+				return;
+			}
+
+			// Skip messages that start with "m!"
+			if (newMessage.content.startsWith("m!")) {
+				return;
+			}
+
+			const dbMessage = this.convertMessageToDB(newMessage);
+			await this.dbCore.upsertMessage(dbMessage);
+		} catch (error) {
+			console.error("🔸 Error tracking message update:", error);
+		}
+	}
+
+	private async trackMessageDelete(
+		message: PartialMessage | DiscordMessage,
+	): Promise<void> {
+		try {
+			if (!message.guild || !message.author) return;
+
+			// Mark message as deleted in database
+			// Note: This would need a new method in DatabaseCore for updating messages
+		} catch (error) {
+			console.error("🔸 Error tracking message delete:", error);
+		}
+	}
+
+	// ==================== REACTION TRACKING ====================
+
+	private async trackReactionAdd(
+		reaction: MessageReaction | PartialMessageReaction,
+		user: DiscordUser | PartialUser,
+	): Promise<void> {
+		try {
+			if (user.bot || !reaction.message.guild) return;
+
+			const message = reaction.message;
+			if (message.partial) {
+				await message.fetch();
+			}
+
+			// Note: Interaction tracking removed - using simplified relationship system
+		} catch (error) {
+			console.error("🔸 Error tracking reaction add:", error);
+		}
+	}
+
+	private async trackReactionRemove(
+		reaction: MessageReaction | PartialMessageReaction,
+		user: DiscordUser | PartialUser,
+	): Promise<void> {
+		try {
+			if (user.bot || !reaction.message.guild) return;
+
+			// Note: We don't remove the interaction record, just track the removal
+		} catch (error) {
+			console.error("🔸 Error tracking reaction removal:", error);
+		}
+	}
+
+	// ==================== VOICE TRACKING ====================
+
+	private async trackVoiceStateUpdate(
+		oldState: VoiceState,
+		newState: VoiceState,
+	): Promise<void> {
+		try {
+			if (!newState.guild || !newState.member) return;
+
+			const userId = newState.member.id;
+			const guildId = newState.guild.id;
+
+			// Skip tracking for bots
+			if (newState.member.user.bot) return;
+
+			// Skip tracking for AFK channels
+			const channel = newState.channel;
+			if (channel && this.isAFKChannel(channel)) return;
+
+			// User joined a voice channel (from no channel)
+			if (!oldState.channelId && newState.channelId) {
+				// Close any existing active sessions for this user (fixes multiple active sessions bug)
+				await this.closeAllActiveSessionsForUser(userId, guildId);
+
+				const session: VoiceInteraction = {
+					channelId: newState.channelId,
+					channelName: channel?.name || "Unknown Channel",
+					guildId,
+					joinedAt: new Date(),
+				};
+
+				await this.dbCore.addVoiceInteraction(userId, guildId, session);
+				this.activeVoiceSessions.set(userId, session);
+			}
+
+			// User moved between voice channels
+			if (
+				oldState.channelId &&
+				newState.channelId &&
+				oldState.channelId !== newState.channelId
+			) {
+				// Close previous session
+				const leftAt = new Date();
+				await this.dbCore.updateVoiceInteraction(
+					userId,
+					guildId,
+					oldState.channelId,
+					leftAt,
+					0, // Duration will be calculated by the database
+				);
+				this.activeVoiceSessions.delete(userId);
+
+				// Open new session
+				const joinedAt = new Date();
+				const newSession: VoiceInteraction = {
+					channelId: newState.channelId,
+					channelName: newState.channel?.name || "Unknown Channel",
+					guildId,
+					joinedAt,
+				};
+				await this.dbCore.addVoiceInteraction(userId, guildId, newSession);
+				this.activeVoiceSessions.set(userId, newSession);
+			}
+
+			// User left a voice channel (to no channel)
+			if (oldState.channelId && !newState.channelId) {
+				const session = this.activeVoiceSessions.get(userId);
+				if (session) {
+					const leftAt = new Date();
+					await this.dbCore.updateVoiceInteraction(
+						userId,
+						guildId,
+						oldState.channelId,
+						leftAt,
+						0, // Duration will be calculated by the database
+					);
+					this.activeVoiceSessions.delete(userId);
+				}
+			}
+		} catch (error) {
+			console.error("🔸 Error tracking voice state update:", error);
+		}
+	}
+
+	// ==================== GUILD MEMBER TRACKING ====================
+
+	private async trackGuildMemberUpdate(newMember: GuildMember): Promise<void> {
+		try {
+			if (!newMember.guild) return;
+
+			const now = new Date();
+			const newAvatarUrl = newMember.user.displayAvatarURL();
+			const newStatus =
+				newMember.presence?.activities?.find((a) => a.type === 4)?.state || "";
+
+			// Update user data
+			const user: Omit<
+				import("../../types/database").User,
+				"_id" | "createdAt" | "updatedAt"
+			> = {
+				discordId: newMember.id,
+				username: newMember.user.username,
+				displayName: newMember.displayName,
+				discriminator: newMember.user.discriminator,
+				avatar: newAvatarUrl,
+				avatarHistory: [],
+				bot: newMember.user.bot,
+				usernameHistory: [],
+				displayNameHistory: [],
+				roles: newMember.roles.cache.map((role) => role.id),
+				joinedAt: newMember.joinedAt || now,
+				lastSeen: now,
+				statusHistory: [],
+				status: newStatus,
+				relationships: [],
+				voiceInteractions: [],
+				modPreferences: {
+					bannedUsers: [],
+					mutedUsers: [],
+					kickedUsers: [],
+					deafenedUsers: [],
+					renamedUsers: [],
+					modHistory: [],
+					lastUpdated: now,
+				},
+			};
+
+			await this.dbCore.upsertUser(user);
+
+			// Note: Avatar and status change tracking would need to be implemented in DatabaseCore
+		} catch (error) {
+			console.error("🔸 Error tracking guild member update:", error);
+		}
+	}
+
+	// ==================== UTILITY METHODS ====================
+
+	getActiveVoiceSessions(): Map<string, VoiceInteraction> {
+		return this.activeVoiceSessions;
+	}
+
+	async cleanupActiveSessions(): Promise<void> {
+		try {
+			// Close all active sessions
+			for (const [userId, session] of this.activeVoiceSessions) {
+				const leftAt = new Date();
+				await this.dbCore.updateVoiceInteraction(
+					userId,
+					session.guildId,
+					session.channelId,
+					leftAt,
+					0,
+				);
+			}
+			this.activeVoiceSessions.clear();
+		} catch (error) {
+			console.error("🔸 Error cleaning up active sessions:", error);
+		}
+	}
+
+	private isAFKChannel(channel: { name?: string }): boolean {
+		return channel?.name?.toLowerCase().includes("afk") || false;
+	}
+
+	/**
+	 * Close all active voice sessions for a user
+	 * This fixes the bug where users can have multiple active sessions
+	 */
+	private async closeAllActiveSessionsForUser(
+		userId: string,
+		guildId: string,
+	): Promise<void> {
+		try {
+			// Get user data to find active voice interactions
+			const user = await this.dbCore.getUser(userId, guildId);
+			if (!user) return;
+
+			const activeSessions = user.voiceInteractions.filter(
+				(interaction) => !interaction.leftAt,
+			);
+
+			if (activeSessions.length > 0) {
+				console.log(
+					`🔹 Closing ${activeSessions.length} active sessions for user ${userId}`,
+				);
+
+				// Close each active session
+				for (const session of activeSessions) {
+					const leftAt = new Date();
+					await this.dbCore.updateVoiceInteraction(
+						userId,
+						guildId,
+						session.channelId,
+						leftAt,
+						0, // Duration will be calculated by the database
+					);
+				}
+			}
+		} catch (error) {
+			console.error(
+				`🔸 Error closing active sessions for user ${userId}:`,
+				error,
+			);
+		}
+	}
+
+	private convertMessageToDB(
+		message: DiscordMessage,
+	): Omit<
+		import("../../types/database").Message,
+		"_id" | "createdAt" | "updatedAt"
+	> {
+		return {
+			discordId: message.id,
+			content: message.content,
+			authorId: message.author.id,
+			channelId: message.channelId,
+			guildId: message.guild?.id || "",
+			timestamp: message.createdAt,
+			editedAt: message.editedAt || undefined,
+			mentions: message.mentions.users.map((user) => user.id),
+			reactions: message.reactions.cache.map((reaction) => ({
+				emoji: reaction.emoji.name || reaction.emoji.toString(),
+				count: reaction.count,
+				users: [],
+			})),
+			replyTo: message.reference?.messageId || undefined,
+			attachments: message.attachments.map((attachment) => ({
+				id: attachment.id,
+				filename: attachment.name,
+				size: attachment.size,
+				url: attachment.url,
+				contentType: attachment.contentType || undefined,
+			})),
+			embeds: message.embeds.map((embed) => ({
+				title: embed.title || undefined,
+				description: embed.description || undefined,
+				url: embed.url || undefined,
+				color: embed.color || undefined,
+				timestamp: embed.timestamp || undefined,
+				footer: embed.footer
+					? {
+							text: embed.footer.text,
+							icon_url: embed.footer.iconURL || undefined,
+							proxy_icon_url: embed.footer.proxyIconURL || undefined,
+						}
+					: undefined,
+				image: embed.image
+					? {
+							url: embed.image.url,
+							proxy_url: embed.image.proxyURL || undefined,
+							height: embed.image.height || undefined,
+							width: embed.image.width || undefined,
+						}
+					: undefined,
+				thumbnail: embed.thumbnail
+					? {
+							url: embed.thumbnail.url,
+							proxy_url: embed.thumbnail.proxyURL || undefined,
+							height: embed.thumbnail.height || undefined,
+							width: embed.thumbnail.width || undefined,
+						}
+					: undefined,
+				video: embed.video
+					? {
+							url: embed.video.url,
+							proxy_url: embed.video.proxyURL || undefined,
+							height: embed.video.height || undefined,
+							width: embed.video.width || undefined,
+						}
+					: undefined,
+				provider: embed.provider
+					? {
+							name: embed.provider.name || undefined,
+							url: embed.provider.url || undefined,
+						}
+					: undefined,
+				author: embed.author
+					? {
+							name: embed.author.name,
+							url: embed.author.url || undefined,
+							icon_url: embed.author.iconURL || undefined,
+							proxy_icon_url: embed.author.proxyIconURL || undefined,
+						}
+					: undefined,
+				fields:
+					embed.fields?.map((field) => ({
+						name: field.name,
+						value: field.value,
+						inline: field.inline || false,
+					})) || undefined,
+			})),
+		};
+	}
+
+	private async trackMessageInteractions(
+		message: DiscordMessage,
+	): Promise<void> {
+		// Track mentions
+		if (message.mentions && message.mentions.users.size > 0) {
+			for (const [, mentionedUser] of message.mentions.users) {
+				if (mentionedUser.id !== message.author.id) {
+					// Note: Interaction tracking removed - using simplified relationship system
+				}
+			}
+		}
+
+		// Track replies
+		if (message.reference?.messageId) {
+			// Note: Interaction tracking removed - using simplified relationship system
+		}
+	}
+
 	/**
 	 * Cleanup method to stop watchers and clear resources
 	 */
 	async cleanup(): Promise<void> {
 		this.stopOrphanedChannelWatcher();
+		await this.cleanupActiveSessions();
 		console.log("🔹 VoiceManager cleanup completed");
 	}
 
