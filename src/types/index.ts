@@ -55,7 +55,7 @@ export interface RateLimit {
 
 export interface VoiceChannelConfig {
 	guildId: string;
-	spawnChannelId: string;
+	spawnChannelIds: string[];
 	categoryId?: string;
 	channelNameTemplate: string;
 	maxChannels: number;

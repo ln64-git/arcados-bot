@@ -5,6 +5,7 @@ export interface User {
 	id?: number;
 	bot: boolean;
 	discordId: string;
+	guildId: string;
 	username: string;
 	displayName: string;
 	nickname?: string; // Server-specific nickname (null if no nickname set)

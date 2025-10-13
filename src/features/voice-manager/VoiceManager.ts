@@ -32,6 +32,8 @@ import { clonePermissionOverwrites } from "../../utils/permissions";
 import { getCacheManager } from "../cache-management/DiscordDataCache";
 import { DatabaseCore } from "../database-manager/PostgresCore";
 import { getEventQueue } from "../event-system/EventQueue";
+import { ChannelNamingService } from "./ChannelNamingService";
+import { VoiceSessionTracker } from "./VoiceSessionTracker";
 
 export class VoiceManager implements IVoiceManager {
 	private client: Client;
@@ -47,23 +49,31 @@ export class VoiceManager implements IVoiceManager {
 	private maxConcurrentChannels = 50; // Discord's per-guild daily limit is 500, so 50 is safe
 	private channelCreationDelay = 100; // 100ms delay between channel creations
 	private orphanedChannelWatcher: NodeJS.Timeout | null = null;
+	private sessionReconcileTimer: NodeJS.Timeout | null = null;
 	private isWatchingOrphanedChannels = false;
 	private dbCore: DatabaseCore;
+	private sessionTracker: VoiceSessionTracker;
+	private namingService: ChannelNamingService;
 	private activeVoiceSessions: Map<string, VoiceInteraction> = new Map();
 	private eventQueue = getEventQueue();
 
 	// Channels that should be tracked but not modified by the voice manager
-	private readonly readOnlyChannels = new Set([
-		"1287323426465513512",
-		"1427152903260344350",
-		"1423746690342588516",
-	]);
+	private readonly readOnlyChannels = new Set(
+		config.excludedChannelIds || [
+			"1287323426465513512",
+			"1427152903260344350",
+			"1423746690342588516",
+		],
+	);
 
 	constructor(client: Client) {
 		this.client = client;
 		this.dbCore = new DatabaseCore();
+		this.sessionTracker = new VoiceSessionTracker(this.dbCore);
+		this.namingService = new ChannelNamingService();
 		this.setupEventHandlers();
 		this.startOrphanedChannelWatcher();
+		this.startSessionReconciliation();
 	}
 
 	async initialize(): Promise<void> {
@@ -71,6 +81,26 @@ export class VoiceManager implements IVoiceManager {
 		await this.clearCorruptedCacheEntries();
 		await this.forceClearKnownCorruptedEntries();
 		await this.checkAndSyncDatabase();
+	}
+
+	private startSessionReconciliation(): void {
+		if (this.sessionReconcileTimer) return;
+		// Reconcile every 60 seconds
+		this.sessionReconcileTimer = setInterval(async () => {
+			try {
+				await this.performIncrementalSync([]);
+			} catch (error) {
+				if (this.debugEnabled)
+					console.warn("🔸 Session reconciliation error:", error);
+			}
+		}, 60 * 1000);
+	}
+
+	private stopSessionReconciliation(): void {
+		if (this.sessionReconcileTimer) {
+			clearInterval(this.sessionReconcileTimer);
+			this.sessionReconcileTimer = null;
+		}
 	}
 
 	/**
@@ -773,7 +803,7 @@ export class VoiceManager implements IVoiceManager {
 		});
 
 		this.eventQueue.on("voiceStateUpdate", async ({ oldState, newState }) => {
-			await this.trackVoiceStateUpdate(oldState, newState);
+			// Voice tracking is now handled by handleVoiceStateUpdate method
 		});
 
 		this.eventQueue.on("guildMemberUpdate", async ({ newMember }) => {
@@ -958,70 +988,21 @@ export class VoiceManager implements IVoiceManager {
 			return;
 		}
 
-		// Track voice interaction in database
+		// Track voice interaction using centralized service
 		try {
-			await this.dbCore.addVoiceInteraction(
-				newState.member.id,
-				channel.guild.id,
-				{
-					channelId: channel.id,
-					channelName: channel.name,
-					guildId: channel.guild.id,
-					joinedAt: new Date(),
-				},
+			await this.sessionTracker.trackUserJoin(
+				newState.member,
+				channel as VoiceChannel,
 			);
-
-			// Track in Redis cache for real-time operations
-			await this.cache.setActiveVoiceSession(newState.member.id, {
-				channelId: channel.id,
-				channelName: channel.name,
-				guildId: channel.guild.id,
-				joinedAt: new Date(),
-			});
-
-			// Add to channel members cache
-			await this.cache.addChannelMember(
-				channel.id,
-				newState.member.id,
-				new Date(),
-			);
-
-			// Track channel in database (all channels are tracked, including read-only ones)
-			// First upsert the channel to ensure it exists
-			await this.dbCore.upsertChannel({
-				discordId: channel.id,
-				guildId: channel.guild.id,
-				channelName: channel.name,
-				position: channel.position,
-				isActive: true,
-				activeUserIds: [], // Will be populated by addChannelMember
-				memberCount: 0, // Will be updated by addChannelMember
-			});
-
-			// Then add the member to the channel
-			await this.dbCore.addChannelMember(
-				channel.id,
-				channel.guild.id,
-				newState.member.id,
-			);
-
-			// Create voice channel session record
-			await this.dbCore.createVoiceChannelSession({
-				userId: newState.member.id,
-				guildId: channel.guild.id,
-				channelId: channel.id,
-				channelName: channel.name,
-				joinedAt: new Date(),
-				leftAt: undefined,
-				duration: undefined,
-				isActive: true,
-			});
 		} catch (error) {
 			console.warn(`🔸 Failed to track voice interaction: ${error}`);
 		}
 
-		// Check if this is the spawn channel from environment config
-		if (!config.spawnChannelId || channel.id !== config.spawnChannelId) {
+		// Check if this is a spawn channel from environment config
+		if (
+			!config.spawnChannelIds ||
+			!config.spawnChannelIds.includes(channel.id)
+		) {
 			return;
 		}
 
@@ -1045,7 +1026,7 @@ export class VoiceManager implements IVoiceManager {
 		// Create default config for channel creation
 		const defaultConfig: VoiceChannelConfig = {
 			guildId: newState.guild.id,
-			spawnChannelId: config.spawnChannelId,
+			spawnChannelIds: config.spawnChannelIds || [],
 			channelNameTemplate: "{displayname}'s Room",
 			maxChannels: 10,
 			channelLimit: 10,
@@ -1070,47 +1051,18 @@ export class VoiceManager implements IVoiceManager {
 		const channel = oldState.channel;
 		if (!channel || !oldState.member) return;
 
-		console.log(
-			`🔍 handleUserLeft called for user ${oldState.member.user.username} leaving channel ${channel.id}`,
-		);
-
-		// Update voice interaction in database
-		try {
-			const activeSession = await this.cache.getActiveVoiceSession(
-				oldState.member.id,
+		if (this.debugEnabled) {
+			console.log(
+				`🔍 handleUserLeft called for user ${oldState.member.user.username} leaving channel ${channel.id}`,
 			);
-			if (activeSession && activeSession.channelId === channel.id) {
-				const leftAt = new Date();
-				const duration = Math.floor(
-					(leftAt.getTime() - activeSession.joinedAt.getTime()) / 1000,
-				);
+		}
 
-				await this.dbCore.updateVoiceInteraction(
-					oldState.member.id,
-					channel.guild.id,
-					channel.id,
-					leftAt,
-					duration,
-				);
-
-				// Remove from Redis caches
-				await this.cache.removeActiveVoiceSession(oldState.member.id);
-				await this.cache.removeChannelMember(channel.id, oldState.member.id);
-
-				// Remove from channel tracking in database (all channels are tracked)
-				await this.dbCore.removeChannelMember(
-					channel.id,
-					channel.guild.id,
-					oldState.member.id,
-				);
-
-				// End voice channel session
-				await this.dbCore.endVoiceChannelSession(
-					oldState.member.id,
-					channel.id,
-					leftAt,
-				);
-			}
+		// Track voice interaction using centralized service
+		try {
+			await this.sessionTracker.trackUserLeave(
+				oldState.member,
+				channel as VoiceChannel,
+			);
 		} catch (error) {
 			console.warn(`🔸 Failed to update voice interaction: ${error}`);
 		}
@@ -1119,7 +1071,10 @@ export class VoiceManager implements IVoiceManager {
 		await this.restoreUserNickname(oldState.member.id, oldState.guild.id);
 
 		// Check if this is a dynamic voice channel (created by our system)
-		if (channel.name.includes("'s Room | #")) {
+		if (
+			channel.name.includes("'s Room | #") ||
+			channel.name.includes("'s Channel")
+		) {
 			// Check if channel is now empty
 			if (channel.members.size === 0) {
 				console.log(`🔹 Auto-deleting empty dynamic channel: ${channel.name}`);
@@ -1139,6 +1094,20 @@ export class VoiceManager implements IVoiceManager {
 	}
 
 	private async handleUserMoved(oldState: VoiceState, newState: VoiceState) {
+		if (!oldState.member || !newState.member) return;
+
+		// Track voice interaction using centralized service
+		try {
+			await this.sessionTracker.trackUserMove(
+				newState.member,
+				oldState.channel as VoiceChannel,
+				newState.channel as VoiceChannel,
+			);
+		} catch (error) {
+			console.warn(`🔸 Failed to track voice move: ${error}`);
+		}
+
+		// Handle business logic (nickname restoration, channel management, etc.)
 		await this.handleUserLeft(oldState);
 		await this.handleUserJoined(newState);
 	}
@@ -1211,92 +1180,87 @@ export class VoiceManager implements IVoiceManager {
 			console.warn(`🔸 Failed to update channel name in database: ${error}`);
 		}
 
-		// Update the user's preferred channel name in the database using the new system
+		// Update user's preferred channel name when they manually rename via Discord UI
+		// This allows moderators to rename channels without using commands (avoiding rate limits)
 		try {
-			// Use DatabaseCore to update mod preferences in the users collection
+			// Check if this rename was likely initiated by the user (not our bot)
+			// We can detect this by checking if the new name doesn't match our naming patterns
+			const isUserInitiatedRename = !this.isBotGeneratedName(
+				newVoiceChannel.name,
+				owner.userId,
+			);
+
+			if (isUserInitiatedRename) {
+				console.log(
+					`🔹 User manually renamed channel to: "${newVoiceChannel.name}"`,
+				);
+
+				// Update the user's preferred channel name in the database
+				await this.updateUserPreferredChannelName(
+					owner.userId,
+					newVoiceChannel.guild.id,
+					newVoiceChannel.name,
+				);
+
+				console.log(
+					`✅ Updated preferred channel name for user ${owner.userId}: "${newVoiceChannel.name}"`,
+				);
+			} else {
+				console.log(
+					"🔸 Skipping preference update - rename appears to be bot-generated",
+				);
+			}
+		} catch (error) {
+			console.warn(`🔸 Failed to update preferred channel name: ${error}`);
+		}
+	}
+
+	/**
+	 * Check if a channel name appears to be generated by our bot
+	 * This helps distinguish between bot-initiated renames and user-initiated renames
+	 */
+	private isBotGeneratedName(channelName: string, ownerId: string): boolean {
+		// Get the owner's display name to check against our naming patterns
+		const guild = this.client.guilds.cache.first();
+		if (!guild) return false;
+
+		const member = guild.members.cache.get(ownerId);
+		if (!member) return false;
+
+		const ownerDisplayName =
+			member.nickname || member.displayName || member.user.username;
+		const expectedBotName = `${ownerDisplayName}'s Channel`;
+
+		// If the name matches our bot's naming pattern, it's likely bot-generated
+		return channelName === expectedBotName;
+	}
+
+	/**
+	 * Update user's preferred channel name in the database
+	 */
+	private async updateUserPreferredChannelName(
+		userId: string,
+		guildId: string,
+		channelName: string,
+	): Promise<void> {
+		try {
+			// Use DatabaseCore to update mod preferences
 			const { DatabaseCore } = await import("../database-manager/PostgresCore");
 			const dbCore = new DatabaseCore();
 			await dbCore.initialize();
 
-			// First, ensure the user exists in the database
-			const user = await dbCore.getUser(owner.userId, newVoiceChannel.guild.id);
-			if (!user) {
-				// User doesn't exist, create them with Discord data
-				try {
-					const member = await newVoiceChannel.guild.members.fetch(
-						owner.userId,
-					);
-					if (member) {
-						const userData: Omit<
-							import("../../types/database").User,
-							"_id" | "createdAt" | "updatedAt"
-						> = {
-							discordId: owner.userId,
-							username: member.user.username,
-							displayName: member.displayName,
-							nickname: member.nickname || undefined,
-							discriminator: member.user.discriminator,
-							avatar: member.user.displayAvatarURL(),
-							avatarHistory: [],
-							bot: member.user.bot,
-							usernameHistory: [],
-							displayNameHistory: [],
-							nicknameHistory: [],
-							roles: member.roles.cache.map((role) => role.id),
-							joinedAt: member.joinedAt || new Date(),
-							lastSeen: new Date(),
-							statusHistory: [],
-							status: "",
-							relationships: [],
-							voiceInteractions: [],
-							modPreferences: {
-								bannedUsers: [],
-								mutedUsers: [],
-								kickedUsers: [],
-								deafenedUsers: [],
-								renamedUsers: [],
-								modHistory: [],
-								lastUpdated: new Date(),
-								preferredChannelName: newVoiceChannel.name,
-							},
-						};
-						await dbCore.upsertUser(userData);
-						console.log(
-							`✅ Created user ${owner.userId} with preferred channel name: "${newVoiceChannel.name}"`,
-						);
-					}
-				} catch (memberError) {
-					console.warn(
-						`🔸 Could not fetch Discord member data for ${owner.userId}:`,
-						memberError,
-					);
-					// Skip updating preferences if we can't get user data
-					return;
-				}
-			} else {
-				// User exists, update their preferences
-				await dbCore.updateModPreferences(
-					owner.userId,
-					newVoiceChannel.guild.id,
-					{
-						preferredChannelName: newVoiceChannel.name,
-					},
-				);
-				console.log(
-					`✅ Updated preferred channel name for user ${owner.userId}: "${newVoiceChannel.name}"`,
-				);
-			}
+			// Update the user's preferred channel name
+			await dbCore.updateModPreferences(userId, guildId, {
+				preferredChannelName: channelName,
+			});
 
 			// Invalidate cache to ensure fresh data is fetched
-			await this.cache.invalidateUserPreferences(
-				owner.userId,
-				newVoiceChannel.guild.id,
-			);
+			await this.cache.invalidateUserPreferences(userId, guildId);
 		} catch (error) {
 			console.error(
-				`🔸 Failed to update preferred channel name for user ${owner.userId}:`,
-				error,
+				`🔸 Failed to update preferred channel name in database: ${error}`,
 			);
+			throw error;
 		}
 	}
 
@@ -1321,13 +1285,42 @@ export class VoiceManager implements IVoiceManager {
 		const randomId = Math.floor(Math.random() * 1000)
 			.toString()
 			.padStart(3, "0");
-		const channelName = `${member.displayName}'s Room | #${randomId}`;
+
+		// Get the proper channel name using our centralized naming service
+		const memberDisplayName =
+			member.nickname || member.displayName || member.user.username;
+
+		// Check if user has a preferred channel name in their preferences
+		let channelName = `${memberDisplayName}'s Channel`; // Default fallback
+
+		try {
+			const preferences = await this.getUserPreferences(
+				member.id,
+				member.guild.id,
+			);
+			if (preferences?.preferredChannelName) {
+				channelName = preferences.preferredChannelName;
+				console.log(`🔹 Using user's preferred channel name: "${channelName}"`);
+			}
+		} catch (error) {
+			console.warn(
+				`🔸 Failed to get user preferences for channel naming: ${error}`,
+			);
+			// Fall back to default naming
+		}
 
 		// Get the spawn channel to determine positioning and privacy settings
-		const spawnChannel = member.guild.channels.cache.get(config.spawnChannelId);
+		// Use the first spawn channel if multiple are configured
+		const spawnChannelId = config.spawnChannelIds?.[0];
+		if (!spawnChannelId) {
+			console.warn("🔸 No spawn channels configured");
+			return;
+		}
+
+		const spawnChannel = member.guild.channels.cache.get(spawnChannelId);
 		if (!spawnChannel || !spawnChannel.isVoiceBased()) {
 			console.warn(
-				`🔸 Spawn channel ${config.spawnChannelId} not found or not a voice channel`,
+				`🔸 Spawn channel ${spawnChannelId} not found or not a voice channel`,
 			);
 			return;
 		}
@@ -1880,38 +1873,10 @@ export class VoiceManager implements IVoiceManager {
 			const voiceChannel = channel as VoiceChannel;
 			const preferences = await this.getUserPreferences(userId, guildId);
 
-			// Determine the channel name to use
-			let channelNameToUse: string | null = null;
-
-			if (preferences?.preferredChannelName) {
-				// Use user's preferred channel name
-				channelNameToUse = preferences.preferredChannelName;
-			} else {
-				// Auto-generate channel name based on owner's display name
-				const member = voiceChannel.guild.members.cache.get(userId);
-				if (member) {
-					const ownerDisplayName = member.displayName || member.user.username;
-					channelNameToUse = `${ownerDisplayName}'s Channel`;
-				}
-			}
-
-			// Rename the channel if we have a name and it's different from current
-			if (channelNameToUse && voiceChannel.name !== channelNameToUse) {
-				// Skip renaming if channel is named "Available" or similar
-				if (!voiceChannel.name.toLowerCase().includes("available")) {
-					try {
-						await voiceChannel.setName(channelNameToUse);
-						console.log(
-							`🔹 Renamed channel to "${channelNameToUse}" for owner ${userId}`,
-						);
-					} catch (error) {
-						console.log(
-							`🔸 Could not rename channel to "${channelNameToUse}": ${error}`,
-						);
-						// Continue without renaming - ownership assignment still succeeded
-					}
-				}
-			}
+			// Channel naming is now handled during creation, no need to rename here
+			// await this.namingService.setNameForOwner(voiceChannel, userId, {
+			// 	skipRenamePatterns: ["available", "new channel", "temp"],
+			// });
 
 			if (preferences) {
 				// User limit - applies immediately to channel capacity
@@ -1976,7 +1941,7 @@ export class VoiceManager implements IVoiceManager {
 		// Return default config - guild configs are no longer cached
 		const defaultConfig: VoiceChannelConfig = {
 			guildId,
-			spawnChannelId: "",
+			spawnChannelIds: config.spawnChannelIds || [],
 			channelNameTemplate: "{displayname}'s Room",
 			maxChannels: 10,
 			channelLimit: 10,
@@ -2019,179 +1984,12 @@ export class VoiceManager implements IVoiceManager {
 		channelId: string,
 		ownerId: string,
 	): Promise<void> {
-		// Skip preference application for read-only channels
-		if (this.isReadOnlyChannel(channelId)) {
-			console.log(
-				`🔸 Channel ${channelId} is read-only, skipping preference application`,
-			);
-			return;
-		}
-
-		let channel: VoiceChannel | null = null;
-		try {
-			const fetchedChannel = await this.client.channels.fetch(channelId);
-			if (
-				fetchedChannel?.isVoiceBased() &&
-				fetchedChannel.type === ChannelType.GuildVoice
-			) {
-				channel = fetchedChannel as VoiceChannel;
-			} else {
-				return;
-			}
-		} catch (error) {
-			console.warn(
-				`🔸 Failed to fetch channel ${channelId} for preferences: ${error}`,
-			);
-			return;
-		}
-
-		const preferences = await this.getUserPreferences(
-			ownerId,
-			channel.guild.id,
+		// DISABLED: This method causes channel naming conflicts
+		// Channel naming is now handled by ChannelNamingService
+		console.log(
+			"🔸 applyUserPreferencesToChannel disabled to prevent naming conflicts",
 		);
-
-		// Apply channel settings (name, limit, visibility)
-		if (preferences?.preferredChannelName) {
-			console.log(
-				`🔹 Restoring channel name to: ${preferences.preferredChannelName}`,
-			);
-
-			// Only rename if the current name is different
-			if (channel.name !== preferences.preferredChannelName) {
-				try {
-					// Use REST API first with longer timeout
-					const restPromise = this.client.rest.patch(
-						`/channels/${channel.id}`,
-						{
-							body: { name: preferences.preferredChannelName },
-						},
-					);
-					const restTimeoutPromise = new Promise((_, reject) =>
-						setTimeout(
-							() => reject(new Error("REST API rename timeout")),
-							15000, // Increased to 15 second timeout
-						),
-					);
-					await Promise.race([restPromise, restTimeoutPromise]);
-				} catch (error) {
-					// Fallback to discord.js method with longer timeout
-					try {
-						const renamePromise = channel.setName(
-							preferences.preferredChannelName,
-						);
-						const timeoutPromise = new Promise((_, reject) =>
-							setTimeout(
-								() => reject(new Error("Channel rename timeout")),
-								10000, // Increased to 10 second timeout
-							),
-						);
-						await Promise.race([renamePromise, timeoutPromise]);
-					} catch (fallbackError) {
-						console.log(
-							`🔸 Failed to restore channel name: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
-						);
-						// Don't throw error, just log it - the claim should still succeed
-					}
-				}
-			}
-		} else {
-			// Default to "{Display Name}'s Channel" if no preferred name is set
-			try {
-				const member = await channel.guild.members.fetch(ownerId);
-				const displayName = member.displayName || member.user.username;
-				const defaultName = `${displayName}'s Channel`;
-
-				// Only rename if the current name is different
-				if (channel.name !== defaultName) {
-					// Use REST API first with longer timeout
-					const restPromise = this.client.rest.patch(
-						`/channels/${channel.id}`,
-						{
-							body: { name: defaultName },
-						},
-					);
-					const restTimeoutPromise = new Promise((_, reject) =>
-						setTimeout(
-							() => reject(new Error("REST API rename timeout")),
-							15000, // Increased to 15 second timeout
-						),
-					);
-					await Promise.race([restPromise, restTimeoutPromise]);
-				}
-			} catch (error) {
-				console.log(
-					`🔸 Failed to set default channel name via REST API: ${error instanceof Error ? error.message : String(error)}`,
-				);
-				// Fallback to discord.js method with longer timeout
-				try {
-					const member = await channel.guild.members.fetch(ownerId);
-					const displayName = member.displayName || member.user.username;
-					const defaultName = `${displayName}'s Channel`;
-
-					// Only rename if the current name is different
-					if (channel.name !== defaultName) {
-						const renamePromise = channel.setName(defaultName);
-						const timeoutPromise = new Promise((_, reject) =>
-							setTimeout(
-								() => reject(new Error("Channel rename timeout")),
-								10000, // Increased to 10 second timeout
-							),
-						);
-						await Promise.race([renamePromise, timeoutPromise]);
-					}
-				} catch (fallbackError) {
-					console.log(
-						`🔸 Failed to set default channel name: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
-					);
-					// Don't throw error, just log it - the claim should still succeed
-				}
-			}
-		}
-
-		if (preferences?.preferredUserLimit) {
-			try {
-				await channel.setUserLimit(preferences.preferredUserLimit);
-			} catch (_error) {
-				// Insufficient permissions to change user limit
-			}
-		}
-
-		if (preferences?.preferredLocked !== undefined) {
-			try {
-				await channel.permissionOverwrites.edit(channel.guild.roles.everyone, {
-					Connect: !preferences.preferredLocked,
-				});
-			} catch (_error) {
-				// Insufficient permissions to change channel lock state
-			}
-		}
-
-		// Initialize call state for this channel
-		const callState: CallState = {
-			channelId,
-			currentOwner: ownerId,
-			mutedUsers: [],
-			deafenedUsers: [],
-			kickedUsers: [],
-			lastUpdated: new Date(),
-		};
-
-		// Only apply bans to users currently in the channel (not mutes/deafens)
-		if (preferences?.bannedUsers) {
-			for (const bannedUserId of preferences.bannedUsers) {
-				const member = channel.members.get(bannedUserId);
-				if (member) {
-					try {
-						await member.voice.disconnect("Owner preferences: pre-banned");
-					} catch (_error) {
-						// User may have already left the channel
-					}
-				}
-			}
-		}
-
-		// Store call state
-		await this.cache.setCallState(channelId, callState);
+		return;
 	}
 
 	async getCallState(channelId: string): Promise<CallState | null> {
@@ -3525,7 +3323,8 @@ export class VoiceManager implements IVoiceManager {
 				const dynamicChannels = guild.channels.cache.filter(
 					(channel) =>
 						channel.type === ChannelType.GuildVoice &&
-						channel.name.includes("'s Room | #"),
+						(channel.name.includes("'s Room | #") ||
+							channel.name.includes("'s Channel")),
 				) as Collection<string, VoiceChannel>;
 
 				for (const channel of dynamicChannels.values()) {
@@ -3593,7 +3392,8 @@ export class VoiceManager implements IVoiceManager {
 				const dynamicChannels = guild.channels.cache.filter(
 					(channel) =>
 						channel.type === ChannelType.GuildVoice &&
-						channel.name.includes("'s Room | #"),
+						(channel.name.includes("'s Room | #") ||
+							channel.name.includes("'s Channel")),
 				) as Collection<string, VoiceChannel>;
 
 				total += dynamicChannels.size;
@@ -3723,90 +3523,6 @@ export class VoiceManager implements IVoiceManager {
 		}
 	}
 
-	// ==================== VOICE TRACKING ====================
-
-	private async trackVoiceStateUpdate(
-		oldState: VoiceState,
-		newState: VoiceState,
-	): Promise<void> {
-		try {
-			if (!newState.guild || !newState.member) return;
-
-			const userId = newState.member.id;
-			const guildId = newState.guild.id;
-
-			// Skip tracking for bots
-			if (newState.member.user.bot) return;
-
-			// Skip tracking for AFK channels
-			const channel = newState.channel;
-			if (channel && this.isAFKChannel(channel)) return;
-
-			// User joined a voice channel (from no channel)
-			if (!oldState.channelId && newState.channelId) {
-				// Close any existing active sessions for this user (fixes multiple active sessions bug)
-				await this.closeAllActiveSessionsForUser(userId, guildId);
-
-				const session: VoiceInteraction = {
-					channelId: newState.channelId,
-					channelName: channel?.name || "Unknown Channel",
-					guildId,
-					joinedAt: new Date(),
-				};
-
-				await this.dbCore.addVoiceInteraction(userId, guildId, session);
-				this.activeVoiceSessions.set(userId, session);
-			}
-
-			// User moved between voice channels
-			if (
-				oldState.channelId &&
-				newState.channelId &&
-				oldState.channelId !== newState.channelId
-			) {
-				// Close previous session
-				const leftAt = new Date();
-				await this.dbCore.updateVoiceInteraction(
-					userId,
-					guildId,
-					oldState.channelId,
-					leftAt,
-					0, // Duration will be calculated by the database
-				);
-				this.activeVoiceSessions.delete(userId);
-
-				// Open new session
-				const joinedAt = new Date();
-				const newSession: VoiceInteraction = {
-					channelId: newState.channelId,
-					channelName: newState.channel?.name || "Unknown Channel",
-					guildId,
-					joinedAt,
-				};
-				await this.dbCore.addVoiceInteraction(userId, guildId, newSession);
-				this.activeVoiceSessions.set(userId, newSession);
-			}
-
-			// User left a voice channel (to no channel)
-			if (oldState.channelId && !newState.channelId) {
-				const session = this.activeVoiceSessions.get(userId);
-				if (session) {
-					const leftAt = new Date();
-					await this.dbCore.updateVoiceInteraction(
-						userId,
-						guildId,
-						oldState.channelId,
-						leftAt,
-						0, // Duration will be calculated by the database
-					);
-					this.activeVoiceSessions.delete(userId);
-				}
-			}
-		} catch (error) {
-			console.error("🔸 Error tracking voice state update:", error);
-		}
-	}
-
 	// ==================== GUILD MEMBER TRACKING ====================
 
 	private async trackGuildMemberUpdate(newMember: GuildMember): Promise<void> {
@@ -3824,6 +3540,7 @@ export class VoiceManager implements IVoiceManager {
 				"_id" | "createdAt" | "updatedAt"
 			> = {
 				discordId: newMember.id,
+				guildId: newMember.guild.id,
 				username: newMember.user.username,
 				displayName: newMember.displayName,
 				nickname: newMember.nickname || undefined,
@@ -4043,6 +3760,7 @@ export class VoiceManager implements IVoiceManager {
 	 */
 	async cleanup(): Promise<void> {
 		this.stopOrphanedChannelWatcher();
+		this.stopSessionReconciliation();
 		await this.cleanupActiveSessions();
 		if (this.debugEnabled) console.log("🔹 VoiceManager cleanup completed");
 	}

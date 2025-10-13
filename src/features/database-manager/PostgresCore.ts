@@ -1,3 +1,4 @@
+import type { PoolClient } from "pg";
 import type {
 	AvatarHistory,
 	Channel,
@@ -131,6 +132,76 @@ export class DatabaseCore {
 		`;
 
 		await executeQuery(query, [
+			user.discordId,
+			user.guildId,
+			user.bot,
+			user.username,
+			user.displayName,
+			user.nickname,
+			user.discriminator,
+			user.avatar,
+			user.status,
+			user.roles,
+			user.joinedAt,
+			user.lastSeen,
+			JSON.stringify(user.avatarHistory),
+			user.usernameHistory,
+			user.displayNameHistory,
+			user.nicknameHistory,
+			JSON.stringify(user.statusHistory),
+			user.emoji,
+			user.title,
+			user.summary,
+			user.keywords,
+			user.notes,
+			JSON.stringify(user.relationships),
+			JSON.stringify(user.modPreferences),
+			JSON.stringify(user.voiceInteractions),
+		]);
+	}
+
+	async upsertUserTransaction(
+		client: PoolClient,
+		user: Omit<User, "id" | "createdAt" | "updatedAt">,
+	): Promise<void> {
+		const query = `
+			INSERT INTO ${this.tables.users} (
+				discord_id, guild_id, bot, username, display_name, nickname, discriminator,
+				avatar, status, roles, joined_at, last_seen, avatar_history,
+				username_history, display_name_history, nickname_history, status_history, emoji,
+				title, summary, keywords, notes, relationships, mod_preferences, voice_interactions
+			) VALUES (
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25
+			)
+			ON CONFLICT (discord_id, guild_id) 
+			DO UPDATE SET
+				bot = EXCLUDED.bot,
+				username = EXCLUDED.username,
+				display_name = EXCLUDED.display_name,
+				nickname = EXCLUDED.nickname,
+				discriminator = EXCLUDED.discriminator,
+				avatar = EXCLUDED.avatar,
+				status = EXCLUDED.status,
+				roles = EXCLUDED.roles,
+				joined_at = EXCLUDED.joined_at,
+				last_seen = EXCLUDED.last_seen,
+				avatar_history = EXCLUDED.avatar_history,
+				username_history = EXCLUDED.username_history,
+				display_name_history = EXCLUDED.display_name_history,
+				nickname_history = EXCLUDED.nickname_history,
+				status_history = EXCLUDED.status_history,
+				emoji = EXCLUDED.emoji,
+				title = EXCLUDED.title,
+				summary = EXCLUDED.summary,
+				keywords = EXCLUDED.keywords,
+				notes = EXCLUDED.notes,
+				relationships = EXCLUDED.relationships,
+				mod_preferences = EXCLUDED.mod_preferences,
+				voice_interactions = EXCLUDED.voice_interactions,
+				updated_at = CURRENT_TIMESTAMP
+		`;
+
+		await client.query(query, [
 			user.discordId,
 			user.guildId,
 			user.bot,
@@ -885,6 +956,36 @@ export class DatabaseCore {
 		}, `upsertChannel(${channel.discordId})`);
 	}
 
+	async upsertChannelTransaction(
+		client: PoolClient,
+		channel: Omit<Channel, "id" | "createdAt" | "updatedAt">,
+	): Promise<void> {
+		const query = `
+			INSERT INTO ${this.tables.channels} (
+				discord_id, guild_id, channel_name, position, is_active, active_user_ids, member_count
+			) VALUES (
+				$1, $2, $3, $4, $5, $6, $7
+			)
+			ON CONFLICT (discord_id, guild_id)
+			DO UPDATE SET
+				channel_name = EXCLUDED.channel_name,
+				position = EXCLUDED.position,
+				is_active = EXCLUDED.is_active,
+				active_user_ids = EXCLUDED.active_user_ids,
+				member_count = EXCLUDED.member_count,
+				updated_at = CURRENT_TIMESTAMP
+		`;
+		await client.query(query, [
+			channel.discordId,
+			channel.guildId,
+			channel.channelName,
+			channel.position,
+			channel.isActive,
+			channel.activeUserIds,
+			channel.memberCount,
+		]);
+	}
+
 	async getChannel(
 		discordId: string,
 		guildId: string,
@@ -954,6 +1055,51 @@ export class DatabaseCore {
 			`;
 			await executeQuery(query, [discordId, guildId, userId]);
 		}, `removeChannelMember(${discordId}, ${userId})`);
+	}
+
+	async addChannelMemberTransaction(
+		client: PoolClient,
+		discordId: string,
+		guildId: string,
+		userId: string,
+	): Promise<void> {
+		const query = `
+			UPDATE ${this.tables.channels}
+			SET 
+				active_user_ids = CASE 
+					WHEN $3 = ANY(active_user_ids) THEN active_user_ids
+					ELSE active_user_ids || $3
+				END,
+				member_count = CASE 
+					WHEN $3 = ANY(active_user_ids) THEN member_count
+					ELSE member_count + 1
+				END,
+				is_active = TRUE,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE discord_id = $1 AND guild_id = $2
+		`;
+		await client.query(query, [discordId, guildId, userId]);
+	}
+
+	async removeChannelMemberTransaction(
+		client: PoolClient,
+		discordId: string,
+		guildId: string,
+		userId: string,
+	): Promise<void> {
+		const query = `
+			UPDATE ${this.tables.channels}
+			SET 
+				active_user_ids = array_remove(active_user_ids, $3),
+				member_count = GREATEST(member_count - 1, 0),
+				is_active = CASE 
+					WHEN array_length(array_remove(active_user_ids, $3), 1) IS NULL THEN FALSE
+					ELSE TRUE
+				END,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE discord_id = $1 AND guild_id = $2
+		`;
+		await client.query(query, [discordId, guildId, userId]);
 	}
 
 	async setChannelInactive(discordId: string, guildId: string): Promise<void> {
@@ -1088,6 +1234,64 @@ export class DatabaseCore {
 		}, `getCurrentVoiceChannelSession(${userId})`);
 	}
 
+	// ==================== TRANSACTIONAL VOICE CHANNEL SESSION OPERATIONS ====================
+
+	async createVoiceChannelSessionTransaction(
+		client: PoolClient,
+		session: Omit<VoiceChannelSession, "id" | "createdAt" | "updatedAt">,
+	): Promise<void> {
+		const query = `
+			INSERT INTO ${this.tables.voiceChannelSessions} (
+				user_id, guild_id, channel_id, channel_name, joined_at, left_at, duration, is_active
+			) VALUES (
+				$1, $2, $3, $4, $5, $6, $7, $8
+			)
+		`;
+		await client.query(query, [
+			session.userId,
+			session.guildId,
+			session.channelId,
+			session.channelName,
+			session.joinedAt,
+			session.leftAt,
+			session.duration,
+			session.isActive,
+		]);
+	}
+
+	async endVoiceChannelSessionTransaction(
+		client: PoolClient,
+		userId: string,
+		channelId: string,
+		leftAt: Date,
+		duration?: number,
+	): Promise<void> {
+		const query = `
+			UPDATE ${this.tables.voiceChannelSessions}
+			SET 
+				left_at = $3,
+				duration = $4,
+				is_active = FALSE,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE user_id = $1 AND channel_id = $2 AND is_active = TRUE
+		`;
+		await client.query(query, [userId, channelId, leftAt, duration]);
+	}
+
+	async getCurrentVoiceChannelSessionTransaction(
+		client: PoolClient,
+		userId: string,
+	): Promise<VoiceChannelSession | null> {
+		const query = `
+			SELECT * FROM ${this.tables.voiceChannelSessions}
+			WHERE user_id = $1 AND is_active = TRUE
+			ORDER BY joined_at DESC
+			LIMIT 1
+		`;
+		const result = await client.query(query, [userId]);
+		return result.rows[0] || null;
+	}
+
 	// ==================== DATA SYNCHRONIZATION ====================
 
 	async syncChannelActiveUsers(channelId: string): Promise<void> {
@@ -1126,7 +1330,7 @@ export class DatabaseCore {
 			for (const channel of channels) {
 				await this.syncChannelActiveUsers(channel.discordId);
 			}
-		}, `syncAllChannelsActiveUsers()`);
+		}, "syncAllChannelsActiveUsers()");
 	}
 
 	// ==================== MAINTENANCE ====================

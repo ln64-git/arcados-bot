@@ -563,10 +563,8 @@ export class DatabaseManager {
 			console.log("🔧 Cleaning up active voice sessions...");
 
 			// Get all active voice channel sessions
-			const activeSessions = await this.postgresCore.query(`
-				SELECT * FROM voice_channel_sessions 
-				WHERE is_active = TRUE
-			`);
+			const activeSessions =
+				await this.postgresCore.getActiveVoiceChannelSessions();
 
 			let cleanedCount = 0;
 
