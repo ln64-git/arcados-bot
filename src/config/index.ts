@@ -14,7 +14,7 @@ export interface BotConfig {
 	starboardChannelId?: string;
 
 	// Database settings
-	mongoUri?: string;
+	postgresUrl?: string;
 	dbName: string;
 
 	// Cache settings
@@ -51,8 +51,8 @@ function validateConfig(): BotConfig {
 		starboardChannelId: process.env.STARBOARD_CHANNEL_ID,
 
 		// Database settings
-		mongoUri: process.env.MONGO_URI,
-		dbName: process.env.DB_NAME || "discord-bot",
+		postgresUrl: process.env.POSTGRES_URL,
+		dbName: process.env.DB_NAME || "arcados",
 
 		// Cache settings
 		redisUrl: process.env.REDIS_URL,

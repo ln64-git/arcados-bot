@@ -8,7 +8,7 @@ import type {
 	VoiceChannelConfig,
 	VoiceChannelOwner,
 } from "../../types";
-import { getDatabase } from "../database-manager/DatabaseConnection";
+import { DatabaseCore } from "../database-manager/PostgresCore";
 import { RedisCache, getRedisClient } from "./RedisManager";
 
 export class DiscordDataCache {
@@ -31,70 +31,131 @@ export class DiscordDataCache {
 		}
 	}
 
-	// Channel Ownership Methods
-	async getChannelOwner(channelId: string): Promise<VoiceChannelOwner | null> {
-		// Try Redis first
+	// Channel Ownership Methods (Redis only - no DB persistence)
+	async getChannelOwnershipCache(channelId: string): Promise<{
+		userId: string;
+		ownedSince: Date;
+		previousOwnerId?: string;
+	} | null> {
 		if (this.redisAvailable && this.redisCache) {
-			const cached = await this.redisCache.getChannelOwner(channelId);
+			const cached = await this.redisCache.get(`channel_owner:${channelId}`);
 			if (cached) {
-				return cached as VoiceChannelOwner;
+				return JSON.parse(cached);
 			}
 		}
-
-		// Fallback to MongoDB
-		try {
-			const db = await getDatabase();
-			const owner = await db.collection("channelOwners").findOne({ channelId });
-			if (owner) {
-				const typedOwner = owner as unknown as VoiceChannelOwner;
-
-				// Cache in Redis for next time
-				if (this.redisAvailable && this.redisCache) {
-					await this.redisCache.setChannelOwner(channelId, typedOwner);
-				}
-
-				return typedOwner;
-			}
-		} catch (error) {
-			console.warn(`🔸 Failed to fetch channel owner from database: ${error}`);
-		}
-
 		return null;
 	}
 
-	async setChannelOwner(
+	async setChannelOwnershipCache(
 		channelId: string,
-		owner: VoiceChannelOwner,
+		data: {
+			userId: string;
+			ownedSince: Date;
+			previousOwnerId?: string;
+		},
 	): Promise<void> {
-		// Update Redis first for immediate availability
 		if (this.redisAvailable && this.redisCache) {
-			await this.redisCache.setChannelOwner(channelId, owner);
-		}
-
-		// Persist to MongoDB
-		try {
-			const db = await getDatabase();
-			await db
-				.collection("channelOwners")
-				.replaceOne({ channelId }, owner, { upsert: true });
-		} catch (error) {
-			console.warn(`🔸 Failed to persist channel owner to database: ${error}`);
+			await this.redisCache.set(
+				`channel_owner:${channelId}`,
+				JSON.stringify(data),
+				3600, // 1 hour TTL
+			);
 		}
 	}
 
-	async removeChannelOwner(channelId: string): Promise<void> {
-		// Remove from Redis first
+	async removeChannelOwnershipCache(channelId: string): Promise<void> {
 		if (this.redisAvailable && this.redisCache) {
-			await this.redisCache.delChannelOwner(channelId);
+			await this.redisCache.del(`channel_owner:${channelId}`);
 		}
+	}
 
-		// Remove from MongoDB
-		try {
-			const db = await getDatabase();
-			await db.collection("channelOwners").deleteOne({ channelId });
-		} catch (error) {
-			console.warn(`🔸 Failed to remove channel owner from database: ${error}`);
+	// Active Voice Session Methods (Redis only)
+	async getActiveVoiceSession(userId: string): Promise<{
+		channelId: string;
+		channelName: string;
+		guildId: string;
+		joinedAt: Date;
+	} | null> {
+		if (this.redisAvailable && this.redisCache) {
+			const cached = await this.redisCache.get(`active_voice:${userId}`);
+			if (cached) {
+				const data = JSON.parse(cached);
+				return {
+					...data,
+					joinedAt: new Date(data.joinedAt),
+				};
+			}
 		}
+		return null;
+	}
+
+	async setActiveVoiceSession(
+		userId: string,
+		session: {
+			channelId: string;
+			channelName: string;
+			guildId: string;
+			joinedAt: Date;
+		},
+	): Promise<void> {
+		if (this.redisAvailable && this.redisCache) {
+			await this.redisCache.set(
+				`active_voice:${userId}`,
+				JSON.stringify(session),
+				3600, // 1 hour TTL
+			);
+		}
+	}
+
+	async removeActiveVoiceSession(userId: string): Promise<void> {
+		if (this.redisAvailable && this.redisCache) {
+			await this.redisCache.del(`active_voice:${userId}`);
+		}
+	}
+
+	// Channel Members Methods (Redis only)
+	async addChannelMember(
+		channelId: string,
+		userId: string,
+		joinedAt: Date,
+	): Promise<void> {
+		if (this.redisAvailable && this.redisCache) {
+			const key = `channel_members:${channelId}`;
+			const memberData = { userId, joinedAt: joinedAt.toISOString() };
+			await this.redisCache.sadd(key, JSON.stringify(memberData));
+			await this.redisCache.expire(key, 3600); // 1 hour TTL
+		}
+	}
+
+	async removeChannelMember(channelId: string, userId: string): Promise<void> {
+		if (this.redisAvailable && this.redisCache) {
+			const key = `channel_members:${channelId}`;
+			const members = await this.redisCache.smembers(key);
+			for (const member of members) {
+				const memberData = JSON.parse(member);
+				if (memberData.userId === userId) {
+					await this.redisCache.srem(key, member);
+					break;
+				}
+			}
+		}
+	}
+
+	async getChannelMembers(
+		channelId: string,
+	): Promise<Array<{ userId: string; joinedAt: Date }>> {
+		if (this.redisAvailable && this.redisCache) {
+			const key = `channel_members:${channelId}`;
+			const members = await this.redisCache.smembers(key);
+			return members.map((member) => {
+				const memberData = JSON.parse(member);
+				return {
+					userId: memberData.userId,
+					joinedAt: new Date(memberData.joinedAt),
+				};
+			});
+		}
+		return [];
 	}
 
 	// User Preferences Methods
@@ -110,16 +171,13 @@ export class DiscordDataCache {
 			}
 		}
 
-		// Fallback to MongoDB
+		// Fallback to PostgreSQL via DatabaseCore
 		try {
-			const db = await getDatabase();
-			const preferences = await db.collection("userPreferences").findOne({
-				userId,
-				guildId,
-			});
-			if (preferences) {
+			const dbCore = new DatabaseCore();
+			const user = await dbCore.getUser(userId, guildId);
+			if (user?.modPreferences) {
 				const typedPreferences =
-					preferences as unknown as UserModerationPreferences;
+					user.modPreferences as unknown as UserModerationPreferences;
 
 				// Cache in Redis for next time
 				if (this.redisAvailable && this.redisCache) {
@@ -153,19 +211,10 @@ export class DiscordDataCache {
 			);
 		}
 
-		// Persist to MongoDB
+		// Persist to PostgreSQL via DatabaseCore
 		try {
-			const db = await getDatabase();
-			// Remove _id field to avoid immutable field error
-			const { _id, ...preferencesWithoutId } =
-				preferences as UserModerationPreferences & { _id?: unknown };
-			await db
-				.collection("userPreferences")
-				.replaceOne(
-					{ userId: preferences.userId, guildId: preferences.guildId },
-					preferencesWithoutId,
-					{ upsert: true },
-				);
+			const dbCore = new DatabaseCore();
+			await dbCore.updateModPreferences(preferences.userId, preferences);
 		} catch (error) {
 			console.warn(
 				`🔸 Failed to persist user preferences to database: ${error}`,
@@ -186,57 +235,6 @@ export class DiscordDataCache {
 					`🔸 Failed to invalidate user preferences in Redis: ${error}`,
 				);
 			}
-		}
-	}
-
-	// Guild Config Methods
-	async getGuildConfig(guildId: string): Promise<VoiceChannelConfig | null> {
-		// Try Redis first
-		if (this.redisAvailable && this.redisCache) {
-			const cached = await this.redisCache.getGuildConfig(guildId);
-			if (cached) {
-				return cached as VoiceChannelConfig;
-			}
-		}
-
-		// Fallback to MongoDB
-		try {
-			const db = await getDatabase();
-			const config = await db.collection("guildConfigs").findOne({ guildId });
-			if (config) {
-				const typedConfig = config as unknown as VoiceChannelConfig;
-
-				// Cache in Redis for next time
-				if (this.redisAvailable && this.redisCache) {
-					await this.redisCache.setGuildConfig(guildId, typedConfig);
-				}
-
-				return typedConfig;
-			}
-		} catch (error) {
-			console.warn(`🔸 Failed to fetch guild config from database: ${error}`);
-		}
-
-		return null;
-	}
-
-	async setGuildConfig(
-		guildId: string,
-		config: VoiceChannelConfig,
-	): Promise<void> {
-		// Update Redis first for immediate availability
-		if (this.redisAvailable && this.redisCache) {
-			await this.redisCache.setGuildConfig(guildId, config);
-		}
-
-		// Persist to MongoDB
-		try {
-			const db = await getDatabase();
-			await db
-				.collection("guildConfigs")
-				.replaceOne({ guildId }, config, { upsert: true });
-		} catch (error) {
-			console.warn(`🔸 Failed to persist guild config to database: ${error}`);
 		}
 	}
 
@@ -328,211 +326,6 @@ export class DiscordDataCache {
 			} catch (error) {
 				console.warn(`🔸 Failed to flush Redis cache: ${error}`);
 			}
-		}
-	}
-
-	// Starboard Entry Methods
-	async setStarboardEntry(entry: StarboardEntry): Promise<void> {
-		// Try Redis first
-		if (this.redisAvailable && this.redisCache) {
-			try {
-				await this.redisCache.setStarboardEntry(entry);
-			} catch (error) {
-				console.warn(`🔸 Failed to cache starboard entry in Redis: ${error}`);
-			}
-		}
-
-		// Always store in MongoDB as fallback
-		try {
-			const db = await getDatabase();
-			await db.collection("starboardEntries").replaceOne(
-				{
-					originalMessageId: entry.originalMessageId,
-					guildId: entry.guildId,
-				},
-				entry,
-				{ upsert: true },
-			);
-		} catch (error) {
-			console.error(`🔸 Failed to store starboard entry in MongoDB: ${error}`);
-		}
-	}
-
-	async getStarboardEntry(
-		messageId: string,
-		guildId: string,
-	): Promise<StarboardEntry | null> {
-		// Try Redis first
-		if (this.redisAvailable && this.redisCache) {
-			try {
-				const cached = await this.redisCache.getStarboardEntry(
-					messageId,
-					guildId,
-				);
-				if (cached) {
-					return cached as StarboardEntry;
-				}
-			} catch (error) {
-				console.warn(`🔸 Failed to get starboard entry from Redis: ${error}`);
-			}
-		}
-
-		// Fallback to MongoDB
-		try {
-			const db = await getDatabase();
-			const entry = await db
-				.collection("starboardEntries")
-				.findOne({ originalMessageId: messageId, guildId });
-			if (entry) {
-				const typedEntry = entry as unknown as StarboardEntry;
-
-				// Cache in Redis for next time
-				if (this.redisAvailable && this.redisCache) {
-					try {
-						await this.redisCache.setStarboardEntry(typedEntry);
-					} catch (error) {
-						console.warn(
-							`🔸 Failed to cache starboard entry in Redis: ${error}`,
-						);
-					}
-				}
-
-				return typedEntry;
-			}
-		} catch (error) {
-			console.error(`🔸 Failed to get starboard entry from MongoDB: ${error}`);
-		}
-
-		return null;
-	}
-
-	async deleteStarboardEntry(
-		messageId: string,
-		guildId: string,
-	): Promise<void> {
-		// Delete from Redis
-		if (this.redisAvailable && this.redisCache) {
-			try {
-				await this.redisCache.deleteStarboardEntry(messageId, guildId);
-			} catch (error) {
-				console.warn(
-					`🔸 Failed to delete starboard entry from Redis: ${error}`,
-				);
-			}
-		}
-
-		// Delete from MongoDB
-		try {
-			const db = await getDatabase();
-			await db
-				.collection("starboardEntries")
-				.deleteOne({ originalMessageId: messageId, guildId });
-		} catch (error) {
-			console.error(
-				`🔸 Failed to delete starboard entry from MongoDB: ${error}`,
-			);
-		}
-	}
-
-	async getAllStarboardEntries(guildId: string): Promise<StarboardEntry[]> {
-		try {
-			const db = await getDatabase();
-			const entries = await db
-				.collection("starboardEntries")
-				.find({ guildId })
-				.sort({ createdAt: -1 })
-				.toArray();
-			return entries as unknown as StarboardEntry[];
-		} catch (error) {
-			console.error(
-				`🔸 Failed to get all starboard entries for guild ${guildId}: ${error}`,
-			);
-			return [];
-		}
-	}
-
-	// Roll Data Methods
-	async setRollData(
-		userId: string,
-		guildId: string,
-		rollData: RollData,
-	): Promise<void> {
-		// Try Redis first
-		if (this.redisAvailable && this.redisCache) {
-			try {
-				await this.redisCache.setRollData(userId, guildId, rollData);
-			} catch (error) {
-				console.warn(`🔸 Failed to cache roll data in Redis: ${error}`);
-			}
-		}
-
-		// Always store in MongoDB as fallback
-		try {
-			const db = await getDatabase();
-			await db
-				.collection("rollData")
-				.replaceOne({ userId, guildId }, rollData, { upsert: true });
-		} catch (error) {
-			console.error(`🔸 Failed to store roll data in MongoDB: ${error}`);
-		}
-	}
-
-	async getRollData(userId: string, guildId: string): Promise<RollData | null> {
-		// Try Redis first
-		if (this.redisAvailable && this.redisCache) {
-			try {
-				const cached = await this.redisCache.getRollData(userId, guildId);
-				if (cached) {
-					return cached as RollData;
-				}
-			} catch (error) {
-				console.warn(`🔸 Failed to get roll data from Redis: ${error}`);
-			}
-		}
-
-		// Fallback to MongoDB
-		try {
-			const db = await getDatabase();
-			const rollData = await db
-				.collection("rollData")
-				.findOne({ userId, guildId });
-			if (rollData) {
-				const typedData = rollData as unknown as RollData;
-
-				// Cache in Redis for next time
-				if (this.redisAvailable && this.redisCache) {
-					try {
-						await this.redisCache.setRollData(userId, guildId, typedData);
-					} catch (error) {
-						console.warn(`🔸 Failed to cache roll data in Redis: ${error}`);
-					}
-				}
-
-				return typedData;
-			}
-		} catch (error) {
-			console.error(`🔸 Failed to get roll data from MongoDB: ${error}`);
-		}
-
-		return null;
-	}
-
-	async deleteRollData(userId: string, guildId: string): Promise<void> {
-		// Delete from Redis
-		if (this.redisAvailable && this.redisCache) {
-			try {
-				await this.redisCache.deleteRollData(userId, guildId);
-			} catch (error) {
-				console.warn(`🔸 Failed to delete roll data from Redis: ${error}`);
-			}
-		}
-
-		// Delete from MongoDB
-		try {
-			const db = await getDatabase();
-			await db.collection("rollData").deleteOne({ userId, guildId });
-		} catch (error) {
-			console.error(`🔸 Failed to delete roll data from MongoDB: ${error}`);
 		}
 	}
 }

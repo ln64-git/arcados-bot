@@ -1,0 +1,732 @@
+import type {
+	AvatarHistory,
+	Message as DBMessage,
+	DatabaseTables,
+	GuildSync,
+	ModHistoryEntry,
+	ModPreferences,
+	RenamedUser,
+	Role,
+	User,
+	UserStatus,
+	VoiceInteraction,
+} from "../../types/database";
+import { memoryManager } from "../performance-monitoring/MemoryManager";
+import {
+	executeQuery,
+	executeQueryOne,
+	executeTransaction,
+} from "./PostgresConnection";
+import {
+	createPostgresIndexes,
+	createPostgresTables,
+	dropPostgresTables,
+	initializePostgresSchema,
+} from "./PostgresSchema";
+
+export class DatabaseCore {
+	private tables: DatabaseTables = {
+		users: "users",
+		roles: "roles",
+		messages: "messages",
+		guildSyncs: "guild_syncs",
+		relationships: "relationships",
+		interactionRecords: "interaction_records",
+	};
+
+	async initialize(): Promise<void> {
+		await initializePostgresSchema();
+	}
+
+	// Performance wrapper for database operations
+	private async withPerformanceTracking<T>(
+		operation: () => Promise<T>,
+		operationName: string,
+	): Promise<T> {
+		const startTime = memoryManager.startTimer();
+		try {
+			const result = await operation();
+			const duration = memoryManager.endTimer(startTime);
+			memoryManager.recordDatabaseQueryTime(duration);
+
+			// Log slow queries (>500ms)
+			if (duration > 500) {
+				console.warn(
+					`🔸 Slow database query: ${operationName} took ${duration.toFixed(2)}ms`,
+				);
+			}
+
+			return result;
+		} catch (error) {
+			const duration = memoryManager.endTimer(startTime);
+			console.error(
+				`🔸 Database error in ${operationName} (${duration.toFixed(2)}ms):`,
+				error,
+			);
+			throw error;
+		}
+	}
+
+	// ==================== USER OPERATIONS ====================
+
+	async getUser(discordId: string, guildId: string): Promise<User | null> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				SELECT * FROM ${this.tables.users} 
+				WHERE discord_id = $1 AND guild_id = $2
+			`;
+			return await executeQueryOne<User>(query, [discordId, guildId]);
+		}, `getUser(${discordId}, ${guildId})`);
+	}
+
+	async getUsersByGuild(guildId: string): Promise<User[]> {
+		return this.withPerformanceTracking(async () => {
+			const query = `SELECT * FROM ${this.tables.users} WHERE guild_id = $1`;
+			return await executeQuery<User>(query, [guildId]);
+		}, `getUsersByGuild(${guildId})`);
+	}
+
+	async upsertUser(
+		user: Omit<User, "id" | "createdAt" | "updatedAt">,
+	): Promise<void> {
+		const query = `
+			INSERT INTO ${this.tables.users} (
+				discord_id, guild_id, bot, username, display_name, discriminator,
+				avatar, status, roles, joined_at, last_seen, avatar_history,
+				username_history, display_name_history, status_history, emoji,
+				title, summary, keywords, notes, relationships, mod_preferences, voice_interactions
+			) VALUES (
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
+			)
+			ON CONFLICT (discord_id, guild_id) 
+			DO UPDATE SET
+				bot = EXCLUDED.bot,
+				username = EXCLUDED.username,
+				display_name = EXCLUDED.display_name,
+				discriminator = EXCLUDED.discriminator,
+				avatar = EXCLUDED.avatar,
+				status = EXCLUDED.status,
+				roles = EXCLUDED.roles,
+				joined_at = EXCLUDED.joined_at,
+				last_seen = EXCLUDED.last_seen,
+				avatar_history = EXCLUDED.avatar_history,
+				username_history = EXCLUDED.username_history,
+				display_name_history = EXCLUDED.display_name_history,
+				status_history = EXCLUDED.status_history,
+				emoji = EXCLUDED.emoji,
+				title = EXCLUDED.title,
+				summary = EXCLUDED.summary,
+				keywords = EXCLUDED.keywords,
+				notes = EXCLUDED.notes,
+				relationships = EXCLUDED.relationships,
+				mod_preferences = EXCLUDED.mod_preferences,
+				voice_interactions = EXCLUDED.voice_interactions,
+				updated_at = CURRENT_TIMESTAMP
+		`;
+
+		await executeQuery(query, [
+			user.discordId,
+			user.guildId,
+			user.bot,
+			user.username,
+			user.displayName,
+			user.discriminator,
+			user.avatar,
+			user.status,
+			user.roles,
+			user.joinedAt,
+			user.lastSeen,
+			JSON.stringify(user.avatarHistory),
+			user.usernameHistory,
+			user.displayNameHistory,
+			JSON.stringify(user.statusHistory),
+			user.emoji,
+			user.title,
+			user.summary,
+			user.keywords,
+			user.notes,
+			JSON.stringify(user.relationships),
+			JSON.stringify(user.modPreferences),
+			JSON.stringify(user.voiceInteractions),
+		]);
+	}
+
+	// ==================== ROLE OPERATIONS ====================
+
+	async getRolesByGuild(guildId: string): Promise<Role[]> {
+		try {
+			const query = `SELECT * FROM ${this.tables.roles} WHERE guild_id = $1`;
+			return await executeQuery<Role>(query, [guildId]);
+		} catch (error) {
+			console.error("🔸 Error getting roles by guild:", error);
+			return [];
+		}
+	}
+
+	async upsertRole(
+		role: Omit<Role, "id" | "createdAt" | "updatedAt">,
+	): Promise<void> {
+		const query = `
+			INSERT INTO ${this.tables.roles} (
+				discord_id, guild_id, name, color, mentionable
+			) VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (discord_id, guild_id)
+			DO UPDATE SET
+				name = EXCLUDED.name,
+				color = EXCLUDED.color,
+				mentionable = EXCLUDED.mentionable,
+				updated_at = CURRENT_TIMESTAMP
+		`;
+
+		await executeQuery(query, [
+			role.discordId,
+			role.guildId,
+			role.name,
+			role.color,
+			role.mentionable,
+		]);
+	}
+
+	// ==================== MESSAGE OPERATIONS ====================
+
+	async getMessagesByGuild(guildId: string, limit = 100): Promise<DBMessage[]> {
+		try {
+			const query = `
+				SELECT * FROM ${this.tables.messages} 
+				WHERE guild_id = $1 
+				ORDER BY timestamp DESC 
+				LIMIT $2
+			`;
+			return await executeQuery<DBMessage>(query, [guildId, limit]);
+		} catch (error) {
+			console.error("🔸 Error getting messages by guild:", error);
+			return [];
+		}
+	}
+
+	async getMessagesByChannel(
+		guildId: string,
+		channelName: string,
+		limit = 100,
+	): Promise<DBMessage[]> {
+		try {
+			const query = `
+				SELECT * FROM ${this.tables.messages} 
+				WHERE guild_id = $1 AND channel_id = $2 
+				ORDER BY timestamp DESC 
+				LIMIT $3
+			`;
+			return await executeQuery<DBMessage>(query, [
+				guildId,
+				channelName,
+				limit,
+			]);
+		} catch (error) {
+			console.error("🔸 Error getting messages by channel:", error);
+			return [];
+		}
+	}
+
+	async getRecentMessagesWithUsers(
+		guildId: string,
+		limit = 20,
+	): Promise<
+		{
+			message: DBMessage;
+			user: User | null;
+		}[]
+	> {
+		const query = `
+			SELECT m.*, u.* FROM ${this.tables.messages} m
+			LEFT JOIN ${this.tables.users} u ON m.author_id = u.discord_id AND m.guild_id = u.guild_id
+			WHERE m.guild_id = $1
+			ORDER BY m.timestamp DESC
+			LIMIT $2
+		`;
+
+		const rows = await executeQuery(query, [guildId, limit]);
+
+		return rows.map((row: Record<string, unknown>) => ({
+			message: {
+				id: row.id,
+				discordId: row.discord_id,
+				content: row.content,
+				authorId: row.author_id,
+				channelId: row.channel_id,
+				guildId: row.guild_id,
+				timestamp: row.timestamp,
+				editedAt: row.edited_at,
+				deletedAt: row.deleted_at,
+				mentions: row.mentions,
+				reactions: row.reactions,
+				replyTo: row.reply_to,
+				attachments: row.attachments,
+				embeds: row.embeds,
+				createdAt: row.created_at,
+				updatedAt: row.updated_at,
+			},
+			user: row.discord_id
+				? {
+						id: row.id,
+						bot: row.bot,
+						discordId: row.discord_id,
+						username: row.username,
+						displayName: row.display_name,
+						discriminator: row.discriminator,
+						avatar: row.avatar,
+						status: row.status,
+						roles: row.roles,
+						joinedAt: row.joined_at,
+						lastSeen: row.last_seen,
+						avatarHistory: row.avatar_history,
+						usernameHistory: row.username_history,
+						displayNameHistory: row.display_name_history,
+						statusHistory: row.status_history,
+						emoji: row.emoji,
+						title: row.title,
+						summary: row.summary,
+						keywords: row.keywords,
+						notes: row.notes,
+						relationships: row.relationships,
+						modPreferences: row.mod_preferences,
+						voiceInteractions: row.voice_interactions,
+						createdAt: row.created_at,
+						updatedAt: row.updated_at,
+					}
+				: null,
+		}));
+	}
+
+	async getOldestMessagesWithUsers(
+		guildId: string,
+		limit = 20,
+	): Promise<
+		{
+			message: DBMessage;
+			user: User | null;
+		}[]
+	> {
+		const query = `
+			SELECT m.*, u.* FROM ${this.tables.messages} m
+			LEFT JOIN ${this.tables.users} u ON m.author_id = u.discord_id AND m.guild_id = u.guild_id
+			WHERE m.guild_id = $1
+			ORDER BY m.timestamp ASC
+			LIMIT $2
+		`;
+
+		const rows = await executeQuery(query, [guildId, limit]);
+
+		return rows.map((row: Record<string, unknown>) => ({
+			message: {
+				id: row.id,
+				discordId: row.discord_id,
+				content: row.content,
+				authorId: row.author_id,
+				channelId: row.channel_id,
+				guildId: row.guild_id,
+				timestamp: row.timestamp,
+				editedAt: row.edited_at,
+				deletedAt: row.deleted_at,
+				mentions: row.mentions,
+				reactions: row.reactions,
+				replyTo: row.reply_to,
+				attachments: row.attachments,
+				embeds: row.embeds,
+				createdAt: row.created_at,
+				updatedAt: row.updated_at,
+			},
+			user: row.discord_id
+				? {
+						id: row.id,
+						bot: row.bot,
+						discordId: row.discord_id,
+						username: row.username,
+						displayName: row.display_name,
+						discriminator: row.discriminator,
+						avatar: row.avatar,
+						status: row.status,
+						roles: row.roles,
+						joinedAt: row.joined_at,
+						lastSeen: row.last_seen,
+						avatarHistory: row.avatar_history,
+						usernameHistory: row.username_history,
+						displayNameHistory: row.display_name_history,
+						statusHistory: row.status_history,
+						emoji: row.emoji,
+						title: row.title,
+						summary: row.summary,
+						keywords: row.keywords,
+						notes: row.notes,
+						relationships: row.relationships,
+						modPreferences: row.mod_preferences,
+						voiceInteractions: row.voice_interactions,
+						createdAt: row.created_at,
+						updatedAt: row.updated_at,
+					}
+				: null,
+		}));
+	}
+
+	async upsertMessage(
+		message: Omit<DBMessage, "id" | "createdAt" | "updatedAt">,
+	): Promise<void> {
+		const query = `
+			INSERT INTO ${this.tables.messages} (
+				discord_id, content, author_id, channel_id, guild_id, timestamp,
+				edited_at, deleted_at, mentions, reactions, reply_to, attachments, embeds
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			ON CONFLICT (discord_id)
+			DO UPDATE SET
+				content = EXCLUDED.content,
+				author_id = EXCLUDED.author_id,
+				channel_id = EXCLUDED.channel_id,
+				guild_id = EXCLUDED.guild_id,
+				timestamp = EXCLUDED.timestamp,
+				edited_at = EXCLUDED.edited_at,
+				deleted_at = EXCLUDED.deleted_at,
+				mentions = EXCLUDED.mentions,
+				reactions = EXCLUDED.reactions,
+				reply_to = EXCLUDED.reply_to,
+				attachments = EXCLUDED.attachments,
+				embeds = EXCLUDED.embeds,
+				updated_at = CURRENT_TIMESTAMP
+		`;
+
+		await executeQuery(query, [
+			message.discordId,
+			message.content,
+			message.authorId,
+			message.channelId,
+			message.guildId,
+			message.timestamp,
+			message.editedAt,
+			message.deletedAt,
+			message.mentions,
+			JSON.stringify(message.reactions),
+			message.replyTo,
+			JSON.stringify(message.attachments),
+			JSON.stringify(message.embeds),
+		]);
+	}
+
+	async batchInsertMessages(
+		messages: Omit<DBMessage, "id" | "createdAt" | "updatedAt">[],
+	): Promise<void> {
+		if (messages.length === 0) return;
+
+		const values = messages
+			.map((_, index) => {
+				const offset = index * 13;
+				return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}, $${offset + 13})`;
+			})
+			.join(", ");
+
+		const query = `
+			INSERT INTO ${this.tables.messages} (
+				discord_id, content, author_id, channel_id, guild_id, timestamp,
+				edited_at, deleted_at, mentions, reactions, reply_to, attachments, embeds
+			) VALUES ${values}
+			ON CONFLICT (discord_id) DO NOTHING
+		`;
+
+		const params = messages.flatMap((message) => [
+			message.discordId,
+			message.content,
+			message.authorId,
+			message.channelId,
+			message.guildId,
+			message.timestamp,
+			message.editedAt,
+			message.deletedAt,
+			message.mentions,
+			JSON.stringify(message.reactions),
+			message.replyTo,
+			JSON.stringify(message.attachments),
+			JSON.stringify(message.embeds),
+		]);
+
+		await executeQuery(query, params);
+	}
+
+	// ==================== GUILD SYNC OPERATIONS ====================
+
+	async getGuildSync(guildId: string): Promise<GuildSync | null> {
+		try {
+			const query = `SELECT * FROM ${this.tables.guildSyncs} WHERE guild_id = $1`;
+			return await executeQueryOne<GuildSync>(query, [guildId]);
+		} catch (error) {
+			console.error("🔸 Error getting guild sync:", error);
+			return null;
+		}
+	}
+
+	async updateGuildSync(
+		guildSync: Omit<GuildSync, "id" | "createdAt" | "updatedAt">,
+	): Promise<void> {
+		const query = `
+			INSERT INTO ${this.tables.guildSyncs} (
+				guild_id, last_sync_at, last_message_id, total_users, total_messages, total_roles, is_fully_synced
+			) VALUES ($1, $2, $3, $4, $5, $6, $7)
+			ON CONFLICT (guild_id)
+			DO UPDATE SET
+				last_sync_at = EXCLUDED.last_sync_at,
+				last_message_id = EXCLUDED.last_message_id,
+				total_users = EXCLUDED.total_users,
+				total_messages = EXCLUDED.total_messages,
+				total_roles = EXCLUDED.total_roles,
+				is_fully_synced = EXCLUDED.is_fully_synced,
+				updated_at = CURRENT_TIMESTAMP
+		`;
+
+		await executeQuery(query, [
+			guildSync.guildId,
+			guildSync.lastSyncAt,
+			guildSync.lastMessageId,
+			guildSync.totalUsers,
+			guildSync.totalMessages,
+			guildSync.totalRoles,
+			guildSync.isFullySynced,
+		]);
+	}
+
+	// ==================== ROLE RESTORATION OPERATIONS ====================
+
+	async restoreMemberRoles(
+		member: import("discord.js").GuildMember,
+	): Promise<{ success: boolean; restoredCount: number; error?: string }> {
+		return this.withPerformanceTracking(async () => {
+			const query = `SELECT * FROM ${this.tables.users} WHERE discord_id = $1`;
+			const userData = await executeQueryOne(query, [member.id]);
+
+			if (!userData || !userData.roles || userData.roles.length === 0) {
+				return {
+					success: true,
+					restoredCount: 0,
+					error: `No stored roles found for user ${member.user.tag}`,
+				};
+			}
+
+			// Filter out roles that no longer exist in the guild
+			const validRoles = userData.roles.filter((roleId: string) =>
+				member.guild.roles.cache.has(roleId),
+			);
+
+			if (validRoles.length === 0) {
+				return {
+					success: true,
+					restoredCount: 0,
+					error: `No valid roles found for user ${member.user.tag} - all stored roles may have been deleted`,
+				};
+			}
+
+			// Add roles to the member
+			await member.roles.add(
+				validRoles,
+				"Automatic role restoration on rejoin",
+			);
+
+			return {
+				success: true,
+				restoredCount: validRoles.length,
+			};
+		}, `restoreMemberRoles(${member.id}, ${member.guild.id})`);
+	}
+
+	// ==================== STATISTICS ====================
+
+	async getGuildStats(guildId: string): Promise<{
+		totalUsers: number;
+		totalMessages: number;
+		totalRoles: number;
+	}> {
+		const queries = [
+			`SELECT COUNT(*) as count FROM ${this.tables.users} WHERE guild_id = $1`,
+			`SELECT COUNT(*) as count FROM ${this.tables.messages} WHERE guild_id = $1`,
+			`SELECT COUNT(*) as count FROM ${this.tables.roles} WHERE guild_id = $1`,
+		];
+
+		const results = await Promise.all(
+			queries.map((query) => executeQueryOne(query, [guildId])),
+		);
+
+		return {
+			totalUsers: Number.parseInt(results[0]?.count || "0"),
+			totalMessages: Number.parseInt(results[1]?.count || "0"),
+			totalRoles: Number.parseInt(results[2]?.count || "0"),
+		};
+	}
+
+	// ==================== MODERATION PREFERENCES OPERATIONS ====================
+
+	async getModPreferences(userId: string): Promise<ModPreferences | null> {
+		return this.withPerformanceTracking(async () => {
+			const query = `SELECT mod_preferences FROM ${this.tables.users} WHERE discord_id = $1`;
+			const user = await executeQueryOne(query, [userId]);
+			return user?.mod_preferences || null;
+		}, `getModPreferences(${userId})`);
+	}
+
+	async updateModPreferences(
+		userId: string,
+		preferences: Partial<ModPreferences>,
+	): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				INSERT INTO ${this.tables.users} (discord_id, mod_preferences, created_at, updated_at)
+				VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+				ON CONFLICT (discord_id, guild_id)
+				DO UPDATE SET
+					mod_preferences = COALESCE($2, mod_preferences),
+					updated_at = CURRENT_TIMESTAMP
+			`;
+
+			await executeQuery(query, [userId, JSON.stringify(preferences)]);
+		}, `updateModPreferences(${userId})`);
+	}
+
+	// ==================== VOICE INTERACTION OPERATIONS ====================
+
+	async addVoiceInteraction(
+		userId: string,
+		guildId: string,
+		interaction: VoiceInteraction,
+	): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				UPDATE ${this.tables.users}
+				SET voice_interactions = voice_interactions || $1::jsonb,
+					updated_at = CURRENT_TIMESTAMP
+				WHERE discord_id = $2 AND guild_id = $3
+			`;
+			await executeQuery(query, [
+				JSON.stringify([interaction]),
+				userId,
+				guildId,
+			]);
+		}, `addVoiceInteraction(${userId}, ${interaction.channelId})`);
+	}
+
+	async updateVoiceInteraction(
+		userId: string,
+		guildId: string,
+		channelId: string,
+		leftAt: Date,
+		duration: number,
+	): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				UPDATE ${this.tables.users}
+				SET voice_interactions = jsonb_set(
+					voice_interactions,
+					(SELECT jsonb_path_query_array(voice_interactions, '$[*] ? (@.channelId == $1 && @.leftAt == null)', '$1', $1)::text)::text[],
+					jsonb_build_object(
+						'channelId', channelId,
+						'channelName', channelName,
+						'guildId', guildId,
+						'joinedAt', joinedAt,
+						'leftAt', $2,
+						'duration', $3
+					)
+				),
+				updated_at = CURRENT_TIMESTAMP
+				WHERE discord_id = $4 AND guild_id = $5
+			`;
+			await executeQuery(query, [
+				channelId,
+				leftAt.toISOString(),
+				duration,
+				userId,
+				guildId,
+			]);
+		}, `updateVoiceInteraction(${userId}, ${channelId})`);
+	}
+
+	async getUserVoiceInteractions(
+		userId: string,
+		guildId: string,
+		channelId?: string,
+	): Promise<VoiceInteraction[]> {
+		return this.withPerformanceTracking(
+			async () => {
+				let query = `
+				SELECT voice_interactions FROM ${this.tables.users}
+				WHERE discord_id = $1 AND guild_id = $2
+			`;
+				const params = [userId, guildId];
+
+				if (channelId) {
+					query += " AND voice_interactions @> $3";
+					params.push(JSON.stringify([{ channelId }]));
+				}
+
+				const result = await executeQueryOne(query, params);
+				return result?.voice_interactions || [];
+			},
+			`getUserVoiceInteractions(${userId}, ${channelId || "all"})`,
+		);
+	}
+
+	// ==================== MODERATION HISTORY OPERATIONS ====================
+
+	async addModHistory(
+		userId: string,
+		guildId: string,
+		entry: ModHistoryEntry,
+	): Promise<void> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				UPDATE ${this.tables.users}
+				SET mod_preferences = jsonb_set(
+					mod_preferences,
+					'{modHistory}',
+					COALESCE(mod_preferences->'modHistory', '[]'::jsonb) || $1::jsonb
+				),
+				updated_at = CURRENT_TIMESTAMP
+				WHERE discord_id = $2 AND guild_id = $3
+			`;
+			await executeQuery(query, [JSON.stringify([entry]), userId, guildId]);
+		}, `addModHistory(${userId}, ${entry.action})`);
+	}
+
+	async getUserModHistory(
+		userId: string,
+		guildId: string,
+		limit?: number,
+	): Promise<ModHistoryEntry[]> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				SELECT mod_preferences->'modHistory' as mod_history
+				FROM ${this.tables.users}
+				WHERE discord_id = $1 AND guild_id = $2
+			`;
+			const result = await executeQueryOne(query, [userId, guildId]);
+			const modHistory = result?.mod_history || [];
+
+			if (limit && modHistory.length > limit) {
+				return modHistory.slice(-limit);
+			}
+
+			return modHistory;
+		}, `getUserModHistory(${userId})`);
+	}
+
+	// ==================== HIERARCHY DETERMINATION ====================
+
+	async getUsersInGuild(guildId: string, userIds: string[]): Promise<User[]> {
+		return this.withPerformanceTracking(async () => {
+			const query = `
+				SELECT * FROM ${this.tables.users}
+				WHERE guild_id = $1 AND discord_id = ANY($2)
+			`;
+			return await executeQuery<User>(query, [guildId, userIds]);
+		}, `getUsersInGuild(${guildId}, ${userIds.length} users)`);
+	}
+
+	// ==================== MAINTENANCE ====================
+
+	async wipeDatabase(): Promise<void> {
+		await dropPostgresTables();
+		await createPostgresTables();
+		await createPostgresIndexes();
+	}
+}

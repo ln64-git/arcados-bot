@@ -23,7 +23,7 @@ import type {
 } from "../../types";
 import { clonePermissionOverwrites } from "../../utils/permissions";
 import { getCacheManager } from "../cache-management/DiscordDataCache";
-import { getDatabase } from "../database-manager/DatabaseConnection";
+import { DatabaseCore } from "../database-manager/PostgresCore";
 
 export class VoiceManager implements IVoiceManager {
 	private client: Client;
@@ -39,11 +39,17 @@ export class VoiceManager implements IVoiceManager {
 	private channelCreationDelay = 100; // 100ms delay between channel creations
 	private orphanedChannelWatcher: NodeJS.Timeout | null = null;
 	private isWatchingOrphanedChannels = false;
+	private dbCore: DatabaseCore;
 
 	constructor(client: Client) {
 		this.client = client;
+		this.dbCore = new DatabaseCore();
 		this.setupEventHandlers();
 		this.startOrphanedChannelWatcher();
+	}
+
+	async initialize(): Promise<void> {
+		await this.dbCore.initialize();
 	}
 
 	private setupEventHandlers() {
@@ -137,72 +143,13 @@ export class VoiceManager implements IVoiceManager {
 	}
 
 	private async checkForOrphanedChannels(): Promise<void> {
-		try {
-			const orphanedChannels: VoiceChannel[] = [];
-
-			// Get all channels tracked in our database
-			const db = await getDatabase();
-			const trackedChannels = await db
-				.collection("voiceChannelOwners")
-				.find({})
-				.toArray();
-
-			for (const trackedChannel of trackedChannels) {
-				const channel = this.client.channels.cache.get(
-					trackedChannel.channelId,
-				) as VoiceChannel;
-
-				// Check if channel still exists in Discord
-				if (!channel) {
-					// Channel was deleted from Discord but still tracked in our DB
-					console.log(
-						`🔸 Found orphaned channel in DB: ${trackedChannel.channelId} (owner: ${trackedChannel.userId}) - channel no longer exists`,
-					);
-
-					// Clean up the database entry
-					await this.removeChannelOwner(trackedChannel.channelId);
-					continue;
-				}
-
-				// Check if channel is empty
-				if (channel.members.size === 0) {
-					// Channel exists but is empty - this is an orphaned channel
-					orphanedChannels.push(channel);
-					console.log(
-						`🔸 Found orphaned channel: ${channel.name} (owner: ${trackedChannel.userId})`,
-					);
-				}
-			}
-
-			// Clean up orphaned channels
-			if (orphanedChannels.length > 0) {
-				console.log(
-					`🔧 Cleaning up ${orphanedChannels.length} orphaned channels`,
-				);
-
-				for (const channel of orphanedChannels) {
-					try {
-						// Remove owner from database
-						await this.removeChannelOwner(channel.id);
-
-						// Delete the channel
-						await this.deleteTemporaryChannel(channel);
-
-						console.log(`✅ Cleaned up orphaned channel: ${channel.name}`);
-					} catch (error) {
-						console.error(
-							`🔸 Failed to clean up orphaned channel ${channel.name}:`,
-							error,
-						);
-					}
-				}
-			}
-
-			// Also clean up any stale database entries for channels that no longer exist
-			await this.cleanupStaleChannelEntries();
-		} catch (error) {
-			console.error("🔸 Error checking for orphaned channels:", error);
-		}
+		// TODO: Update to work with Redis-only ownership tracking
+		// For now, this method is disabled as we don't have a way to list all Redis keys
+		// In a production environment, you might want to maintain a separate Redis set of active channels
+		console.log(
+			"🔹 Orphaned channel check disabled - using Redis-only ownership tracking",
+		);
+		return;
 	}
 
 	private stopOrphanedChannelWatcher(): void {
@@ -214,40 +161,12 @@ export class VoiceManager implements IVoiceManager {
 	}
 
 	private async cleanupStaleChannelEntries(): Promise<void> {
-		try {
-			const db = await getDatabase();
-			const trackedChannels = await db
-				.collection("voiceChannelOwners")
-				.find({})
-				.toArray();
-
-			let staleEntries = 0;
-
-			for (const trackedChannel of trackedChannels) {
-				const channel = this.client.channels.cache.get(
-					trackedChannel.channelId,
-				);
-
-				if (!channel) {
-					// Channel no longer exists in Discord, remove from database
-					await db.collection("voiceChannelOwners").deleteOne({
-						channelId: trackedChannel.channelId,
-					});
-					staleEntries++;
-					console.log(
-						`🧹 Cleaned up stale DB entry for channel: ${trackedChannel.channelId}`,
-					);
-				}
-			}
-
-			if (staleEntries > 0) {
-				console.log(
-					`✅ Cleaned up ${staleEntries} stale channel entries from database`,
-				);
-			}
-		} catch (error) {
-			console.error("🔸 Error cleaning up stale channel entries:", error);
-		}
+		// TODO: Update to work with Redis-only ownership tracking
+		// This method is disabled as we're using Redis-only ownership tracking
+		console.log(
+			"🔹 Stale channel entries cleanup disabled - using Redis-only ownership tracking",
+		);
+		return;
 	}
 
 	private async handleVoiceStateUpdate(
@@ -301,6 +220,37 @@ export class VoiceManager implements IVoiceManager {
 			return;
 		}
 
+		// Track voice interaction in database
+		try {
+			await this.dbCore.addVoiceInteraction(
+				newState.member.id,
+				channel.guild.id,
+				{
+					channelId: channel.id,
+					channelName: channel.name,
+					guildId: channel.guild.id,
+					joinedAt: new Date(),
+				},
+			);
+
+			// Track in Redis cache for real-time operations
+			await this.cache.setActiveVoiceSession(newState.member.id, {
+				channelId: channel.id,
+				channelName: channel.name,
+				guildId: channel.guild.id,
+				joinedAt: new Date(),
+			});
+
+			// Add to channel members cache
+			await this.cache.addChannelMember(
+				channel.id,
+				newState.member.id,
+				new Date(),
+			);
+		} catch (error) {
+			console.warn(`🔸 Failed to track voice interaction: ${error}`);
+		}
+
 		// Check if this is the spawn channel from environment config
 		if (!config.spawnChannelId || channel.id !== config.spawnChannelId) {
 			return;
@@ -350,6 +300,33 @@ export class VoiceManager implements IVoiceManager {
 	private async handleUserLeft(oldState: VoiceState) {
 		const channel = oldState.channel;
 		if (!channel || !oldState.member) return;
+
+		// Update voice interaction in database
+		try {
+			const activeSession = await this.cache.getActiveVoiceSession(
+				oldState.member.id,
+			);
+			if (activeSession && activeSession.channelId === channel.id) {
+				const leftAt = new Date();
+				const duration = Math.floor(
+					(leftAt.getTime() - activeSession.joinedAt.getTime()) / 1000,
+				);
+
+				await this.dbCore.updateVoiceInteraction(
+					oldState.member.id,
+					channel.guild.id,
+					channel.id,
+					leftAt,
+					duration,
+				);
+
+				// Remove from Redis caches
+				await this.cache.removeActiveVoiceSession(oldState.member.id);
+				await this.cache.removeChannelMember(channel.id, oldState.member.id);
+			}
+		} catch (error) {
+			console.warn(`🔸 Failed to update voice interaction: ${error}`);
+		}
 
 		// Restore user's nickname when they leave any voice channel
 		await this.restoreUserNickname(oldState.member.id, oldState.guild.id);
@@ -422,7 +399,7 @@ export class VoiceManager implements IVoiceManager {
 		// Update the user's preferred channel name in the database using the new system
 		try {
 			// Use DatabaseCore to update mod preferences in the users collection
-			const { DatabaseCore } = await import("../database-manager/DatabaseCore");
+			const { DatabaseCore } = await import("../database-manager/PostgresCore");
 			const dbCore = new DatabaseCore();
 			await dbCore.initialize();
 
@@ -449,10 +426,7 @@ export class VoiceManager implements IVoiceManager {
 
 	private async isDynamicChannel(channelId: string): Promise<boolean> {
 		try {
-			const db = await getDatabase();
-			const channelOwner = await db.collection("voiceChannelOwners").findOne({
-				channelId: channelId,
-			});
+			const channelOwner = await this.getChannelOwner(channelId);
 			return !!channelOwner;
 		} catch (error) {
 			console.error(
@@ -873,31 +847,34 @@ export class VoiceManager implements IVoiceManager {
 	}
 	private async checkAndAutoAssignOwnership(channelId: string): Promise<void> {
 		try {
+			// Get the channel from the guild
+			const channel = this.client.channels.cache.get(channelId) as VoiceChannel;
+			if (!channel) {
+				console.warn(`🔸 Channel ${channelId} not found`);
+				return;
+			}
+
 			// Use universal sync instead of the old logic
-			await this.universalOwnershipSync(channelId);
+			await this.universalOwnershipSync(channel.id);
 
 			// Find user with longest total duration in this channel
 			const longestUser = await this.findLongestStandingUser(
-				voiceChannel,
-				voiceChannel.members,
+				channel,
+				channel.members,
 			);
 			if (!longestUser) {
 				return; // Couldn't determine longest-standing user
 			}
 
 			console.log(
-				`🤖 Auto-assigning ownership of "${voiceChannel.name}" to ${longestUser.displayName || longestUser.user.username}`,
+				`🤖 Auto-assigning ownership of "${channel.name}" to ${longestUser.displayName || longestUser.user.username}`,
 			);
 
 			// Set ownership
-			await this.setChannelOwner(
-				channelId,
-				longestUser.id,
-				voiceChannel.guild.id,
-			);
+			await this.setChannelOwner(channel.id, longestUser.id, channel.guild.id);
 
 			// Set permissions for the new owner
-			await voiceChannel.permissionOverwrites.create(longestUser.id, {
+			await channel.permissionOverwrites.create(longestUser.id, {
 				ManageChannels: true,
 				CreateInstantInvite: true,
 				Connect: true,
@@ -916,11 +893,11 @@ export class VoiceManager implements IVoiceManager {
 			const expectedChannelName = `${ownerDisplayName}'s Channel`;
 
 			if (
-				!voiceChannel.name.includes(ownerDisplayName) &&
-				!voiceChannel.name.toLowerCase().includes("available")
+				!channel.name.includes(ownerDisplayName) &&
+				!channel.name.toLowerCase().includes("available")
 			) {
 				try {
-					await voiceChannel.setName(expectedChannelName);
+					await channel.setName(expectedChannelName);
 					console.log(`🔹 Renamed channel to "${expectedChannelName}"`);
 				} catch (error) {
 					console.log(`🔸 Could not rename channel: ${error}`);
@@ -938,7 +915,7 @@ export class VoiceManager implements IVoiceManager {
 				.setTimestamp();
 
 			try {
-				await voiceChannel.send({ embeds: [embed] });
+				await channel.send({ embeds: [embed] });
 			} catch (_error) {
 				// Failed to send message, but ownership assignment still succeeded
 			}
@@ -966,16 +943,11 @@ export class VoiceManager implements IVoiceManager {
 		// Get current owner to track as previous owner
 		const currentOwner = await this.getChannelOwner(channelId);
 
-		const owner: VoiceChannelOwner = {
-			channelId,
+		await this.cache.setChannelOwnershipCache(channelId, {
 			userId,
-			guildId,
-			createdAt: new Date(),
-			lastActivity: new Date(),
-			previousOwnerId: currentOwner?.userId, // Track the previous owner
-		};
-
-		await this.cache.setChannelOwner(channelId, owner);
+			ownedSince: new Date(),
+			previousOwnerId: currentOwner?.userId,
+		});
 
 		// Apply only channel-level preferences immediately (name, limit, lock)
 		// User-specific preferences (mutes, blocks) will only affect incoming users
@@ -1021,7 +993,7 @@ export class VoiceManager implements IVoiceManager {
 				// User limit - applies immediately to channel capacity
 				if (preferences.preferredUserLimit) {
 					try {
-						await channel.setUserLimit(preferences.preferredUserLimit);
+						await voiceChannel.setUserLimit(preferences.preferredUserLimit);
 					} catch (_error) {
 						// Insufficient permissions to change user limit
 					}
@@ -1029,8 +1001,8 @@ export class VoiceManager implements IVoiceManager {
 				// Lock status - applies immediately to channel access
 				if (preferences.preferredLocked !== undefined) {
 					try {
-						await channel.permissionOverwrites.edit(
-							channel.guild.roles.everyone,
+						await voiceChannel.permissionOverwrites.edit(
+							voiceChannel.guild.roles.everyone,
 							{
 								Connect: !preferences.preferredLocked,
 							},
@@ -1046,11 +1018,21 @@ export class VoiceManager implements IVoiceManager {
 	}
 
 	async getChannelOwner(channelId: string): Promise<VoiceChannelOwner | null> {
-		return await this.cache.getChannelOwner(channelId);
+		const ownershipData = await this.cache.getChannelOwnershipCache(channelId);
+		if (!ownershipData) return null;
+
+		return {
+			channelId,
+			userId: ownershipData.userId,
+			guildId: "unknown", // We'll need to get this from the channel
+			createdAt: ownershipData.ownedSince,
+			lastActivity: new Date(),
+			previousOwnerId: ownershipData.previousOwnerId,
+		};
 	}
 
 	async removeChannelOwner(channelId: string): Promise<void> {
-		await this.cache.removeChannelOwner(channelId);
+		await this.cache.removeChannelOwnershipCache(channelId);
 	}
 
 	async isChannelOwner(channelId: string, userId: string): Promise<boolean> {
@@ -1067,12 +1049,7 @@ export class VoiceManager implements IVoiceManager {
 	}
 
 	async getGuildConfig(guildId: string): Promise<VoiceChannelConfig> {
-		const cached = await this.cache.getGuildConfig(guildId);
-		if (cached) {
-			return cached;
-		}
-
-		// Return default config if not found
+		// Return default config - guild configs are no longer cached
 		const defaultConfig: VoiceChannelConfig = {
 			guildId,
 			spawnChannelId: "",
@@ -1081,8 +1058,6 @@ export class VoiceManager implements IVoiceManager {
 			channelLimit: 10,
 		};
 
-		// Cache the default config
-		await this.cache.setGuildConfig(guildId, defaultConfig);
 		return defaultConfig;
 	}
 
@@ -1090,10 +1065,11 @@ export class VoiceManager implements IVoiceManager {
 		log: Omit<ModerationLog, "id" | "timestamp">,
 	): Promise<void> {
 		try {
-			const db = await getDatabase();
-			await db.collection("moderationLogs").insertOne({
-				...log,
-				id: `${log.channelId}-${log.performerId}-${Date.now()}`,
+			await this.dbCore.addModHistory(log.performerId, log.guildId, {
+				action: log.action,
+				targetUserId: log.targetId || "unknown",
+				channelId: log.channelId,
+				reason: log.reason,
 				timestamp: new Date(),
 			});
 		} catch (error) {
@@ -1539,14 +1515,41 @@ export class VoiceManager implements IVoiceManager {
 		limit = 10,
 	): Promise<ModerationLog[]> {
 		try {
-			const db = await getDatabase();
-			const logs = await db
-				.collection("moderationLogs")
-				.find({ channelId })
-				.sort({ timestamp: -1 })
-				.limit(limit)
-				.toArray();
-			return logs as unknown as ModerationLog[];
+			// Get all users in the guild to find moderation logs
+			const channel = this.client.channels.cache.get(channelId);
+			if (!channel?.isVoiceBased()) return [];
+
+			const guildId = channel.guild.id;
+			const users = await this.dbCore.getUsersByGuild(guildId);
+
+			const allLogs: ModerationLog[] = [];
+
+			for (const user of users) {
+				const modHistory = await this.dbCore.getUserModHistory(
+					user.discordId,
+					guildId,
+					limit,
+				);
+				for (const entry of modHistory) {
+					if (entry.channelId === channelId) {
+						allLogs.push({
+							id: `${entry.channelId}-${user.discordId}-${entry.timestamp.getTime()}`,
+							channelId: entry.channelId,
+							performerId: user.discordId,
+							targetId: entry.targetUserId,
+							action: entry.action as ModerationLog["action"],
+							reason: entry.reason,
+							timestamp: entry.timestamp,
+							guildId,
+						});
+					}
+				}
+			}
+
+			// Sort by timestamp descending and limit results
+			return allLogs
+				.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+				.slice(0, limit);
 		} catch (error) {
 			console.warn(
 				`🔸 Failed to fetch moderation logs from database: ${error}`,
@@ -2165,89 +2168,51 @@ export class VoiceManager implements IVoiceManager {
 		members: Collection<string, GuildMember>,
 	): Promise<GuildMember | null> {
 		try {
-			const db = await getDatabase();
-
-			// Try different common collection names for voice activity
-			const possibleCollections = [
-				"voiceActivity",
-				"voiceStates",
-				"voiceLogs",
-				"users",
-				"voiceData",
-			];
-
-			let longestStandingUser: GuildMember | null = null;
-			let earliestJoinTime: Date | null = null;
-
-			for (const collectionName of possibleCollections) {
-				try {
-					const collection = db.collection(collectionName);
-
-					// Check if collection exists and has data
-					const count = await collection.countDocuments();
-					if (count === 0) continue;
-
-					// Get a sample document to understand the schema
-					const sample = await collection.findOne();
-					if (!sample) continue;
-
-					// Try to find voice activity data for each member
-					for (const [userId, member] of members) {
-						try {
-							// Look for voice activity records for this user in THIS SPECIFIC channel
-							const voiceRecord = await collection.findOne({
-								$and: [
-									{
-										$or: [
-											{ userId: userId },
-											{ userID: userId },
-											{ user: userId },
-										],
-									},
-									{
-										$or: [
-											{ channelId: channel.id },
-											{ channelID: channel.id },
-											{ channel: channel.id },
-											{ voiceChannelId: channel.id },
-										],
-									},
-								],
-							});
-
-							if (voiceRecord) {
-								// Try to extract join time from various possible fields
-								const joinTime =
-									voiceRecord.joinTime ||
-									voiceRecord.joinedAt ||
-									voiceRecord.startTime ||
-									voiceRecord.createdAt ||
-									voiceRecord.timestamp;
-
-								if (joinTime) {
-									const joinDate = new Date(joinTime);
-									if (!earliestJoinTime || joinDate < earliestJoinTime) {
-										earliestJoinTime = joinDate;
-										longestStandingUser = member;
-									}
-								}
-							}
-						} catch (_error) {}
-					}
-
-					// If we found data in this collection, use it
-					if (longestStandingUser) {
-						console.log(
-							`🔹 Found longest standing user in channel "${channel.name}": ${longestStandingUser.user.tag} (joined: ${earliestJoinTime})`,
-						);
-						return longestStandingUser;
-					}
-				} catch (_error) {}
+			// Try Redis cache first for real-time data
+			const cachedMembers = await this.cache.getChannelMembers(channel.id);
+			if (cachedMembers.length > 0) {
+				const earliest = cachedMembers.sort(
+					(a, b) => a.joinedAt.getTime() - b.joinedAt.getTime(),
+				)[0];
+				const member = members.get(earliest.userId);
+				if (member) return member;
 			}
-			return members.first() || null;
+
+			// Fallback to database - get users and compare their voice interactions
+			const userIds = Array.from(members.keys());
+			const users = await this.dbCore.getUsersInGuild(
+				channel.guild.id,
+				userIds,
+			);
+
+			let longestUser: GuildMember | null = null;
+			let earliestJoin: Date | null = null;
+
+			for (const user of users) {
+				// Get active voice interactions for this channel
+				const activeInteractions = user.voiceInteractions.filter(
+					(interaction) =>
+						interaction.channelId === channel.id && !interaction.leftAt,
+				);
+
+				if (activeInteractions.length > 0) {
+					// Sort by join time and get the earliest
+					const earliestInteraction = activeInteractions.sort(
+						(a, b) => a.joinedAt.getTime() - b.joinedAt.getTime(),
+					)[0];
+
+					if (!earliestJoin || earliestInteraction.joinedAt < earliestJoin) {
+						earliestJoin = earliestInteraction.joinedAt;
+						longestUser = members.get(user.discordId) || null;
+					}
+				}
+			}
+
+			// If no user found with voice interaction data, return the first member
+			return longestUser || members.first() || null;
 		} catch (error) {
 			console.warn(`🔸 Error finding longest standing user: ${error}`);
-			// Fall back to first member
+			// Fallback to first member
 			return members.first() || null;
 		}
 	}
@@ -2773,89 +2738,26 @@ export class VoiceManager implements IVoiceManager {
 			// Get channel owner
 			const owner = await this.getChannelOwner(channelId);
 
-			// Get owner preferences for moderation info
-			let bannedUsers: string[] = [];
-			let mutedUsers: string[] = [];
-			let deafenedUsers: string[] = [];
-
-			// Get inheritance order using direct database access (more efficient)
-			const db = await getDatabase();
-			const usersCollection = db.collection("users");
-			const voiceSessionsCollection = db.collection("voiceSessions");
-
-			if (owner) {
-				const userData = await usersCollection.findOne({
-					discordId: owner.userId,
-				});
-				if (userData?.modPreferences) {
-					bannedUsers = userData.modPreferences.bannedUsers;
-					mutedUsers = userData.modPreferences.mutedUsers;
-					deafenedUsers = userData.modPreferences.deafenedUsers;
-				}
-			}
-
-			// Get current active voice durations only (not cumulative)
-			const durations = await voiceSessionsCollection
-				.aggregate([
-					{
-						$match: {
-							channelId,
-							guildId: channel.guild.id,
-							$or: [
-								{ leftAt: { $exists: false } },
-								{ leftAt: { $type: "null" } },
-							],
-						},
-					},
-					{
-						$group: {
-							_id: "$userId",
-							currentDuration: {
-								$sum: {
-									$divide: [{ $subtract: [new Date(), "$joinedAt"] }, 1000],
-								},
-							},
-						},
-					},
-					{
-						$project: {
-							userId: "$_id",
-							duration: { $floor: "$currentDuration" },
-						},
-					},
-				])
-				.toArray();
-
-			// Build list of current members (non-bots)
+			// Get current member IDs (excluding bots)
 			const memberIds = Array.from(channel.members.keys()).filter(
 				(id) => !channel.members.get(id)?.user.bot,
 			);
 
-			// Create a map from DB durations
-			const durationMap = new Map<string, number>(
-				durations.map((d) => [d.userId, d.duration]),
-			);
-
-			// Ensure all current members are represented; fallback to 0 duration if DB is missing
-			const inheritanceOrder = memberIds
-				.map((userId) => ({ userId, duration: durationMap.get(userId) ?? 0 }))
-				.sort((a, b) => b.duration - a.duration);
-
-			const result = {
+			// TODO: Implement PostgreSQL version of this method
+			// For now, return basic state without inheritance order
+			return {
 				owner,
 				memberIds,
 				moderationInfo: {
-					bannedUsers,
-					mutedUsers,
-					deafenedUsers,
+					bannedUsers: [],
+					mutedUsers: [],
+					deafenedUsers: [],
 				},
-				inheritanceOrder,
+				inheritanceOrder: [], // TODO: Implement using PostgreSQL
 				createdAt: channel.createdAt,
 				guildId: channel.guild.id,
 				channelName: channel.name,
 			};
-
-			return result;
 		} catch (error) {
 			console.error("🔸 Error getting channel state:", error);
 			throw error;
@@ -2864,5 +2766,8 @@ export class VoiceManager implements IVoiceManager {
 }
 
 export function voiceManager(client: Client): VoiceManager {
-	return new VoiceManager(client);
+	const manager = new VoiceManager(client);
+	// Initialize database connection
+	manager.initialize().catch(console.error);
+	return manager;
 }

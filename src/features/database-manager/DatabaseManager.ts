@@ -10,9 +10,9 @@ import type {
 	UserStatus,
 	VoiceSession,
 } from "../../types/database";
-import { DatabaseCore } from "./DatabaseCore";
 import { GuildSyncEngine } from "./GuildSyncEngine";
 import { MigrationManager } from "./MigrationManager";
+import { DatabaseCore } from "./PostgresCore";
 import { RealtimeTracker } from "./RealtimeTracker";
 
 export class DatabaseManager {

@@ -304,11 +304,11 @@ export const renameCommand: Command = {
 					console.log("🔍 Starting database operations...");
 					const dbStart = Date.now();
 
-					// Use DatabaseCore to update mod preferences in the users collection
-					const { DatabaseCore } = await import(
-						"../features/database-manager/DatabaseCore"
+					// Use PostgresCore to update mod preferences in the users collection
+					const { PostgresCore } = await import(
+						"../features/database-manager/PostgresCore"
 					);
-					const dbCore = new DatabaseCore();
+					const dbCore = new PostgresCore();
 					await dbCore.initialize();
 
 					const updateStart = Date.now();

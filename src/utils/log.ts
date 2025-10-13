@@ -108,13 +108,13 @@ function formatContext(context: LogContext): string {
 		parts.push(`duration:${context.duration}ms`);
 
 	// Add any other context properties
-	Object.entries(context).forEach(([key, value]) => {
+	for (const [key, value] of Object.entries(context)) {
 		if (
 			!["operation", "userId", "channelId", "guildId", "duration"].includes(key)
 		) {
 			parts.push(`${key}:${value}`);
 		}
-	});
+	}
 
 	return `[${parts.join(", ")}]`;
 }

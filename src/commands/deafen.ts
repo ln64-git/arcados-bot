@@ -116,37 +116,7 @@ export const deafenCommand: Command = {
 
 				await targetMember.voice.setDeaf(true, reason);
 
-				// Update user preferences to remember this deafen
-				const preferences = (await voiceManager.getUserPreferences(
-					interaction.user.id,
-					interaction.guild?.id || "",
-				)) || {
-					userId: interaction.user.id,
-					guildId: interaction.guild?.id || "",
-					bannedUsers: [],
-					mutedUsers: [],
-					kickedUsers: [],
-					deafenedUsers: [],
-					renamedUsers: [],
-					lastUpdated: new Date(),
-				};
-
-				if (!preferences.deafenedUsers.includes(user.id)) {
-					preferences.deafenedUsers.push(user.id);
-					preferences.lastUpdated = new Date();
-					await voiceManager.updateUserPreferences(preferences);
-				}
-
-				// Update call state
-				const callState = await voiceManager.getCallState(channel.id);
-				if (callState) {
-					if (!callState.deafenedUsers.includes(user.id)) {
-						callState.deafenedUsers.push(user.id);
-						callState.lastUpdated = new Date();
-						await voiceManager.updateCallState(callState);
-					}
-				}
-
+				// Log moderation action (preferences are now handled automatically in VoiceManager)
 				await voiceManager.logModerationAction({
 					action: "deafen",
 					channelId: channel.id,
@@ -179,40 +149,7 @@ export const deafenCommand: Command = {
 
 				await targetMember.voice.setDeaf(false, reason);
 
-				// Update user preferences to remove from deafen list
-				const preferences = (await voiceManager.getUserPreferences(
-					interaction.user.id,
-					interaction.guild?.id || "",
-				)) || {
-					userId: interaction.user.id,
-					guildId: interaction.guild?.id || "",
-					bannedUsers: [],
-					mutedUsers: [],
-					kickedUsers: [],
-					deafenedUsers: [],
-					renamedUsers: [],
-					lastUpdated: new Date(),
-				};
-
-				// Remove user from deafen list
-				const deafenIndex = preferences.deafenedUsers.indexOf(user.id);
-				if (deafenIndex > -1) {
-					preferences.deafenedUsers.splice(deafenIndex, 1);
-					preferences.lastUpdated = new Date();
-					await voiceManager.updateUserPreferences(preferences);
-				}
-
-				// Update call state
-				const callState = await voiceManager.getCallState(channel.id);
-				if (callState) {
-					const deafenIndex = callState.deafenedUsers.indexOf(user.id);
-					if (deafenIndex > -1) {
-						callState.deafenedUsers.splice(deafenIndex, 1);
-						callState.lastUpdated = new Date();
-						await voiceManager.updateCallState(callState);
-					}
-				}
-
+				// Log moderation action (preferences are now handled automatically in VoiceManager)
 				await voiceManager.logModerationAction({
 					action: "undeafen",
 					channelId: channel.id,

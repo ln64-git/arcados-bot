@@ -1,9 +1,8 @@
 import type { APIEmbed } from "discord.js";
-import type { Collection, ObjectId } from "mongodb";
 
 // User tracking
 export interface User {
-	_id?: ObjectId;
+	id?: number;
 	bot: boolean;
 	discordId: string;
 	username: string;
@@ -30,8 +29,21 @@ export interface User {
 	// moderation preferences
 	modPreferences: ModPreferences;
 
+	// NEW: Voice interaction history
+	voiceInteractions: VoiceInteraction[];
+
 	createdAt: Date;
 	updatedAt: Date;
+}
+
+// Voice interaction tracking
+export interface VoiceInteraction {
+	channelId: string;
+	channelName: string;
+	guildId: string;
+	joinedAt: Date;
+	leftAt?: Date;
+	duration?: number; // seconds
 }
 
 // Moderation preferences for each user (channel-agnostic)
@@ -45,7 +57,20 @@ export interface ModPreferences {
 	kickedUsers: string[]; // Users this owner has kicked
 	deafenedUsers: string[]; // Users this owner has deafened
 	renamedUsers: RenamedUser[]; // Users this owner has renamed
+
+	// NEW: Moderation action history
+	modHistory: ModHistoryEntry[];
+
 	lastUpdated: Date;
+}
+
+// Moderation history entry
+export interface ModHistoryEntry {
+	action: string; // mute, unmute, ban, unban, kick, deafen, undeafen, rename, etc.
+	targetUserId: string;
+	channelId: string;
+	reason?: string;
+	timestamp: Date;
 }
 
 // Renamed user tracking (channel-agnostic)
@@ -76,7 +101,7 @@ export interface UserStatus {
 
 // Role tracking
 export interface Role {
-	_id?: ObjectId;
+	id?: number;
 	discordId: string;
 	name: string;
 	color: number;
@@ -88,7 +113,7 @@ export interface Role {
 
 // Message tracking
 export interface Message {
-	_id?: ObjectId;
+	id?: number;
 	discordId: string;
 	content: string;
 	authorId: string;
@@ -122,26 +147,11 @@ export interface Attachment {
 	contentType?: string;
 }
 
-// Voice channel tracking
-export interface VoiceSession {
-	_id?: ObjectId;
-	userId: string;
-	guildId: string;
-	channelId: string;
-	channelName: string;
-	displayName?: string; // User's display name when they joined
-	joinedAt: Date;
-	leftAt?: Date;
-	duration?: number; // in seconds
-	createdAt: Date;
-	updatedAt: Date;
-}
-
 // ==================== RELATIONSHIP SYSTEM ====================
 
 // Simple relationship between two users
 export interface Relationship {
-	_id?: ObjectId;
+	id?: number;
 	userId1: string;
 	userId2: string;
 	guildId: string;
@@ -179,7 +189,7 @@ export type InteractionType = "mention" | "reply" | "reaction" | "voice";
 
 // Basic interaction record
 export interface InteractionRecord {
-	_id?: ObjectId;
+	id?: number;
 	fromUserId: string;
 	toUserId: string;
 	interactionType: InteractionType;
@@ -193,7 +203,7 @@ export interface InteractionRecord {
 
 // Guild sync status
 export interface GuildSync {
-	_id?: ObjectId;
+	id?: number;
 	guildId: string;
 	lastSyncAt: Date;
 	lastMessageId?: string; // Last message processed
@@ -205,11 +215,12 @@ export interface GuildSync {
 	updatedAt: Date;
 }
 
-// Database collections interface
-export interface DatabaseCollections {
-	users: Collection<User>;
-	roles: Collection<Role>;
-	messages: Collection<Message>;
-	voiceSessions: Collection<VoiceSession>;
-	guildSyncs: Collection<GuildSync>;
+// Database tables interface (PostgreSQL)
+export interface DatabaseTables {
+	users: string;
+	roles: string;
+	messages: string;
+	guildSyncs: string;
+	relationships: string;
+	interactionRecords: string;
 }

@@ -9,8 +9,8 @@ import {
 } from "discord.js";
 import { config } from "./config";
 import { getRedisClient } from "./features/cache-management/RedisManager";
-import { DatabaseCore } from "./features/database-manager/DatabaseCore.js";
 import { DatabaseManager } from "./features/database-manager/DatabaseManager";
+import { initializePostgresSchema } from "./features/database-manager/PostgresSchema.js";
 import { memoryManager } from "./features/performance-monitoring/MemoryManager";
 import { speakVoiceCall } from "./features/speak-voice-call/speakVoiceCall";
 import { starboardManager } from "./features/starboard/StarboardManager";
@@ -60,7 +60,7 @@ export class Bot {
 			// console.log("🔹 Redis connection established");
 		} catch (error) {
 			console.warn(
-				`🔸 Redis connection failed, using MongoDB fallback: ${error}`,
+				`🔸 Redis connection failed, using PostgreSQL fallback: ${error}`,
 			);
 		}
 
@@ -84,11 +84,10 @@ export class Bot {
 
 			// Initialize VC Logs Watcher
 			try {
-				const dbCore = new DatabaseCore();
-				await dbCore.initialize();
+				await initializePostgresSchema();
 				this.vcLogsWatcher = new VCLogsWatcher(
 					this.client,
-					dbCore,
+					null, // Will need to update VCLogsWatcher to work with PostgreSQL
 					"1254696036988092437",
 				);
 				await this.vcLogsWatcher.startWatching();

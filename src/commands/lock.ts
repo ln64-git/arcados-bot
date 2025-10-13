@@ -107,25 +107,7 @@ export const lockCommand: Command = {
 				}
 			}
 
-			// Update user preferences to remember this lock setting
-			const preferences = (await voiceManager.getUserPreferences(
-				interaction.user.id,
-				interaction.guild?.id || "",
-			)) || {
-				userId: interaction.user.id,
-				guildId: interaction.guild?.id || "",
-				bannedUsers: [],
-				mutedUsers: [],
-				kickedUsers: [],
-				deafenedUsers: [],
-				renamedUsers: [],
-				lastUpdated: new Date(),
-			};
-
-			preferences.preferredLocked = state === "lock";
-			preferences.lastUpdated = new Date();
-			await voiceManager.updateUserPreferences(preferences);
-
+			// Log moderation action (preferences are now handled automatically in VoiceManager)
 			await voiceManager.logModerationAction({
 				action: "lock",
 				channelId: channel.id,

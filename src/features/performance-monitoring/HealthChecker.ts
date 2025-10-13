@@ -1,5 +1,5 @@
 import { getRedisClient } from "../cache-management/RedisManager";
-import { getDatabase } from "../database-manager/DatabaseConnection";
+import { DatabaseCore } from "../database-manager/PostgresCore";
 import { getEventQueue } from "../event-system/EventQueue";
 import { memoryManager } from "./MemoryManager";
 
@@ -54,7 +54,8 @@ export class HealthChecker {
 		// Check database connection
 		let databaseHealthy = false;
 		try {
-			const db = await getDatabase();
+			// TODO: Update to use PostgreSQL - temporarily disabled
+			const db = null as any;
 			await db.admin().ping();
 			databaseHealthy = true;
 		} catch (error) {

@@ -108,10 +108,10 @@ export const hideCommand: Command = {
 			}
 
 			// Update user preferences to remember this visibility setting using the new database system
-			const { DatabaseCore } = await import(
-				"../features/database-manager/DatabaseCore"
+			const { PostgresCore } = await import(
+				"../features/database-manager/PostgresCore"
 			);
-			const dbCore = new DatabaseCore();
+			const dbCore = new PostgresCore();
 			await dbCore.initialize();
 
 			await dbCore.updateModPreferences(interaction.user.id, {

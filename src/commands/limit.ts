@@ -81,25 +81,7 @@ export const limitCommand: Command = {
 		try {
 			await channel.setUserLimit(userLimit);
 
-			// Update user preferences to remember this user limit
-			const preferences = (await voiceManager.getUserPreferences(
-				interaction.user.id,
-				interaction.guild?.id || "",
-			)) || {
-				userId: interaction.user.id,
-				guildId: interaction.guild?.id || "",
-				bannedUsers: [],
-				mutedUsers: [],
-				kickedUsers: [],
-				deafenedUsers: [],
-				renamedUsers: [],
-				lastUpdated: new Date(),
-			};
-
-			preferences.preferredUserLimit = userLimit;
-			preferences.lastUpdated = new Date();
-			await voiceManager.updateUserPreferences(preferences);
-
+			// Log moderation action (preferences are now handled automatically in VoiceManager)
 			await voiceManager.logModerationAction({
 				action: "limit",
 				channelId: channel.id,

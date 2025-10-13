@@ -95,27 +95,7 @@ export const kickCommand: Command = {
 		try {
 			await targetMember.voice.disconnect(reason);
 
-			// Update user preferences to remember this kick
-			const preferences = (await voiceManager.getUserPreferences(
-				interaction.user.id,
-				interaction.guild?.id || "",
-			)) || {
-				userId: interaction.user.id,
-				guildId: interaction.guild?.id || "",
-				bannedUsers: [],
-				mutedUsers: [],
-				kickedUsers: [],
-				deafenedUsers: [],
-				renamedUsers: [],
-				lastUpdated: new Date(),
-			};
-
-			if (!preferences.kickedUsers.includes(user.id)) {
-				preferences.kickedUsers.push(user.id);
-				preferences.lastUpdated = new Date();
-				await voiceManager.updateUserPreferences(preferences);
-			}
-
+			// Log moderation action (preferences are now handled automatically in VoiceManager)
 			await voiceManager.logModerationAction({
 				action: "kick",
 				channelId: channel.id,
