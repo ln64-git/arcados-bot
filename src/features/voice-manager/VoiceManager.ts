@@ -1589,6 +1589,13 @@ export class VoiceManager implements IVoiceManager {
 				isActive: true,
 				activeUserIds: Array.from(newVoiceChannel.members.keys()),
 				memberCount: newVoiceChannel.members.size,
+				status:
+					(newVoiceChannel as unknown as { topic?: string }).topic || undefined,
+				lastStatusChange:
+					(oldVoiceChannel as unknown as { topic?: string }).topic !==
+					(newVoiceChannel as unknown as { topic?: string }).topic
+						? new Date()
+						: undefined,
 			});
 		} catch (error) {
 			console.warn(`🔸 Failed to update channel name in database: ${error}`);

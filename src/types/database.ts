@@ -228,6 +228,8 @@ export interface Channel {
 	isActive: boolean;
 	activeUserIds?: string[]; // Array of user Discord IDs currently in the channel (optional for upserts)
 	memberCount?: number; // Denormalized count for quick queries (optional for upserts)
+	status?: string; // Discord channel status/topic (voice channel description)
+	lastStatusChange?: Date; // Timestamp of the last status change
 	createdAt: Date;
 	updatedAt: Date;
 }

@@ -144,6 +144,8 @@ export async function createPostgresTables(): Promise<void> {
 				is_active BOOLEAN DEFAULT TRUE,
 				active_user_ids TEXT[] NOT NULL DEFAULT '{}',
 				member_count INTEGER NOT NULL DEFAULT 0,
+				status TEXT NULL,
+				last_status_change TIMESTAMP NULL,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(discord_id, guild_id)
@@ -307,6 +309,30 @@ export async function migratePostgresSchema(): Promise<void> {
 	} catch (error) {
 		console.warn(
 			"🔸 Failed to add nickname_history column to users table:",
+			error,
+		);
+	}
+
+	// Add status columns to existing channels table if they don't exist
+	try {
+		await executeQuery(`
+			ALTER TABLE channels 
+			ADD COLUMN IF NOT EXISTS status TEXT NULL
+		`);
+		console.log("🔹 Added status column to channels table");
+	} catch (error) {
+		console.warn("🔸 Failed to add status column to channels table:", error);
+	}
+
+	try {
+		await executeQuery(`
+			ALTER TABLE channels 
+			ADD COLUMN IF NOT EXISTS last_status_change TIMESTAMP NULL
+		`);
+		console.log("🔹 Added last_status_change column to channels table");
+	} catch (error) {
+		console.warn(
+			"🔸 Failed to add last_status_change column to channels table:",
 			error,
 		);
 	}

@@ -944,9 +944,9 @@ export class DatabaseCore {
 		return this.withPerformanceTracking(async () => {
 			const query = `
 				INSERT INTO ${this.tables.channels} (
-					discord_id, guild_id, channel_name, position, is_active, active_user_ids, member_count
+					discord_id, guild_id, channel_name, position, is_active, active_user_ids, member_count, status, last_status_change
 				) VALUES (
-					$1, $2, $3, $4, $5, $6, $7
+					$1, $2, $3, $4, $5, $6, $7, $8, $9
 				)
 				ON CONFLICT (discord_id, guild_id)
 				DO UPDATE SET
@@ -955,6 +955,8 @@ export class DatabaseCore {
 					is_active = EXCLUDED.is_active,
 					active_user_ids = EXCLUDED.active_user_ids,
 					member_count = EXCLUDED.member_count,
+					status = COALESCE(EXCLUDED.status, ${this.tables.channels}.status),
+					last_status_change = COALESCE(EXCLUDED.last_status_change, ${this.tables.channels}.last_status_change),
 					updated_at = CURRENT_TIMESTAMP
 			`;
 			await executeQuery(query, [
@@ -965,6 +967,8 @@ export class DatabaseCore {
 				channel.isActive,
 				channel.activeUserIds,
 				channel.memberCount,
+				channel.status ?? null,
+				channel.lastStatusChange ?? null,
 			]);
 		}, `upsertChannel(${channel.discordId})`);
 	}
@@ -1017,6 +1021,20 @@ export class DatabaseCore {
 			fields.push("member_count");
 			values.push(channel.memberCount);
 			updates.push(`member_count = $${paramIndex}`);
+			paramIndex++;
+		}
+
+		if (channel.status !== undefined) {
+			fields.push("status");
+			values.push(channel.status);
+			updates.push(`status = $${paramIndex}`);
+			paramIndex++;
+		}
+
+		if (channel.lastStatusChange !== undefined) {
+			fields.push("last_status_change");
+			values.push(channel.lastStatusChange);
+			updates.push(`last_status_change = $${paramIndex}`);
 			paramIndex++;
 		}
 
