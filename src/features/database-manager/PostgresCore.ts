@@ -960,30 +960,93 @@ export class DatabaseCore {
 		client: PoolClient,
 		channel: Omit<Channel, "id" | "createdAt" | "updatedAt">,
 	): Promise<void> {
+		// Build dynamic query based on which fields are provided
+		const fields: string[] = [];
+		const values: unknown[] = [];
+		const updates: string[] = [];
+		let paramIndex = 1;
+
+		// Always include these fields
+		fields.push("discord_id", "guild_id");
+		values.push(channel.discordId, channel.guildId);
+		paramIndex += 2;
+
+		if (channel.channelName !== undefined) {
+			fields.push("channel_name");
+			values.push(channel.channelName);
+			updates.push(`channel_name = $${paramIndex}`);
+			paramIndex++;
+		}
+
+		if (channel.position !== undefined) {
+			fields.push("position");
+			values.push(channel.position);
+			updates.push(`position = $${paramIndex}`);
+			paramIndex++;
+		}
+
+		if (channel.isActive !== undefined) {
+			fields.push("is_active");
+			values.push(channel.isActive);
+			updates.push(`is_active = $${paramIndex}`);
+			paramIndex++;
+		}
+
+		// Only update active_user_ids and member_count if explicitly provided
+		if (channel.activeUserIds !== undefined) {
+			fields.push("active_user_ids");
+			values.push(channel.activeUserIds);
+			updates.push(`active_user_ids = $${paramIndex}`);
+			paramIndex++;
+		}
+
+		if (channel.memberCount !== undefined) {
+			fields.push("member_count");
+			values.push(channel.memberCount);
+			updates.push(`member_count = $${paramIndex}`);
+			paramIndex++;
+		}
+
+		// Always update timestamp
+		updates.push("updated_at = CURRENT_TIMESTAMP");
+
+		const placeholders = fields.map((_, i) => `$${i + 1}`).join(", ");
+		const updateClause = updates.join(", ");
+
 		const query = `
-			INSERT INTO ${this.tables.channels} (
-				discord_id, guild_id, channel_name, position, is_active, active_user_ids, member_count
-			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7
-			)
+			INSERT INTO ${this.tables.channels} (${fields.join(", ")})
+			VALUES (${placeholders})
 			ON CONFLICT (discord_id, guild_id)
-			DO UPDATE SET
-				channel_name = EXCLUDED.channel_name,
-				position = EXCLUDED.position,
-				is_active = EXCLUDED.is_active,
-				active_user_ids = EXCLUDED.active_user_ids,
-				member_count = EXCLUDED.member_count,
-				updated_at = CURRENT_TIMESTAMP
+			DO UPDATE SET ${updateClause}
 		`;
-		await client.query(query, [
-			channel.discordId,
-			channel.guildId,
-			channel.channelName,
-			channel.position,
-			channel.isActive,
-			channel.activeUserIds,
-			channel.memberCount,
-		]);
+
+		await client.query(query, values);
+	}
+
+	/**
+	 * Get active members in a voice channel from voice_channel_sessions table
+	 */
+	async getActiveChannelMembers(channelId: string): Promise<string[]> {
+		const query = `
+			SELECT user_id 
+			FROM ${this.tables.voiceChannelSessions}
+			WHERE channel_id = $1 AND is_active = true
+		`;
+		const rows = await executeQuery<{ user_id: string }>(query, [channelId]);
+		return rows.map((row) => row.user_id);
+	}
+
+	/**
+	 * Get count of active members in a voice channel from voice_channel_sessions table
+	 */
+	async getActiveChannelMemberCount(channelId: string): Promise<number> {
+		const query = `
+			SELECT COUNT(*) as count
+			FROM ${this.tables.voiceChannelSessions}
+			WHERE channel_id = $1 AND is_active = true
+		`;
+		const result = await executeQueryOne<{ count: string }>(query, [channelId]);
+		return result ? Number.parseInt(result.count, 10) : 0;
 	}
 
 	async getChannel(
@@ -1173,16 +1236,30 @@ export class DatabaseCore {
 	}
 
 	async getActiveVoiceChannelSessions(
-		channelId: string,
+		channelId?: string,
 	): Promise<VoiceChannelSession[]> {
-		return this.withPerformanceTracking(async () => {
-			const query = `
+		return this.withPerformanceTracking(
+			async () => {
+				if (channelId) {
+					// Get sessions for specific channel
+					const query = `
+					SELECT * FROM ${this.tables.voiceChannelSessions}
+					WHERE channel_id = $1 AND is_active = TRUE
+					ORDER BY joined_at ASC
+				`;
+					return await executeQuery<VoiceChannelSession>(query, [channelId]);
+				}
+
+				// Get all active sessions across all channels
+				const query = `
 				SELECT * FROM ${this.tables.voiceChannelSessions}
-				WHERE channel_id = $1 AND is_active = TRUE
+				WHERE is_active = TRUE
 				ORDER BY joined_at ASC
 			`;
-			return await executeQuery<VoiceChannelSession>(query, [channelId]);
-		}, `getActiveVoiceChannelSessions(${channelId})`);
+				return await executeQuery<VoiceChannelSession>(query);
+			},
+			`getActiveVoiceChannelSessions(${channelId || "all"})`,
+		);
 	}
 
 	async getUserVoiceChannelSessions(

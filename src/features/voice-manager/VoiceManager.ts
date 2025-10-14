@@ -89,6 +89,7 @@ export class VoiceManager implements IVoiceManager {
 		this.sessionReconcileTimer = setInterval(async () => {
 			try {
 				await this.performIncrementalSync([]);
+				await this.validateChannelMemberCounts();
 			} catch (error) {
 				if (this.debugEnabled)
 					console.warn("🔸 Session reconciliation error:", error);
@@ -377,6 +378,10 @@ export class VoiceManager implements IVoiceManager {
 	private async checkAndSyncDatabase(): Promise<void> {
 		try {
 			console.log("🔍 Checking database sync status...");
+
+			// First, sync all voice channels from Discord API (source of truth)
+			await this.syncAllVoiceChannelsFromDiscord();
+
 			const syncResult = await this.performDatabaseSyncCheck();
 
 			if (syncResult.needsSync) {
@@ -391,6 +396,88 @@ export class VoiceManager implements IVoiceManager {
 			}
 		} catch (error) {
 			console.error("🔸 Error during database sync check:", error);
+		}
+	}
+
+	/**
+	 * Sync all voice channels from Discord API (source of truth)
+	 * This ensures database accurately reflects who's currently in voice channels
+	 */
+	private async syncAllVoiceChannelsFromDiscord(): Promise<void> {
+		try {
+			console.log("🔄 Syncing voice channels from Discord API...");
+			let totalSynced = 0;
+			let totalFixed = 0;
+
+			for (const guild of Array.from(this.client.guilds.cache.values())) {
+				for (const channel of Array.from(guild.channels.cache.values())) {
+					if (
+						channel.isVoiceBased() &&
+						channel.type === ChannelType.GuildVoice
+					) {
+						const voiceChannel = channel as VoiceChannel;
+
+						// Skip read-only channels
+						if (this.isReadOnlyChannel(voiceChannel.id)) {
+							continue;
+						}
+
+						const discordMembers = Array.from(
+							voiceChannel.members.keys(),
+						).filter((userId) => {
+							const member = voiceChannel.members.get(userId);
+							return member && !member.user.bot;
+						});
+
+						// Get active sessions from database for this channel
+						const activeSessions = await this.dbCore.getActiveChannelMembers(
+							voiceChannel.id,
+						);
+
+						// Find users in Discord but not in database (missing sessions)
+						const missingSessions = discordMembers.filter(
+							(userId) => !activeSessions.includes(userId),
+						);
+
+						// Find users in database but not in Discord (orphaned sessions)
+						const orphanedSessions = activeSessions.filter(
+							(userId) => !discordMembers.includes(userId),
+						);
+
+						// Create missing sessions
+						for (const userId of missingSessions) {
+							const member = voiceChannel.members.get(userId);
+							if (member) {
+								await this.sessionTracker.trackUserJoin(member, voiceChannel);
+								totalFixed++;
+							}
+						}
+
+						// Close orphaned sessions
+						for (const userId of orphanedSessions) {
+							const member = guild.members.cache.get(userId);
+							if (member) {
+								await this.sessionTracker.trackUserLeave(member, voiceChannel);
+								totalFixed++;
+							}
+						}
+
+						if (missingSessions.length > 0 || orphanedSessions.length > 0) {
+							console.log(
+								`🔧 Channel ${voiceChannel.name}: +${missingSessions.length} sessions, -${orphanedSessions.length} sessions`,
+							);
+						}
+
+						totalSynced++;
+					}
+				}
+			}
+
+			console.log(
+				`✅ Discord sync completed: ${totalSynced} channels checked, ${totalFixed} sessions fixed`,
+			);
+		} catch (error) {
+			console.error("🔸 Error syncing voice channels from Discord:", error);
 		}
 	}
 
@@ -440,12 +527,12 @@ export class VoiceManager implements IVoiceManager {
 	private async findOrphanedVoiceSessions(): Promise<string[]> {
 		const orphaned: string[] = [];
 
-		for (const guild of this.client.guilds.cache.values()) {
-			for (const channel of guild.channels.cache.values()) {
+		for (const guild of Array.from(this.client.guilds.cache.values())) {
+			for (const channel of Array.from(guild.channels.cache.values())) {
 				if (channel.isVoiceBased() && channel.type === ChannelType.GuildVoice) {
 					const voiceChannel = channel as VoiceChannel;
 
-					for (const [userId, member] of voiceChannel.members) {
+					for (const [userId, member] of Array.from(voiceChannel.members)) {
 						if (!member.user.bot) {
 							const user = await this.dbCore.getUser(userId, guild.id);
 							if (user) {
@@ -479,7 +566,7 @@ export class VoiceManager implements IVoiceManager {
 
 		try {
 			// Check all guilds for users with active voice interactions
-			for (const guild of this.client.guilds.cache.values()) {
+			for (const guild of Array.from(this.client.guilds.cache.values())) {
 				const users = await this.dbCore.getUsersByGuild(guild.id);
 
 				for (const user of users) {
@@ -520,8 +607,8 @@ export class VoiceManager implements IVoiceManager {
 	private async findOwnershipInconsistencies(): Promise<string[]> {
 		const inconsistencies: string[] = [];
 
-		for (const guild of this.client.guilds.cache.values()) {
-			for (const channel of guild.channels.cache.values()) {
+		for (const guild of Array.from(this.client.guilds.cache.values())) {
+			for (const channel of Array.from(guild.channels.cache.values())) {
 				if (channel.isVoiceBased() && channel.type === ChannelType.GuildVoice) {
 					const voiceChannel = channel as VoiceChannel;
 					const owner = await this.getChannelOwner(channel.id);
@@ -539,6 +626,61 @@ export class VoiceManager implements IVoiceManager {
 		}
 
 		return inconsistencies;
+	}
+
+	/**
+	 * Validate channel member counts by comparing Discord API vs database
+	 */
+	private async validateChannelMemberCounts(): Promise<void> {
+		try {
+			let totalChannelsChecked = 0;
+			let discrepanciesFound = 0;
+
+			for (const guild of Array.from(this.client.guilds.cache.values())) {
+				for (const channel of Array.from(guild.channels.cache.values())) {
+					if (
+						channel.isVoiceBased() &&
+						channel.type === ChannelType.GuildVoice
+					) {
+						const voiceChannel = channel as VoiceChannel;
+
+						// Skip read-only channels
+						if (this.isReadOnlyChannel(voiceChannel.id)) {
+							continue;
+						}
+
+						const discordMemberCount = Array.from(
+							voiceChannel.members.values(),
+						).filter((member) => !member.user.bot).length;
+
+						const dbMemberCount = await this.dbCore.getActiveChannelMemberCount(
+							voiceChannel.id,
+						);
+
+						if (discordMemberCount !== dbMemberCount) {
+							discrepanciesFound++;
+							console.warn(
+								`⚠️ Member count mismatch in ${voiceChannel.name}: Discord=${discordMemberCount}, DB=${dbMemberCount}`,
+							);
+						}
+
+						totalChannelsChecked++;
+					}
+				}
+			}
+
+			if (discrepanciesFound > 0) {
+				console.warn(
+					`⚠️ Found ${discrepanciesFound} member count discrepancies across ${totalChannelsChecked} channels`,
+				);
+			} else if (this.debugEnabled) {
+				console.log(
+					`✅ Member count validation passed: ${totalChannelsChecked} channels checked`,
+				);
+			}
+		} catch (error) {
+			console.error("🔸 Error validating channel member counts:", error);
+		}
 	}
 
 	/**
@@ -585,12 +727,12 @@ export class VoiceManager implements IVoiceManager {
 	 * Sync orphaned voice sessions by creating missing sessions
 	 */
 	private async syncOrphanedVoiceSessions(): Promise<void> {
-		for (const guild of this.client.guilds.cache.values()) {
-			for (const channel of guild.channels.cache.values()) {
+		for (const guild of Array.from(this.client.guilds.cache.values())) {
+			for (const channel of Array.from(guild.channels.cache.values())) {
 				if (channel.isVoiceBased() && channel.type === ChannelType.GuildVoice) {
 					const voiceChannel = channel as VoiceChannel;
 
-					for (const [userId, member] of voiceChannel.members) {
+					for (const [userId, member] of Array.from(voiceChannel.members)) {
 						if (!member.user.bot) {
 							const user = await this.dbCore.getUser(userId, guild.id);
 							if (user) {
@@ -633,7 +775,7 @@ export class VoiceManager implements IVoiceManager {
 	private async closeMissingVoiceSessions(): Promise<void> {
 		try {
 			// Check all guilds for users with active voice interactions
-			for (const guild of this.client.guilds.cache.values()) {
+			for (const guild of Array.from(this.client.guilds.cache.values())) {
 				const users = await this.dbCore.getUsersByGuild(guild.id);
 
 				for (const user of users) {
@@ -694,8 +836,8 @@ export class VoiceManager implements IVoiceManager {
 	 * Fix ownership inconsistencies
 	 */
 	private async fixOwnershipInconsistencies(): Promise<void> {
-		for (const guild of this.client.guilds.cache.values()) {
-			for (const channel of guild.channels.cache.values()) {
+		for (const guild of Array.from(this.client.guilds.cache.values())) {
+			for (const channel of Array.from(guild.channels.cache.values())) {
 				if (channel.isVoiceBased() && channel.type === ChannelType.GuildVoice) {
 					const voiceChannel = channel as VoiceChannel;
 					const owner = await this.getChannelOwner(channel.id);
@@ -988,21 +1130,24 @@ export class VoiceManager implements IVoiceManager {
 			return;
 		}
 
-		// Track voice interaction using centralized service
-		try {
-			await this.sessionTracker.trackUserJoin(
-				newState.member,
-				channel as VoiceChannel,
-			);
-		} catch (error) {
-			console.warn(`🔸 Failed to track voice interaction: ${error}`);
+		// Check if this is a spawn channel FIRST (before tracking)
+		const isSpawnChannel =
+			config.spawnChannelIds && config.spawnChannelIds.includes(channel.id);
+
+		// Only track voice interaction if it's NOT a spawn channel
+		if (!isSpawnChannel) {
+			try {
+				await this.sessionTracker.trackUserJoin(
+					newState.member,
+					channel as VoiceChannel,
+				);
+			} catch (error) {
+				console.warn(`🔸 Failed to track voice interaction: ${error}`);
+			}
 		}
 
-		// Check if this is a spawn channel from environment config
-		if (
-			!config.spawnChannelIds ||
-			!config.spawnChannelIds.includes(channel.id)
-		) {
+		// If not a spawn channel, we're done
+		if (!isSpawnChannel) {
 			return;
 		}
 
@@ -1057,14 +1202,20 @@ export class VoiceManager implements IVoiceManager {
 			);
 		}
 
-		// Track voice interaction using centralized service
-		try {
-			await this.sessionTracker.trackUserLeave(
-				oldState.member,
-				channel as VoiceChannel,
-			);
-		} catch (error) {
-			console.warn(`🔸 Failed to update voice interaction: ${error}`);
+		// Check if this is a spawn channel FIRST (before tracking)
+		const isSpawnChannel =
+			config.spawnChannelIds && config.spawnChannelIds.includes(channel.id);
+
+		// Only track voice interaction if it's NOT a spawn channel
+		if (!isSpawnChannel) {
+			try {
+				await this.sessionTracker.trackUserLeave(
+					oldState.member,
+					channel as VoiceChannel,
+				);
+			} catch (error) {
+				console.warn(`🔸 Failed to update voice interaction: ${error}`);
+			}
 		}
 
 		// Restore user's nickname when they leave any voice channel
@@ -1096,20 +1247,35 @@ export class VoiceManager implements IVoiceManager {
 	private async handleUserMoved(oldState: VoiceState, newState: VoiceState) {
 		if (!oldState.member || !newState.member) return;
 
-		// Track voice interaction using centralized service
-		try {
-			await this.sessionTracker.trackUserMove(
-				newState.member,
-				oldState.channel as VoiceChannel,
-				newState.channel as VoiceChannel,
-			);
-		} catch (error) {
-			console.warn(`🔸 Failed to track voice move: ${error}`);
+		// Check if either channel is a spawn channel
+		const oldIsSpawnChannel =
+			config.spawnChannelIds &&
+			config.spawnChannelIds.includes(oldState.channelId || "");
+		const newIsSpawnChannel =
+			config.spawnChannelIds &&
+			config.spawnChannelIds.includes(newState.channelId || "");
+
+		// Only track voice interaction if neither channel is a spawn channel
+		if (!oldIsSpawnChannel && !newIsSpawnChannel) {
+			try {
+				await this.sessionTracker.trackUserMove(
+					newState.member,
+					oldState.channel as VoiceChannel,
+					newState.channel as VoiceChannel,
+				);
+			} catch (error) {
+				console.warn(`🔸 Failed to track voice move: ${error}`);
+			}
 		}
 
-		// Handle business logic (nickname restoration, channel management, etc.)
-		await this.handleUserLeft(oldState);
-		await this.handleUserJoined(newState);
+		// Handle spawn channel logic for moves
+		if (newIsSpawnChannel) {
+			await this.handleUserJoined(newState);
+		} else {
+			// Handle business logic (nickname restoration, channel management, etc.)
+			await this.handleUserLeft(oldState);
+			await this.handleUserJoined(newState);
+		}
 	}
 
 	private async handleChannelUpdate(oldChannel: Channel, newChannel: Channel) {
@@ -1185,10 +1351,10 @@ export class VoiceManager implements IVoiceManager {
 		try {
 			// Check if this rename was likely initiated by the user (not our bot)
 			// We can detect this by checking if the new name doesn't match our naming patterns
-			const isUserInitiatedRename = !this.isBotGeneratedName(
+			const isUserInitiatedRename = !(await this.isBotGeneratedName(
 				newVoiceChannel.name,
 				owner.userId,
-			);
+			));
 
 			if (isUserInitiatedRename) {
 				console.log(
@@ -1219,7 +1385,10 @@ export class VoiceManager implements IVoiceManager {
 	 * Check if a channel name appears to be generated by our bot
 	 * This helps distinguish between bot-initiated renames and user-initiated renames
 	 */
-	private isBotGeneratedName(channelName: string, ownerId: string): boolean {
+	private async isBotGeneratedName(
+		channelName: string,
+		ownerId: string,
+	): Promise<boolean> {
 		// Get the owner's display name to check against our naming patterns
 		const guild = this.client.guilds.cache.first();
 		if (!guild) return false;
@@ -1231,8 +1400,26 @@ export class VoiceManager implements IVoiceManager {
 			member.nickname || member.displayName || member.user.username;
 		const expectedBotName = `${ownerDisplayName}'s Channel`;
 
-		// If the name matches our bot's naming pattern, it's likely bot-generated
-		return channelName === expectedBotName;
+		// Check if this matches our default bot naming pattern
+		if (channelName === expectedBotName) {
+			return true;
+		}
+
+		// Check if this matches the user's preferred channel name (also bot-generated)
+		try {
+			const preferences = await this.getUserPreferences(ownerId, guild.id);
+			if (
+				preferences?.preferredChannelName &&
+				channelName === preferences.preferredChannelName
+			) {
+				return true;
+			}
+		} catch (error) {
+			// If we can't get preferences, assume it's user-initiated
+		}
+
+		// If it doesn't match either pattern, it's likely user-initiated
+		return false;
 	}
 
 	/**
@@ -1244,18 +1431,20 @@ export class VoiceManager implements IVoiceManager {
 		channelName: string,
 	): Promise<void> {
 		try {
-			// Use DatabaseCore to update mod preferences
-			const { DatabaseCore } = await import("../database-manager/PostgresCore");
-			const dbCore = new DatabaseCore();
-			await dbCore.initialize();
-
-			// Update the user's preferred channel name
-			await dbCore.updateModPreferences(userId, guildId, {
+			// Use existing DatabaseCore instance instead of creating a new one
+			await this.dbCore.updateModPreferences(userId, guildId, {
 				preferredChannelName: channelName,
 			});
 
 			// Invalidate cache to ensure fresh data is fetched
 			await this.cache.invalidateUserPreferences(userId, guildId);
+
+			// Force cache refresh by getting preferences (this will populate cache with fresh data)
+			await this.cache.getUserPreferences(userId, guildId);
+
+			console.log(
+				`🔹 Successfully updated preferred channel name to "${channelName}"`,
+			);
 		} catch (error) {
 			console.error(
 				`🔸 Failed to update preferred channel name in database: ${error}`,
@@ -1789,14 +1978,34 @@ export class VoiceManager implements IVoiceManager {
 			// Apply new owner's preferences
 			await this.applyUserPreferencesToChannel(channelId, longestUser.id);
 
-			// Try to rename channel to owner's name if it's not already properly named
+			// Try to rename channel to owner's preferred name or default name
 			const ownerDisplayName =
 				longestUser.displayName || longestUser.user.username;
-			const expectedChannelName = `${ownerDisplayName}'s Channel`;
+
+			// Check if user has a preferred channel name
+			let expectedChannelName = `${ownerDisplayName}'s Channel`; // Default fallback
+			try {
+				const preferences = await this.getUserPreferences(
+					longestUser.id,
+					channel.guild.id,
+				);
+				if (preferences?.preferredChannelName) {
+					expectedChannelName = preferences.preferredChannelName;
+					console.log(
+						`🔹 Using owner's preferred channel name: "${expectedChannelName}"`,
+					);
+				}
+			} catch (error) {
+				console.warn(
+					`🔸 Failed to get user preferences for channel naming: ${error}`,
+				);
+				// Fall back to default naming
+			}
 
 			if (
 				!channel.name.includes(ownerDisplayName) &&
-				!channel.name.toLowerCase().includes("available")
+				!channel.name.toLowerCase().includes("available") &&
+				channel.name !== expectedChannelName
 			) {
 				try {
 					await channel.setName(expectedChannelName);
@@ -3164,7 +3373,7 @@ export class VoiceManager implements IVoiceManager {
 			const channelsToUpdate: string[] = [];
 
 			// Check all voice channels in the guild
-			for (const channel of guild.channels.cache.values()) {
+			for (const channel of Array.from(guild.channels.cache.values())) {
 				if (channel.isVoiceBased()) {
 					const owner = await this.getChannelOwner(channel.id);
 					if (owner) {
@@ -3318,7 +3527,7 @@ export class VoiceManager implements IVoiceManager {
 			const orphanedChannels: VoiceChannel[] = [];
 
 			// Check all guilds
-			for (const guild of this.client.guilds.cache.values()) {
+			for (const guild of Array.from(this.client.guilds.cache.values())) {
 				// Find all voice channels that match our naming pattern
 				const dynamicChannels = guild.channels.cache.filter(
 					(channel) =>
@@ -3327,7 +3536,7 @@ export class VoiceManager implements IVoiceManager {
 							channel.name.includes("'s Channel")),
 				) as Collection<string, VoiceChannel>;
 
-				for (const channel of dynamicChannels.values()) {
+				for (const channel of Array.from(dynamicChannels.values())) {
 					// Check if channel is empty
 					if (channel.members.size === 0) {
 						// Check if channel has an owner in our database
@@ -3387,7 +3596,7 @@ export class VoiceManager implements IVoiceManager {
 
 		try {
 			// Check all guilds
-			for (const guild of this.client.guilds.cache.values()) {
+			for (const guild of Array.from(this.client.guilds.cache.values())) {
 				// Find all voice channels that match our naming pattern
 				const dynamicChannels = guild.channels.cache.filter(
 					(channel) =>
@@ -3398,7 +3607,7 @@ export class VoiceManager implements IVoiceManager {
 
 				total += dynamicChannels.size;
 
-				for (const channel of dynamicChannels.values()) {
+				for (const channel of Array.from(dynamicChannels.values())) {
 					const owner = await this.getChannelOwner(channel.id);
 					const isEmpty = channel.members.size === 0;
 

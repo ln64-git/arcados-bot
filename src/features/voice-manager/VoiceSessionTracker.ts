@@ -69,15 +69,15 @@ export class VoiceSessionTracker {
 				voiceInteractions: [],
 			});
 
-			// 2. Upsert channel to ensure it exists
+			// 2. Upsert channel to ensure it exists (metadata only)
 			await this.dbCore.upsertChannelTransaction(client, {
 				discordId: channel.id,
 				guildId: guildId,
 				channelName: channel.name,
 				position: channel.position,
 				isActive: true,
-				activeUserIds: [],
-				memberCount: 0,
+				activeUserIds: undefined, // Don't overwrite existing members
+				memberCount: undefined, // Don't overwrite existing count
 			});
 
 			// 3. Create voice channel session (primary tracking)
@@ -91,14 +91,6 @@ export class VoiceSessionTracker {
 				duration: undefined,
 				isActive: true,
 			});
-
-			// 4. Add member to channel tracking
-			await this.dbCore.addChannelMemberTransaction(
-				client,
-				channel.id,
-				guildId,
-				userId,
-			);
 		});
 
 		// 5. Update Redis cache (best-effort, non-blocking)
@@ -154,13 +146,7 @@ export class VoiceSessionTracker {
 					duration,
 				);
 
-				// 3. Remove member from channel tracking
-				await this.dbCore.removeChannelMemberTransaction(
-					client,
-					channel.id,
-					guildId,
-					userId,
-				);
+				// 3. Member tracking now handled by voice_channel_sessions table
 			}
 		});
 
@@ -205,12 +191,7 @@ export class VoiceSessionTracker {
 					duration,
 				);
 
-				await this.dbCore.removeChannelMemberTransaction(
-					client,
-					oldChannel.id,
-					oldChannel.guild.id,
-					member.id,
-				);
+				// Member tracking now handled by voice_channel_sessions table
 			}
 
 			// Join new channel
@@ -258,8 +239,8 @@ export class VoiceSessionTracker {
 				channelName: newChannel.name,
 				position: newChannel.position,
 				isActive: true,
-				activeUserIds: [],
-				memberCount: 0,
+				activeUserIds: undefined, // Don't overwrite existing members
+				memberCount: undefined, // Don't overwrite existing count
 			});
 
 			await this.dbCore.createVoiceChannelSessionTransaction(client, {
@@ -273,12 +254,7 @@ export class VoiceSessionTracker {
 				isActive: true,
 			});
 
-			await this.dbCore.addChannelMemberTransaction(
-				client,
-				newChannel.id,
-				newChannel.guild.id,
-				member.id,
-			);
+			// Member tracking now handled by voice_channel_sessions table
 		});
 
 		// Update Redis cache (best-effort, non-blocking)

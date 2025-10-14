@@ -312,9 +312,13 @@ export const renameCommand: Command = {
 					await dbCore.initialize();
 
 					const updateStart = Date.now();
-					await dbCore.updateModPreferences(interaction.user.id, {
-						preferredChannelName: newName,
-					});
+					await dbCore.updateModPreferences(
+						interaction.user.id,
+						interaction.guild?.id || "",
+						{
+							preferredChannelName: newName,
+						},
+					);
 					const updateDuration = Date.now() - updateStart;
 					console.log("🔍 User preferences update took", updateDuration, "ms");
 

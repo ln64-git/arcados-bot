@@ -226,8 +226,8 @@ export interface Channel {
 	channelName: string;
 	position: number; // Channel position in the guild's channel list
 	isActive: boolean;
-	activeUserIds: string[]; // Array of user Discord IDs currently in the channel
-	memberCount: number; // Denormalized count for quick queries
+	activeUserIds?: string[]; // Array of user Discord IDs currently in the channel (optional for upserts)
+	memberCount?: number; // Denormalized count for quick queries (optional for upserts)
 	createdAt: Date;
 	updatedAt: Date;
 }
