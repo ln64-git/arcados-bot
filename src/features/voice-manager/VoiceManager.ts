@@ -1,4 +1,5 @@
 import {
+	AuditLogEvent,
 	type Channel,
 	ChannelType,
 	type Client,
@@ -1541,16 +1542,54 @@ export class VoiceManager implements IVoiceManager {
 		const oldVoiceChannel = oldChannel as VoiceChannel;
 		const newVoiceChannel = newChannel as VoiceChannel;
 
-		// Skip ALL processing for read-only channels
-		if (this.isReadOnlyChannel(newVoiceChannel.id)) {
-			console.log(
-				`🔸 Channel ${newVoiceChannel.name} (${newVoiceChannel.id}) is read-only, skipping ALL processing`,
-			);
+		// Determine if topic/status or name changed
+		const oldTopic = (oldVoiceChannel as unknown as { topic?: string }).topic;
+		const newTopic = (newVoiceChannel as unknown as { topic?: string }).topic;
+		const nameChanged = oldVoiceChannel.name !== newVoiceChannel.name;
+		const statusChanged = oldTopic !== newTopic;
+
+		// If nothing relevant changed, exit early
+		if (!nameChanged && !statusChanged) {
 			return;
 		}
 
+		// Check who made the change via audit logs, and gate persistence by admin
+		try {
+			const logs = await newVoiceChannel.guild.fetchAuditLogs({
+				type: AuditLogEvent.ChannelUpdate,
+				limit: 5,
+			});
+			const entry = logs.entries.find(
+				(e) => (e.target as { id?: string } | null)?.id === newVoiceChannel.id,
+			);
+			if (entry?.executor) {
+				const executor = entry.executor;
+				const member = await newVoiceChannel.guild.members
+					.fetch(executor.id)
+					.catch(() => null);
+				const isAdmin = Boolean(
+					member?.permissions?.has?.(PermissionFlagsBits.Administrator),
+				);
+				if (!isAdmin) {
+					console.log(
+						`🔸 Skipping DB persistence for ${newVoiceChannel.name} update; executor ${executor.id} lacks admin`,
+					);
+					return;
+				}
+			}
+		} catch (auditError) {
+			console.warn(
+				"🔸 Failed to check audit logs for channel update:",
+				auditError,
+			);
+			return; // Fail closed: do not persist without confirming admin
+		}
+
+		// For read-only channels, we still persist allowed admin changes, but skip ownership logic later
+		const isReadOnly = this.isReadOnlyChannel(newVoiceChannel.id);
+
 		// Only log if the name actually changed
-		if (oldVoiceChannel.name !== newVoiceChannel.name) {
+		if (nameChanged) {
 			console.log(
 				`🔍 Channel renamed: "${oldVoiceChannel.name}" → "${newVoiceChannel.name}"`,
 			);
@@ -1574,12 +1613,7 @@ export class VoiceManager implements IVoiceManager {
 			`🔹 Found owner ${owner.userId} for channel ${newVoiceChannel.name}`,
 		);
 
-		// Check if the channel name changed
-		if (oldVoiceChannel.name === newVoiceChannel.name) {
-			return;
-		}
-
-		// Update channel name in database (all channels are tracked)
+		// Update channel (name/status) in database (all channels are tracked)
 		try {
 			await this.dbCore.upsertChannel({
 				discordId: newVoiceChannel.id,
@@ -1589,16 +1623,16 @@ export class VoiceManager implements IVoiceManager {
 				isActive: true,
 				activeUserIds: Array.from(newVoiceChannel.members.keys()),
 				memberCount: newVoiceChannel.members.size,
-				status:
-					(newVoiceChannel as unknown as { topic?: string }).topic || undefined,
-				lastStatusChange:
-					(oldVoiceChannel as unknown as { topic?: string }).topic !==
-					(newVoiceChannel as unknown as { topic?: string }).topic
-						? new Date()
-						: undefined,
+				status: newTopic || undefined,
+				lastStatusChange: statusChanged ? new Date() : undefined,
 			});
 		} catch (error) {
 			console.warn(`🔸 Failed to update channel name in database: ${error}`);
+		}
+
+		// If read-only, skip the rest (ownership logic below should not run)
+		if (isReadOnly) {
+			return;
 		}
 
 		// Update user's preferred channel name when they manually rename via Discord UI

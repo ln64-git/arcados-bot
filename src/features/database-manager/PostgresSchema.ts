@@ -242,7 +242,7 @@ export async function createPostgresIndexes(): Promise<void> {
 		"CREATE INDEX IF NOT EXISTS idx_channels_guild_id ON channels(guild_id)",
 		"CREATE INDEX IF NOT EXISTS idx_channels_position ON channels(position)",
 		"CREATE INDEX IF NOT EXISTS idx_channels_is_active ON channels(is_active)",
-		"CREATE INDEX IF NOT EXISTS idx_channels_active_user_ids ON channels USING GIN(active_user_ids)",
+		"CREATE INDEX IF NOT EXISTS idx_channels_active_user_ids ON channels USING GIN(active_user_ids gin__array_ops)",
 		"CREATE INDEX IF NOT EXISTS idx_channels_member_count ON channels(member_count)",
 
 		// Voice channel sessions indexes
