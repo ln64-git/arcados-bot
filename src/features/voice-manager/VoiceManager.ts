@@ -62,6 +62,7 @@ export class VoiceManager implements IVoiceManager {
 	// Error tracking for voice state updates
 	private voiceStateUpdateErrors: Map<string, number> = new Map();
 	private readonly MAX_ERRORS_BEFORE_ALERT = 5;
+	private lastSyncLogTime = 0;
 
 	// Channels that should be tracked but not modified by the voice manager
 	private readonly readOnlyChannels = new Set(
@@ -880,17 +881,15 @@ export class VoiceManager implements IVoiceManager {
 	 */
 	private async performIncrementalSync(issues: string[]): Promise<void> {
 		try {
-			// Only log if there are significant issues to fix
-			if (issues.length > 0) {
-				console.log("🔄 Starting incremental sync...");
-			}
-
 			// Sync orphaned voice sessions
 			const orphanedSessions = await this.findOrphanedVoiceSessions();
 			if (orphanedSessions.length > 0) {
-				console.log(
-					`🔧 Syncing ${orphanedSessions.length} orphaned voice sessions...`,
-				);
+				// Only log if there are many orphaned sessions or it's been a while since last sync
+				const shouldLog = orphanedSessions.length >= 3 || !this.lastSyncLogTime || (Date.now() - this.lastSyncLogTime) > 30000;
+				if (shouldLog) {
+					console.log(`🔄 Syncing ${orphanedSessions.length} orphaned voice sessions...`);
+					this.lastSyncLogTime = Date.now();
+				}
 				await this.syncOrphanedVoiceSessions();
 			}
 
@@ -970,9 +969,12 @@ export class VoiceManager implements IVoiceManager {
 										guild.id,
 										session,
 									);
-									console.log(
-										`🔹 Created missing voice session for user ${userId} in channel ${channel.name}`,
-									);
+									// Only log if debug is enabled
+									if (this.debugEnabled) {
+										console.log(
+											`🔹 Created missing voice session for user ${userId} in channel ${channel.name}`,
+										);
+									}
 								}
 							}
 						}
@@ -1273,20 +1275,20 @@ export class VoiceManager implements IVoiceManager {
 		oldState: VoiceState,
 		newState: VoiceState,
 	) {
-		if (this.debugEnabled) {
-			console.log("🔍 Voice state update detected:");
-			console.log(
-				`   User: ${oldState.member?.user.username || newState.member?.user.username}`,
-			);
-			console.log(`   Old channel: ${oldState.channelId || "none"}`);
-			console.log(`   New channel: ${newState.channelId || "none"}`);
+		// Only log significant state changes, not every update
+		const username = oldState.member?.user.username || newState.member?.user.username;
+		const isSignificantChange = 
+			(!oldState.channelId && newState.channelId) || // User joined
+			(oldState.channelId && !newState.channelId) || // User left
+			(oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId); // User moved
+
+		if (this.debugEnabled && isSignificantChange) {
+			console.log(`🔍 ${username}: ${!oldState.channelId ? 'joined' : !newState.channelId ? 'left' : 'moved'} ${newState.channelId || oldState.channelId}`);
 		}
 
 		try {
 			// User joined a voice channel
 			if (!oldState.channelId && newState.channelId) {
-				if (this.debugEnabled)
-					console.log(`   → User joined channel ${newState.channelId}`);
 				await this.handleUserJoined(newState);
 
 				// Apply preferences to new joiner
@@ -1301,10 +1303,7 @@ export class VoiceManager implements IVoiceManager {
 				await this.checkAndAutoAssignOwnership(newState.channelId);
 			}
 			// User left a voice channel
-
 			if (oldState.channelId && !newState.channelId) {
-				if (this.debugEnabled)
-					console.log(`   → User left channel ${oldState.channelId}`);
 				await this.handleUserLeft(oldState);
 			}
 			// User moved between channels
@@ -1313,10 +1312,6 @@ export class VoiceManager implements IVoiceManager {
 				newState.channelId &&
 				oldState.channelId !== newState.channelId
 			) {
-				if (this.debugEnabled)
-					console.log(
-						`   → User moved from ${oldState.channelId} to ${newState.channelId}`,
-					);
 				await this.handleUserMoved(oldState, newState);
 
 				// Apply preferences to new joiner if they moved to a different channel
@@ -1401,12 +1396,19 @@ export class VoiceManager implements IVoiceManager {
 					return;
 				}
 
+				if (this.debugEnabled) {
+					console.log(`🔍 Tracking join for ${newState.member.user.username} to ${channel.name}`);
+				}
 				await this.sessionTracker.trackUserJoin(
 					newState.member,
 					channel as VoiceChannel,
 				);
 			} catch (error) {
 				console.warn(`🔸 Failed to track voice interaction: ${error}`);
+			}
+		} else {
+			if (this.debugEnabled) {
+				console.log(`🔍 Skipping voice tracking for spawn channel: ${channel.name}`);
 			}
 		}
 
@@ -1490,12 +1492,19 @@ export class VoiceManager implements IVoiceManager {
 					return;
 				}
 
+				if (this.debugEnabled) {
+					console.log(`🔍 Tracking leave for ${oldState.member.user.username} from ${channel.name}`);
+				}
 				await this.sessionTracker.trackUserLeave(
 					oldState.member,
 					channel as VoiceChannel,
 				);
 			} catch (error) {
 				console.warn(`🔸 Failed to update voice interaction: ${error}`);
+			}
+		} else {
+			if (this.debugEnabled) {
+				console.log(`🔍 Skipping voice tracking for spawn channel: ${channel.name}`);
 			}
 		}
 

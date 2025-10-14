@@ -33,6 +33,11 @@ export class VoiceSessionTracker {
 
 		// Only track sessions for configured guild
 		if (guildId !== config.guildId) {
+			if (this.debugEnabled) {
+				console.log(
+					`🔍 Skipping voice tracking - wrong guild: ${guildId} vs ${config.guildId}`,
+				);
+			}
 			return;
 		}
 
@@ -171,6 +176,16 @@ export class VoiceSessionTracker {
 		const guildId = channel.guild.id;
 		const leftAt = new Date();
 
+		// Only track sessions for configured guild
+		if (guildId !== config.guildId) {
+			if (this.debugEnabled) {
+				console.log(
+					`🔍 Skipping voice leave tracking - wrong guild: ${guildId} vs ${config.guildId}`,
+				);
+			}
+			return;
+		}
+
 		// Validate all required fields before proceeding
 		if (!userId || !guildId || !channel.id || !channel.name) {
 			throw new Error(
@@ -184,7 +199,20 @@ export class VoiceSessionTracker {
 				await this.dbCore.getCurrentVoiceChannelSessionTransaction(
 					client,
 					userId,
+					guildId,
 				);
+
+			if (this.debugEnabled) {
+				console.log(
+					`🔍 trackUserLeave: Found session for ${userId} in ${channel.name}:`,
+					currentSession ? "YES" : "NO",
+				);
+				if (currentSession) {
+					console.log(
+						`🔍 Current session details: channelId=${currentSession.channelId}, isActive=${currentSession.isActive}`,
+					);
+				}
+			}
 
 			if (currentSession) {
 				if (currentSession.channelId === channel.id) {
@@ -205,11 +233,9 @@ export class VoiceSessionTracker {
 						duration,
 					);
 
-					if (this.debugEnabled) {
-						console.log(
-							`🔸 Closed session for user ${userId} in channel ${channel.name}`,
-						);
-					}
+					console.log(
+						`🔸 Closed session for user ${userId} in channel ${channel.name} (duration: ${duration}s)`,
+					);
 				} else {
 					// User was in a different channel, close that session too
 					const joinedAt =
@@ -235,11 +261,9 @@ export class VoiceSessionTracker {
 					}
 				}
 			} else {
-				if (this.debugEnabled) {
-					console.log(
-						`🔸 No active session found for user ${userId} leaving channel ${channel.name}`,
-					);
-				}
+				console.log(
+					`🔸 No active session found for user ${userId} leaving channel ${channel.name}`,
+				);
 			}
 		});
 

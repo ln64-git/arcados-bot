@@ -255,8 +255,7 @@ export async function createPostgresIndexes(): Promise<void> {
 		"CREATE INDEX IF NOT EXISTS idx_voice_sessions_left_at ON voice_channel_sessions(left_at)",
 		"CREATE INDEX IF NOT EXISTS idx_voice_sessions_is_active ON voice_channel_sessions(is_active)",
 		"CREATE INDEX IF NOT EXISTS idx_voice_sessions_duration ON voice_channel_sessions(duration)",
-		// Ensure ON CONFLICT works: unique per (user, channel, is_active)
-		"CREATE UNIQUE INDEX IF NOT EXISTS uq_voice_session_user_channel_active ON voice_channel_sessions(user_id, channel_id, is_active)",
+		// Uniqueness is enforced only for active sessions per (user, channel)
 	];
 
 	for (const index of indexes) {
@@ -296,6 +295,21 @@ export async function migratePostgresSchema(): Promise<void> {
 		console.log("🔹 Added position column to channels table");
 	} catch (error) {
 		console.warn("🔸 Failed to add position column to channels table:", error);
+	}
+
+	// Drop overly strict unique index that prevented multiple historical inactive sessions
+	try {
+		await executeQuery(
+			"DROP INDEX IF EXISTS uq_voice_session_user_channel_active",
+		);
+		console.log(
+			"🔹 Dropped deprecated index uq_voice_session_user_channel_active (replaced by partial unique index for active sessions)",
+		);
+	} catch (error) {
+		console.warn(
+			"🔸 Failed to drop deprecated index uq_voice_session_user_channel_active:",
+			error,
+		);
 	}
 
 	// Add nickname columns to existing users table if they don't exist

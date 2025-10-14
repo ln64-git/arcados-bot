@@ -939,38 +939,173 @@ export class DatabaseCore {
 
 	// ==================== CHANNEL OPERATIONS ====================
 
+	/**
+	 * Ensures unique channel positions within a guild by resolving conflicts
+	 * This prevents duplicate positions that can occur from Discord's API
+	 */
+	private async ensureUniqueChannelPositions(
+		client: PoolClient,
+		guildId: string,
+		excludeChannelId?: string,
+	): Promise<void> {
+		// Get all channels in the guild, ordered by position
+		const channels = await executeQuery(
+			`
+			SELECT discord_id, channel_name, position
+			FROM ${this.tables.channels}
+			WHERE guild_id = $1 AND is_active = TRUE
+			ORDER BY position ASC, created_at ASC
+		`,
+			[guildId],
+		);
+
+		// Track used positions and reassign duplicates
+		const usedPositions = new Set<number>();
+		const updates: Array<{ channelId: string; newPosition: number }> = [];
+
+		for (const channel of channels) {
+			// Skip the channel we're excluding (if provided)
+			if (excludeChannelId && (channel as any).discordId === excludeChannelId) {
+				continue;
+			}
+
+			const currentPosition = (channel as any).position;
+			let newPosition = currentPosition;
+
+			// If this position is already used, find the next available position
+			while (usedPositions.has(newPosition)) {
+				newPosition++;
+			}
+
+			// If position changed, add to updates
+			if (newPosition !== currentPosition) {
+				updates.push({
+					channelId: (channel as any).discordId,
+					newPosition,
+				});
+			}
+
+			usedPositions.add(newPosition);
+		}
+
+		// Apply position updates if needed
+		if (updates.length > 0) {
+			console.log(
+				`🔧 Resolving ${updates.length} duplicate channel positions in guild ${guildId}`,
+			);
+
+			for (const update of updates) {
+				await executeQuery(
+					`
+					UPDATE ${this.tables.channels}
+					SET position = $1, updated_at = CURRENT_TIMESTAMP
+					WHERE discord_id = $2 AND guild_id = $3
+				`,
+					[update.newPosition, update.channelId, guildId],
+				);
+			}
+		}
+	}
+
 	async upsertChannel(
 		channel: Omit<Channel, "id" | "createdAt" | "updatedAt">,
 	): Promise<void> {
 		return this.withPerformanceTracking(async () => {
-			const query = `
-				INSERT INTO ${this.tables.channels} (
-					discord_id, guild_id, channel_name, position, is_active, active_user_ids, member_count, status, last_status_change
-				) VALUES (
-					$1, $2, $3, $4, $5, $6, $7, $8, $9
-				)
-				ON CONFLICT (discord_id, guild_id)
-				DO UPDATE SET
-					channel_name = EXCLUDED.channel_name,
-					position = EXCLUDED.position,
-					is_active = EXCLUDED.is_active,
-					active_user_ids = EXCLUDED.active_user_ids,
-					member_count = EXCLUDED.member_count,
-					status = COALESCE(EXCLUDED.status, ${this.tables.channels}.status),
-					last_status_change = COALESCE(EXCLUDED.last_status_change, ${this.tables.channels}.last_status_change),
-					updated_at = CURRENT_TIMESTAMP
-			`;
-			await executeQuery(query, [
-				channel.discordId,
-				channel.guildId,
-				channel.channelName,
-				channel.position,
-				channel.isActive,
-				channel.activeUserIds,
-				channel.memberCount,
-				channel.status ?? null,
-				channel.lastStatusChange ?? null,
-			]);
+			// Use transaction to ensure atomic position management
+			await executeTransaction(async (client) => {
+				// First, ensure existing channels have unique positions
+				await this.ensureUniqueChannelPositions(client, channel.guildId);
+
+				// Check if this channel already exists
+				const existingChannel = await executeQueryOne(
+					`
+					SELECT discord_id, position
+					FROM ${this.tables.channels}
+					WHERE discord_id = $1 AND guild_id = $2
+				`,
+					[channel.discordId, channel.guildId],
+				);
+
+				let finalPosition = channel.position;
+
+				// If channel exists, check for position conflicts
+				if (existingChannel) {
+					const conflictCheck = await executeQuery(
+						`
+						SELECT discord_id
+						FROM ${this.tables.channels}
+						WHERE guild_id = $1 AND position = $2 AND discord_id != $3 AND is_active = TRUE
+					`,
+						[channel.guildId, channel.position, channel.discordId],
+					);
+
+					// If there's a position conflict, find the next available position
+					if (conflictCheck.length > 0) {
+						const maxPosition = await executeQueryOne(
+							`
+							SELECT COALESCE(MAX(position), -1) as max_pos
+							FROM ${this.tables.channels}
+							WHERE guild_id = $1 AND is_active = TRUE
+						`,
+							[channel.guildId],
+						);
+						finalPosition = ((maxPosition as any)?.maxPos ?? -1) + 1;
+					}
+				} else {
+					// For new channels, check if the desired position is available
+					const conflictCheck = await executeQuery(
+						`
+						SELECT discord_id
+						FROM ${this.tables.channels}
+						WHERE guild_id = $1 AND position = $2 AND is_active = TRUE
+					`,
+						[channel.guildId, channel.position],
+					);
+
+					// If position is taken, find the next available position
+					if (conflictCheck.length > 0) {
+						const maxPosition = await executeQueryOne(
+							`
+							SELECT COALESCE(MAX(position), -1) as max_pos
+							FROM ${this.tables.channels}
+							WHERE guild_id = $1 AND is_active = TRUE
+						`,
+							[channel.guildId],
+						);
+						finalPosition = ((maxPosition as any)?.maxPos ?? -1) + 1;
+					}
+				}
+
+				// Upsert the channel with the secure position
+				const query = `
+					INSERT INTO ${this.tables.channels} (
+						discord_id, guild_id, channel_name, position, is_active, active_user_ids, member_count, status, last_status_change
+					) VALUES (
+						$1, $2, $3, $4, $5, $6, $7, $8, $9
+					)
+					ON CONFLICT (discord_id, guild_id)
+					DO UPDATE SET
+						channel_name = EXCLUDED.channel_name,
+						position = EXCLUDED.position,
+						is_active = EXCLUDED.is_active,
+						active_user_ids = EXCLUDED.active_user_ids,
+						member_count = EXCLUDED.member_count,
+						status = COALESCE(EXCLUDED.status, ${this.tables.channels}.status),
+						last_status_change = COALESCE(EXCLUDED.last_status_change, ${this.tables.channels}.last_status_change),
+						updated_at = CURRENT_TIMESTAMP
+				`;
+				await executeQuery(query, [
+					channel.discordId,
+					channel.guildId,
+					channel.channelName,
+					finalPosition,
+					channel.isActive,
+					channel.activeUserIds,
+					channel.memberCount,
+					channel.status ?? null,
+					channel.lastStatusChange ?? null,
+				]);
+			});
 		}, `upsertChannel(${channel.discordId})`);
 	}
 
@@ -978,6 +1113,36 @@ export class DatabaseCore {
 		client: PoolClient,
 		channel: Omit<Channel, "id" | "createdAt" | "updatedAt">,
 	): Promise<void> {
+		// If position is being updated, ensure it's unique
+		if (channel.position !== undefined) {
+			// First, ensure existing channels have unique positions
+			await this.ensureUniqueChannelPositions(client, channel.guildId);
+
+			// Check for position conflicts
+			const conflictCheck = await client.query(
+				`
+				SELECT discord_id
+				FROM ${this.tables.channels}
+				WHERE guild_id = $1 AND position = $2 AND discord_id != $3 AND is_active = TRUE
+			`,
+				[channel.guildId, channel.position, channel.discordId],
+			);
+
+			// If there's a position conflict, find the next available position
+			if (conflictCheck.rows.length > 0) {
+				const maxPositionResult = await client.query(
+					`
+					SELECT COALESCE(MAX(position), -1) as max_pos
+					FROM ${this.tables.channels}
+					WHERE guild_id = $1 AND is_active = TRUE
+				`,
+					[channel.guildId],
+				);
+				const maxPosition = maxPositionResult.rows[0]?.maxPos ?? -1;
+				channel.position = maxPosition + 1;
+			}
+		}
+
 		// Build dynamic query based on which fields are provided
 		const fields: string[] = [];
 		const values: unknown[] = [];
@@ -1280,7 +1445,13 @@ export class DatabaseCore {
 					WHERE channel_id = $1 AND is_active = TRUE
 					ORDER BY joined_at ASC
 				`;
-					return await executeQuery<VoiceChannelSession>(query, [channelId]);
+					const sessions = await executeQuery<VoiceChannelSession>(query, [
+						channelId,
+					]);
+					console.log(
+						`🔍 getActiveVoiceChannelSessions(${channelId}): Found ${sessions.length} active sessions`,
+					);
+					return sessions;
 				}
 
 				// Get all active sessions across all channels
@@ -1399,7 +1570,7 @@ export class DatabaseCore {
 					) VALUES (
 						$1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::timestamp, $6::timestamp, $7::int, $8::boolean
 					)
-					ON CONFLICT (user_id, channel_id, is_active) DO NOTHING
+					ON CONFLICT DO NOTHING
 				`,
 				[
 					session.userId,
@@ -1437,14 +1608,15 @@ export class DatabaseCore {
 	async getCurrentVoiceChannelSessionTransaction(
 		client: PoolClient,
 		userId: string,
+		guildId: string,
 	): Promise<VoiceChannelSession | null> {
 		const query = `
 			SELECT * FROM ${this.tables.voiceChannelSessions}
-			WHERE user_id = $1 AND is_active = TRUE
+			WHERE user_id = $1 AND guild_id = $2 AND is_active = TRUE
 			ORDER BY joined_at DESC
 			LIMIT 1
 		`;
-		const result = await client.query(query, [userId]);
+		const result = await client.query(query, [userId, guildId]);
 		if (result.rows[0]) {
 			const session = result.rows[0];
 			// Normalize field names to camelCase and convert timestamps to Date
@@ -1473,6 +1645,10 @@ export class DatabaseCore {
 			const activeSessions =
 				await this.getActiveVoiceChannelSessions(channelId);
 			const activeUserIds = activeSessions.map((session) => session.userId);
+
+			console.log(
+				`🔍 syncChannelActiveUsers(${channelId}): Found ${activeSessions.length} active sessions, updating member_count to ${activeUserIds.length}`,
+			);
 
 			// Update the channel's active_user_ids and member_count
 			const query = `
