@@ -515,8 +515,33 @@ export class VoiceManager implements IVoiceManager {
 						for (const userId of missingSessions) {
 							const member = voiceChannel.members.get(userId);
 							if (member) {
-								await this.sessionTracker.trackUserJoin(member, voiceChannel);
-								totalFixed++;
+								try {
+									// Double-check that the user doesn't already have an active session
+									const existingSession =
+										await this.dbCore.getCurrentVoiceChannelSession(userId);
+									if (
+										!existingSession ||
+										existingSession.channelId !== voiceChannel.id
+									) {
+										await this.sessionTracker.trackUserJoin(
+											member,
+											voiceChannel,
+										);
+										totalFixed++;
+									}
+								} catch (error) {
+									// If it's a duplicate key error, that's expected - user already has a session
+									if (error.code === "23505") {
+										console.log(
+											`  ℹ️ User ${userId} already has active session in ${voiceChannel.name}`,
+										);
+									} else {
+										console.error(
+											`  🔸 Failed to create session for user ${userId}:`,
+											error.message,
+										);
+									}
+								}
 							}
 						}
 
@@ -524,8 +549,18 @@ export class VoiceManager implements IVoiceManager {
 						for (const userId of orphanedSessions) {
 							const member = guild.members.cache.get(userId);
 							if (member) {
-								await this.sessionTracker.trackUserLeave(member, voiceChannel);
-								totalFixed++;
+								try {
+									await this.sessionTracker.trackUserLeave(
+										member,
+										voiceChannel,
+									);
+									totalFixed++;
+								} catch (error) {
+									console.error(
+										`  🔸 Failed to close orphaned session for user ${userId}:`,
+										error.message,
+									);
+								}
 							}
 						}
 
@@ -712,8 +747,11 @@ export class VoiceManager implements IVoiceManager {
 					) {
 						const voiceChannel = channel as VoiceChannel;
 
-						// Skip read-only channels
-						if (this.isReadOnlyChannel(voiceChannel.id)) {
+						// Include excluded channels in member count validation - we track users but skip ownership management
+						// Only skip spawn channels from validation
+						const isSpawnChannel =
+							config.spawnChannelIds?.includes(voiceChannel.id) ?? false;
+						if (isSpawnChannel) {
 							continue;
 						}
 

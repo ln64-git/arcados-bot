@@ -41,8 +41,12 @@ export class VoiceSessionTracker {
 			// If user has an active session in a DIFFERENT channel, close it first
 			if (existingSession && existingSession.channelId !== channel.id) {
 				const leftAt = new Date();
+				const joinedAt =
+					existingSession.joinedAt instanceof Date
+						? existingSession.joinedAt
+						: new Date(existingSession.joinedAt);
 				const duration = Math.floor(
-					(leftAt.getTime() - existingSession.joinedAt.getTime()) / 1000,
+					(leftAt.getTime() - joinedAt.getTime()) / 1000,
 				);
 				await this.dbCore.endVoiceChannelSessionTransaction(
 					client,
@@ -173,8 +177,12 @@ export class VoiceSessionTracker {
 				);
 
 			if (currentSession && currentSession.channelId === channel.id) {
+				const joinedAt =
+					currentSession.joinedAt instanceof Date
+						? currentSession.joinedAt
+						: new Date(currentSession.joinedAt);
 				const duration = Math.floor(
-					(leftAt.getTime() - currentSession.joinedAt.getTime()) / 1000,
+					(leftAt.getTime() - joinedAt.getTime()) / 1000,
 				);
 
 				// 2. End voice channel session
@@ -229,8 +237,12 @@ export class VoiceSessionTracker {
 				);
 
 			if (currentSession && currentSession.channelId === oldChannel.id) {
+				const joinedAt =
+					currentSession.joinedAt instanceof Date
+						? currentSession.joinedAt
+						: new Date(currentSession.joinedAt);
 				const duration = Math.floor(
-					(leftAt.getTime() - currentSession.joinedAt.getTime()) / 1000,
+					(leftAt.getTime() - joinedAt.getTime()) / 1000,
 				);
 
 				await this.dbCore.endVoiceChannelSessionTransaction(

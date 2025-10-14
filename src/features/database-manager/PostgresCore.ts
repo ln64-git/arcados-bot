@@ -1366,7 +1366,18 @@ export class DatabaseCore {
 			LIMIT 1
 		`;
 		const result = await client.query(query, [userId]);
-		return result.rows[0] || null;
+		if (result.rows[0]) {
+			const session = result.rows[0];
+			// Convert timestamp strings to Date objects
+			return {
+				...session,
+				joinedAt: new Date(session.joined_at),
+				leftAt: session.left_at ? new Date(session.left_at) : undefined,
+				createdAt: new Date(session.created_at),
+				updatedAt: new Date(session.updated_at),
+			};
+		}
+		return null;
 	}
 
 	// ==================== DATA SYNCHRONIZATION ====================
