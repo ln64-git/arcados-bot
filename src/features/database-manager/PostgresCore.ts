@@ -1406,11 +1406,17 @@ export class DatabaseCore {
 		const result = await client.query(query, [userId]);
 		if (result.rows[0]) {
 			const session = result.rows[0];
-			// Convert timestamp strings to Date objects
+			// Normalize field names to camelCase and convert timestamps to Date
 			return {
-				...session,
+				id: session.id,
+				userId: session.user_id,
+				guildId: session.guild_id,
+				channelId: session.channel_id,
+				channelName: session.channel_name,
 				joinedAt: new Date(session.joined_at),
 				leftAt: session.left_at ? new Date(session.left_at) : undefined,
+				duration: session.duration ?? undefined,
+				isActive: session.is_active,
 				createdAt: new Date(session.created_at),
 				updatedAt: new Date(session.updated_at),
 			};
