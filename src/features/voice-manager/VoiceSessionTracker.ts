@@ -31,6 +31,36 @@ export class VoiceSessionTracker {
 		const joinedAt = new Date();
 
 		await executeTransaction(async (client) => {
+			// NEW: Check for existing active session
+			const existingSession =
+				await this.dbCore.getCurrentVoiceChannelSessionTransaction(
+					client,
+					userId,
+				);
+
+			// If user has an active session in a DIFFERENT channel, close it first
+			if (existingSession && existingSession.channelId !== channel.id) {
+				const leftAt = new Date();
+				const duration = Math.floor(
+					(leftAt.getTime() - existingSession.joinedAt.getTime()) / 1000,
+				);
+				await this.dbCore.endVoiceChannelSessionTransaction(
+					client,
+					userId,
+					existingSession.channelId,
+					leftAt,
+					duration,
+				);
+			}
+
+			// If user already has an active session in THIS channel, skip creation
+			if (existingSession && existingSession.channelId === channel.id) {
+				console.log(
+					`ℹ️ User ${userId} already has active session in channel ${channel.id}, skipping duplicate`,
+				);
+				return;
+			}
+
 			// 1. Upsert user to ensure they exist
 			await this.dbCore.upsertUserTransaction(client, {
 				discordId: userId,
@@ -107,6 +137,16 @@ export class VoiceSessionTracker {
 			// Cache failures shouldn't break voice tracking
 			console.warn(`🔸 Cache update failed for user ${userId}:`, error);
 		}
+
+		// 6. Immediate sync to update channel member counts
+		try {
+			await this.dbCore.syncChannelActiveUsers(channel.id);
+		} catch (error) {
+			console.warn(
+				`🔸 Failed to sync channel active users for ${channel.id}:`,
+				error,
+			);
+		}
 	}
 
 	/**
@@ -157,6 +197,16 @@ export class VoiceSessionTracker {
 		} catch (error) {
 			// Cache failures shouldn't break voice tracking
 			console.warn(`🔸 Cache cleanup failed for user ${userId}:`, error);
+		}
+
+		// 5. Immediate sync to update channel member counts
+		try {
+			await this.dbCore.syncChannelActiveUsers(channel.id);
+		} catch (error) {
+			console.warn(
+				`🔸 Failed to sync channel active users for ${channel.id}:`,
+				error,
+			);
 		}
 	}
 

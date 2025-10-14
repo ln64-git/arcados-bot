@@ -563,8 +563,7 @@ export class DatabaseManager {
 			console.log("🔧 Cleaning up active voice sessions...");
 
 			// Get all active voice channel sessions
-			const activeSessions =
-				await this.postgresCore.getActiveVoiceChannelSessions();
+			const activeSessions = await this.core.getActiveVoiceChannelSessions();
 
 			let cleanedCount = 0;
 
@@ -574,7 +573,7 @@ export class DatabaseManager {
 
 				if (!channel || !channel.isVoiceBased()) {
 					// Channel doesn't exist or isn't a voice channel, mark session as ended
-					await this.postgresCore.endVoiceChannelSession(
+					await this.core.endVoiceChannelSession(
 						session.user_id,
 						session.channel_id,
 						new Date(),
@@ -587,7 +586,7 @@ export class DatabaseManager {
 				const member = channel.members.get(session.user_id);
 				if (!member) {
 					// User is not in the channel, mark session as ended
-					await this.postgresCore.endVoiceChannelSession(
+					await this.core.endVoiceChannelSession(
 						session.user_id,
 						session.channel_id,
 						new Date(),

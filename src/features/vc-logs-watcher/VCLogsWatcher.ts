@@ -7,6 +7,10 @@ export class VCLogsWatcher {
 	private dbCore: DatabaseCore;
 	private vcLogsChannelId: string;
 	private isWatching = false;
+	private voiceStateHandler?: (
+		oldState: VoiceState,
+		newState: VoiceState,
+	) => Promise<void>;
 
 	constructor(client: Client, dbCore: DatabaseCore, vcLogsChannelId: string) {
 		this.client = client;
@@ -25,10 +29,16 @@ export class VCLogsWatcher {
 			this.vcLogsChannelId,
 		);
 
-		// Listen for voice state updates
-		this.client.on("voiceStateUpdate", async (oldState, newState) => {
+		// Store the handler function so we can remove only this specific listener
+		this.voiceStateHandler = async (
+			oldState: VoiceState,
+			newState: VoiceState,
+		) => {
 			await this.handleVoiceStateUpdate(oldState, newState);
-		});
+		};
+
+		// Listen for voice state updates
+		this.client.on("voiceStateUpdate", this.voiceStateHandler);
 
 		this.isWatching = true;
 		console.log("✅ VC Logs Watcher started successfully");
@@ -40,8 +50,10 @@ export class VCLogsWatcher {
 			return;
 		}
 
-		// Remove the event listener
-		this.client.removeAllListeners("voiceStateUpdate");
+		// Remove only our specific event listener
+		if (this.voiceStateHandler) {
+			this.client.removeListener("voiceStateUpdate", this.voiceStateHandler);
+		}
 		this.isWatching = false;
 		console.log("✅ VC Logs Watcher stopped");
 	}

@@ -166,6 +166,29 @@ export async function createPostgresTables(): Promise<void> {
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)
 		`,
+
+		// Clean up duplicate active sessions before creating unique constraint
+		`
+		WITH duplicate_sessions AS (
+			SELECT user_id, channel_id, MIN(id) as keep_id
+			FROM voice_channel_sessions 
+			WHERE is_active = TRUE
+			GROUP BY user_id, channel_id
+			HAVING COUNT(*) > 1
+		)
+		UPDATE voice_channel_sessions 
+		SET is_active = FALSE, left_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		WHERE is_active = TRUE 
+		AND (user_id, channel_id) IN (SELECT user_id, channel_id FROM duplicate_sessions)
+		AND id NOT IN (SELECT keep_id FROM duplicate_sessions)
+		`,
+
+		// Unique index to prevent duplicate active sessions per user per channel
+		`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_session_per_user_channel 
+		ON voice_channel_sessions (user_id, channel_id) 
+		WHERE is_active = TRUE
+		`,
 	];
 
 	for (const table of tables) {

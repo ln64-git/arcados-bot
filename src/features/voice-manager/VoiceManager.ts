@@ -57,6 +57,10 @@ export class VoiceManager implements IVoiceManager {
 	private activeVoiceSessions: Map<string, VoiceInteraction> = new Map();
 	private eventQueue = getEventQueue();
 
+	// Error tracking for voice state updates
+	private voiceStateUpdateErrors: Map<string, number> = new Map();
+	private readonly MAX_ERRORS_BEFORE_ALERT = 5;
+
 	// Channels that should be tracked but not modified by the voice manager
 	private readonly readOnlyChannels = new Set(
 		config.excludedChannelIds || [
@@ -80,21 +84,81 @@ export class VoiceManager implements IVoiceManager {
 		await this.dbCore.initialize();
 		await this.clearCorruptedCacheEntries();
 		await this.forceClearKnownCorruptedEntries();
+
+		// NEW: Clean up duplicate sessions on startup
+		await this.cleanupDuplicateSessions();
+
 		await this.checkAndSyncDatabase();
+	}
+
+	private async cleanupDuplicateSessions(): Promise<void> {
+		console.log("🧹 Cleaning up duplicate voice sessions...");
+
+		// Get all channels
+		for (const guild of Array.from(this.client.guilds.cache.values())) {
+			for (const channel of Array.from(guild.channels.cache.values())) {
+				if (channel.isVoiceBased() && channel.type === ChannelType.GuildVoice) {
+					const activeSessions =
+						await this.dbCore.getActiveVoiceChannelSessions(channel.id);
+					const userSessionMap = new Map<string, typeof activeSessions>();
+
+					// Group sessions by user
+					for (const session of activeSessions) {
+						if (!userSessionMap.has(session.userId)) {
+							userSessionMap.set(session.userId, []);
+						}
+						const userSessions = userSessionMap.get(session.userId);
+						if (userSessions) {
+							userSessions.push(session);
+						}
+					}
+
+					// Close duplicate sessions (keep most recent)
+					for (const [userId, sessions] of userSessionMap.entries()) {
+						if (sessions.length > 1) {
+							sessions.sort(
+								(a, b) => b.joinedAt.getTime() - a.joinedAt.getTime(),
+							);
+							const keepSession = sessions[0];
+							const closeSessions = sessions.slice(1);
+
+							for (const session of closeSessions) {
+								await this.dbCore.endVoiceChannelSession(
+									session.userId,
+									session.channelId,
+									new Date(),
+								);
+							}
+							console.log(
+								`🔧 Cleaned ${closeSessions.length} duplicate sessions for user ${userId} in channel ${channel.name}`,
+							);
+						}
+					}
+				}
+			}
+		}
+
+		console.log("✅ Duplicate session cleanup complete");
 	}
 
 	private startSessionReconciliation(): void {
 		if (this.sessionReconcileTimer) return;
-		// Reconcile every 60 seconds
+		// Reconcile every 30 seconds for better consistency
 		this.sessionReconcileTimer = setInterval(async () => {
 			try {
-				await this.performIncrementalSync([]);
+				// First validate and fix member counts
 				await this.validateChannelMemberCounts();
+
+				// Then perform comprehensive incremental sync
+				await this.performIncrementalSync([]);
+
+				// Finally, sync all channel member counts to ensure consistency
+				await this.dbCore.syncAllChannelsActiveUsers();
 			} catch (error) {
 				if (this.debugEnabled)
 					console.warn("🔸 Session reconciliation error:", error);
 			}
-		}, 60 * 1000);
+		}, 30 * 1000); // Reduced from 60s to 30s for better responsiveness
 	}
 
 	private stopSessionReconciliation(): void {
@@ -417,8 +481,11 @@ export class VoiceManager implements IVoiceManager {
 					) {
 						const voiceChannel = channel as VoiceChannel;
 
-						// Skip read-only channels
-						if (this.isReadOnlyChannel(voiceChannel.id)) {
+						// Include excluded channels in sync - we want to track users but not manage ownership
+						// Only skip spawn channels from sync
+						const isSpawnChannel =
+							config.spawnChannelIds?.includes(voiceChannel.id) ?? false;
+						if (isSpawnChannel) {
 							continue;
 						}
 
@@ -635,6 +702,7 @@ export class VoiceManager implements IVoiceManager {
 		try {
 			let totalChannelsChecked = 0;
 			let discrepanciesFound = 0;
+			let discrepanciesFixed = 0;
 
 			for (const guild of Array.from(this.client.guilds.cache.values())) {
 				for (const channel of Array.from(guild.channels.cache.values())) {
@@ -662,6 +730,18 @@ export class VoiceManager implements IVoiceManager {
 							console.warn(
 								`⚠️ Member count mismatch in ${voiceChannel.name}: Discord=${discordMemberCount}, DB=${dbMemberCount}`,
 							);
+
+							// Fix the discrepancy by syncing the channel's active users
+							try {
+								await this.dbCore.syncChannelActiveUsers(voiceChannel.id);
+								discrepanciesFixed++;
+								console.log(`🔧 Fixed member count for ${voiceChannel.name}`);
+							} catch (syncError) {
+								console.error(
+									`🔸 Failed to sync member count for ${voiceChannel.name}:`,
+									syncError,
+								);
+							}
 						}
 
 						totalChannelsChecked++;
@@ -673,6 +753,11 @@ export class VoiceManager implements IVoiceManager {
 				console.warn(
 					`⚠️ Found ${discrepanciesFound} member count discrepancies across ${totalChannelsChecked} channels`,
 				);
+				if (discrepanciesFixed > 0) {
+					console.log(
+						`🔧 Fixed ${discrepanciesFixed} member count discrepancies`,
+					);
+				}
 			} else if (this.debugEnabled) {
 				console.log(
 					`✅ Member count validation passed: ${totalChannelsChecked} channels checked`,
@@ -716,6 +801,10 @@ export class VoiceManager implements IVoiceManager {
 				);
 				await this.fixOwnershipInconsistencies();
 			}
+
+			// Sync all channel member counts to ensure database consistency
+			console.log("🔧 Syncing all channel member counts...");
+			await this.dbCore.syncAllChannelsActiveUsers();
 
 			console.log("✅ Incremental sync completed");
 		} catch (error) {
@@ -1075,53 +1164,101 @@ export class VoiceManager implements IVoiceManager {
 			console.log(`   New channel: ${newState.channelId || "none"}`);
 		}
 
-		// User joined a voice channel
-		if (!oldState.channelId && newState.channelId) {
-			if (this.debugEnabled)
-				console.log(`   → User joined channel ${newState.channelId}`);
-			await this.handleUserJoined(newState);
+		try {
+			// User joined a voice channel
+			if (!oldState.channelId && newState.channelId) {
+				if (this.debugEnabled)
+					console.log(`   → User joined channel ${newState.channelId}`);
+				await this.handleUserJoined(newState);
 
-			// Apply preferences to new joiner
-			if (newState.member) {
-				await this.applyPreferencesToNewJoiner(
-					newState.channelId,
-					newState.member.id,
-				);
+				// Apply preferences to new joiner
+				if (newState.member) {
+					await this.applyPreferencesToNewJoiner(
+						newState.channelId,
+						newState.member.id,
+					);
+				}
+
+				// Check for auto-assignment when user joins any voice channel
+				await this.checkAndAutoAssignOwnership(newState.channelId);
 			}
+			// User left a voice channel
 
-			// Check for auto-assignment when user joins any voice channel
-			await this.checkAndAutoAssignOwnership(newState.channelId);
-		}
-		// User left a voice channel
-
-		if (oldState.channelId && !newState.channelId) {
-			if (this.debugEnabled)
-				console.log(`   → User left channel ${oldState.channelId}`);
-			await this.handleUserLeft(oldState);
-		}
-		// User moved between channels
-		if (
-			oldState.channelId &&
-			newState.channelId &&
-			oldState.channelId !== newState.channelId
-		) {
-			if (this.debugEnabled)
-				console.log(
-					`   → User moved from ${oldState.channelId} to ${newState.channelId}`,
-				);
-			await this.handleUserMoved(oldState, newState);
-
-			// Apply preferences to new joiner if they moved to a different channel
-			if (newState.member) {
-				await this.applyPreferencesToNewJoiner(
-					newState.channelId,
-					newState.member.id,
-				);
+			if (oldState.channelId && !newState.channelId) {
+				if (this.debugEnabled)
+					console.log(`   → User left channel ${oldState.channelId}`);
+				await this.handleUserLeft(oldState);
 			}
+			// User moved between channels
+			if (
+				oldState.channelId &&
+				newState.channelId &&
+				oldState.channelId !== newState.channelId
+			) {
+				if (this.debugEnabled)
+					console.log(
+						`   → User moved from ${oldState.channelId} to ${newState.channelId}`,
+					);
+				await this.handleUserMoved(oldState, newState);
 
-			// Check for auto-assignment when user moves to a different channel
-			await this.checkAndAutoAssignOwnership(newState.channelId);
+				// Apply preferences to new joiner if they moved to a different channel
+				if (newState.member) {
+					await this.applyPreferencesToNewJoiner(
+						newState.channelId,
+						newState.member.id,
+					);
+				}
+
+				// Check for auto-assignment when user moves to a different channel
+				await this.checkAndAutoAssignOwnership(newState.channelId);
+			}
+		} catch (error) {
+			const userId = newState.member?.id || oldState.member?.id || "unknown";
+			const errorCount = (this.voiceStateUpdateErrors.get(userId) || 0) + 1;
+			this.voiceStateUpdateErrors.set(userId, errorCount);
+
+			console.error(
+				`🔸 Voice state update failed for user ${userId} (error ${errorCount}/${this.MAX_ERRORS_BEFORE_ALERT}):`,
+				error,
+			);
+
+			if (errorCount >= this.MAX_ERRORS_BEFORE_ALERT) {
+				console.error(
+					`🔸 ALERT: User ${userId} has failed ${errorCount} voice state updates - requires investigation`,
+				);
+				// Trigger manual sync for this user
+				await this.forceUserVoiceSync(userId);
+			}
 		}
+	}
+
+	private async forceUserVoiceSync(userId: string): Promise<void> {
+		// Find user's current voice channel and sync their session
+		for (const guild of Array.from(this.client.guilds.cache.values())) {
+			for (const channel of Array.from(guild.channels.cache.values())) {
+				if (channel.isVoiceBased() && channel.type === ChannelType.GuildVoice) {
+					const member = channel.members.get(userId);
+					if (member && !member.user.bot) {
+						try {
+							await this.sessionTracker.trackUserJoin(
+								member,
+								channel as VoiceChannel,
+							);
+							console.log(
+								`✅ Force synced user ${userId} in channel ${channel.id}`,
+							);
+							this.voiceStateUpdateErrors.delete(userId); // Reset error count
+							return;
+						} catch (error) {
+							console.error(`🔸 Failed to force sync user ${userId}:`, error);
+						}
+					}
+				}
+			}
+		}
+		console.warn(
+			`🔸 Could not find user ${userId} in any voice channel for force sync`,
+		);
 	}
 
 	private async handleUserJoined(newState: VoiceState) {
@@ -1132,9 +1269,10 @@ export class VoiceManager implements IVoiceManager {
 
 		// Check if this is a spawn channel FIRST (before tracking)
 		const isSpawnChannel =
-			config.spawnChannelIds && config.spawnChannelIds.includes(channel.id);
+			config.spawnChannelIds?.includes(channel.id) ?? false;
 
-		// Only track voice interaction if it's NOT a spawn channel
+		// Track voice interaction for ALL channels except spawn channels
+		// This includes excluded channels - we want to track users but not manage ownership
 		if (!isSpawnChannel) {
 			try {
 				await this.sessionTracker.trackUserJoin(
@@ -1146,7 +1284,15 @@ export class VoiceManager implements IVoiceManager {
 			}
 		}
 
-		// If not a spawn channel, we're done
+		// Skip ownership management for excluded channels
+		if (this.isReadOnlyChannel(channel.id)) {
+			console.log(
+				`🔸 Channel ${channel.name} (${channel.id}) is read-only, skipping ownership management`,
+			);
+			return;
+		}
+
+		// If not a spawn channel, we're done (ownership management already handled above)
 		if (!isSpawnChannel) {
 			return;
 		}
@@ -1204,9 +1350,10 @@ export class VoiceManager implements IVoiceManager {
 
 		// Check if this is a spawn channel FIRST (before tracking)
 		const isSpawnChannel =
-			config.spawnChannelIds && config.spawnChannelIds.includes(channel.id);
+			config.spawnChannelIds?.includes(channel.id) ?? false;
 
-		// Only track voice interaction if it's NOT a spawn channel
+		// Track voice interaction for ALL channels except spawn channels
+		// This includes excluded channels - we want to track users but not manage ownership
 		if (!isSpawnChannel) {
 			try {
 				await this.sessionTracker.trackUserLeave(
@@ -1220,6 +1367,14 @@ export class VoiceManager implements IVoiceManager {
 
 		// Restore user's nickname when they leave any voice channel
 		await this.restoreUserNickname(oldState.member.id, oldState.guild.id);
+
+		// Skip ownership management for excluded channels
+		if (this.isReadOnlyChannel(channel.id)) {
+			console.log(
+				`🔸 Channel ${channel.name} (${channel.id}) is read-only, skipping ownership management`,
+			);
+			return;
+		}
 
 		// Check if this is a dynamic voice channel (created by our system)
 		if (
@@ -1249,13 +1404,12 @@ export class VoiceManager implements IVoiceManager {
 
 		// Check if either channel is a spawn channel
 		const oldIsSpawnChannel =
-			config.spawnChannelIds &&
-			config.spawnChannelIds.includes(oldState.channelId || "");
+			config.spawnChannelIds?.includes(oldState.channelId || "") ?? false;
 		const newIsSpawnChannel =
-			config.spawnChannelIds &&
-			config.spawnChannelIds.includes(newState.channelId || "");
+			config.spawnChannelIds?.includes(newState.channelId || "") ?? false;
 
-		// Only track voice interaction if neither channel is a spawn channel
+		// Track voice interaction for ALL channels except spawn channels
+		// This includes excluded channels - we want to track users but not manage ownership
 		if (!oldIsSpawnChannel && !newIsSpawnChannel) {
 			try {
 				await this.sessionTracker.trackUserMove(
