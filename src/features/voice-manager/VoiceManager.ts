@@ -1250,8 +1250,79 @@ export class VoiceManager implements IVoiceManager {
 	}
 
 	private async checkForOrphanedChannels(): Promise<void> {
-		// Currently a no-op until we maintain a Redis set of active channels.
-		return;
+		try {
+			if (this.debugEnabled) {
+				console.log("🔍 Checking for orphaned/empty channels...");
+			}
+
+			let deletedCount = 0;
+
+			// Check all guilds for empty deletable channels
+			for (const guild of Array.from(this.client.guilds.cache.values())) {
+				for (const channel of Array.from(guild.channels.cache.values())) {
+					if (!channel.isVoiceBased()) continue;
+
+					const voiceChannel = channel as VoiceChannel;
+
+					// Check if channel should be auto-deleted
+					if (await this.shouldAutoDeleteChannel(voiceChannel)) {
+						console.log(`🔹 Auto-deleting empty deletable channel: ${voiceChannel.name}`);
+						await this.deleteTemporaryChannel(voiceChannel);
+						deletedCount++;
+					}
+				}
+			}
+
+			if (deletedCount > 0) {
+				console.log(`✅ Cleaned up ${deletedCount} empty deletable channels`);
+			} else if (this.debugEnabled) {
+				console.log("🔍 No empty deletable channels found");
+			}
+		} catch (error) {
+			console.error("🔸 Error checking for orphaned channels:", error);
+		}
+	}
+
+	/**
+	 * Determine if a channel should be automatically deleted when empty
+	 */
+	private async shouldAutoDeleteChannel(channel: VoiceChannel): Promise<boolean> {
+		// Must be empty
+		if (channel.members.size > 0) {
+			return false;
+		}
+
+		// Must be writable (not read-only)
+		if (this.isReadOnlyChannel(channel.id)) {
+			return false;
+		}
+
+		// Must not be an excluded channel
+		if (this.isExcludedChannel(channel.id)) {
+			return false;
+		}
+
+		// Check if channel has write permissions (indicating it's user-manageable)
+		const permissions = channel.permissionsFor(channel.guild.members.me!);
+		if (!permissions?.has('ManageChannels')) {
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Check if a channel is excluded from auto-deletion
+	 */
+	private isExcludedChannel(channelId: string): boolean {
+		// Exclude spawn channels from auto-deletion
+		if (config.spawnChannelIds?.includes(channelId)) {
+			return true;
+		}
+
+		// Add any other channels that should never be auto-deleted
+		// This could be expanded to check against a config list
+		return false;
 	}
 
 	private stopOrphanedChannelWatcher(): void {
@@ -1519,17 +1590,11 @@ export class VoiceManager implements IVoiceManager {
 			return;
 		}
 
-		// Check if this is a dynamic voice channel (created by our system)
-		if (
-			channel.name.includes("'s Room | #") ||
-			channel.name.includes("'s Channel")
-		) {
-			// Check if channel is now empty
-			if (channel.members.size === 0) {
-				console.log(`🔹 Auto-deleting empty dynamic channel: ${channel.name}`);
-				await this.deleteTemporaryChannel(channel as VoiceChannel);
-				return;
-			}
+		// Check if this channel should be auto-deleted when empty
+		if (await this.shouldAutoDeleteChannel(channel as VoiceChannel)) {
+			console.log(`🔹 Auto-deleting empty deletable channel: ${channel.name}`);
+			await this.deleteTemporaryChannel(channel as VoiceChannel);
+			return;
 		}
 
 		const owner = await this.getChannelOwner(channel.id);

@@ -24,6 +24,7 @@ export class StarboardManager {
 	private cache = getCacheManager();
 	private readonly STAR_THRESHOLD = 3;
 	private readonly STAR_EMOJI = "⭐";
+	private syncInterval: NodeJS.Timeout | null = null;
 
 	constructor(private client: Client) {}
 
@@ -241,8 +242,29 @@ export class StarboardManager {
 		// Create embed for starboard message
 		const embed = this.createStarboardEmbed(message, starCount);
 
+		// Check if message has video attachments
+		const videoAttachments = Array.from(message.attachments.values()).filter(
+			(att) => att.contentType?.startsWith("video/"),
+		);
+
 		// Send starboard message
-		const starboardMessage = await starboardChannel.send({ embeds: [embed] });
+		let starboardMessage;
+		if (videoAttachments.length > 0) {
+			// For videos, send the video attachment along with the embed
+			const videoAttachment = videoAttachments[0];
+			starboardMessage = await starboardChannel.send({
+				embeds: [embed],
+				files: [
+					{
+						attachment: videoAttachment.url,
+						name: videoAttachment.name || "video.mp4",
+					},
+				],
+			});
+		} else {
+			// For non-video messages, just send the embed
+			starboardMessage = await starboardChannel.send({ embeds: [embed] });
+		}
 
 		// Store starboard entry
 		if (!message.guild) {
@@ -264,7 +286,7 @@ export class StarboardManager {
 		await this.cache.setStarboardEntry(entry);
 
 		console.log(
-			`🔹 Created starboard entry for message ${message.id} with ${starCount} stars`,
+			`🔹 Created starboard entry for message ${message.id} with ${starCount} stars${videoAttachments.length > 0 ? " (with video)" : ""}`,
 		);
 	}
 
@@ -416,16 +438,41 @@ export class StarboardManager {
 		newStarCount: number,
 		starboardChannel: TextChannel,
 	): Promise<void> {
-		// Create updated embed
-		const embed = this.createStarboardEmbed(originalMessage, newStarCount);
+		// Check if message has video attachments
+		const videoAttachments = Array.from(
+			originalMessage.attachments.values(),
+		).filter((att) => att.contentType?.startsWith("video/"));
 
-		// Update starboard message
+		// Get the starboard message
 		const starboardMessage = await starboardChannel.messages.fetch(
 			entry.starboardMessageId,
 		);
 
 		if (starboardMessage) {
-			await starboardMessage.edit({ embeds: [embed] });
+			// Create updated embed
+			const embed = this.createStarboardEmbed(originalMessage, newStarCount);
+
+			if (videoAttachments.length > 0) {
+				// For videos, we need to delete and recreate the message since Discord doesn't allow editing attachments
+				await starboardMessage.delete();
+
+				const videoAttachment = videoAttachments[0];
+				const newStarboardMessage = await starboardChannel.send({
+					embeds: [embed],
+					files: [
+						{
+							attachment: videoAttachment.url,
+							name: videoAttachment.name || "video.mp4",
+						},
+					],
+				});
+
+				// Update the entry with the new message ID
+				entry.starboardMessageId = newStarboardMessage.id;
+			} else {
+				// For non-video messages, just update the embed
+				await starboardMessage.edit({ embeds: [embed] });
+			}
 		}
 
 		// Update entry in cache
@@ -434,7 +481,7 @@ export class StarboardManager {
 		await this.cache.setStarboardEntry(entry);
 
 		console.log(
-			`🔹 Updated starboard entry for message ${entry.originalMessageId} to ${newStarCount} stars`,
+			`🔹 Updated starboard entry for message ${entry.originalMessageId} to ${newStarCount} stars${videoAttachments.length > 0 ? " (with video)" : ""}`,
 		);
 	}
 
@@ -505,13 +552,29 @@ export class StarboardManager {
 		message: Message,
 		starCount: number,
 	): EmbedBuilder {
+		// Determine description based on content and attachments
+		let description = message.content;
+		if (!description && message.attachments.size > 0) {
+			// For messages with only attachments, don't show any description
+			// The attachments will be displayed directly
+			description = null;
+		} else if (!description) {
+			description = "*No content*";
+		}
+
 		const embed = new EmbedBuilder()
-			.setColor(0xffd700) // Gold color
+			.setColor(0x3c3d7d) // Deep purple-blue color
 			.setAuthor({
 				name: message.author.tag,
 				iconURL: message.author.displayAvatarURL(),
-			})
-			.setDescription(message.content || "*No text content*")
+			});
+
+		// Only set description if it exists
+		if (description) {
+			embed.setDescription(description);
+		}
+
+		embed
 			.addFields({
 				name: "⭐ Stars",
 				value: starCount.toString(),
@@ -527,16 +590,38 @@ export class StarboardManager {
 				value: `[Click here](${message.url})`,
 				inline: true,
 			})
-			.setTimestamp(message.createdAt)
-			.setFooter({
-				text: `Message ID: ${message.id}`,
-			});
+			.setTimestamp(message.createdAt);
 
-		// Add image if message has attachments
+		// Handle all attachments (images, videos, files, etc.)
 		if (message.attachments.size > 0) {
-			const firstAttachment = message.attachments.first();
-			if (firstAttachment?.contentType?.startsWith("image/")) {
-				embed.setImage(firstAttachment.url);
+			const attachments = Array.from(message.attachments.values());
+
+			// Add image attachments
+			const imageAttachments = attachments.filter((att) =>
+				att.contentType?.startsWith("image/"),
+			);
+			if (imageAttachments.length > 0) {
+				embed.setImage(imageAttachments[0].url);
+			}
+
+			// Note: Video attachments are handled by posting the actual video file
+			// No need to add them as embed fields since they're displayed directly
+
+			// Add other file attachments
+			const otherAttachments = attachments.filter(
+				(att) =>
+					!att.contentType?.startsWith("image/") &&
+					!att.contentType?.startsWith("video/"),
+			);
+			if (otherAttachments.length > 0) {
+				const fileList = otherAttachments
+					.map((att) => `[${att.name}](${att.url})`)
+					.join("\n");
+				embed.addFields({
+					name: "📎 Files",
+					value: fileList,
+					inline: false,
+				});
 			}
 		}
 
@@ -558,13 +643,29 @@ export class StarboardManager {
 	 * Create context embed for original message (without star count)
 	 */
 	private createContextEmbed(message: Message, isReply: boolean): EmbedBuilder {
+		// Determine description based on content and attachments
+		let description = message.content;
+		if (!description && message.attachments.size > 0) {
+			// For messages with only attachments, don't show any description
+			// The attachments will be displayed directly
+			description = null;
+		} else if (!description) {
+			description = "*No content*";
+		}
+
 		const embed = new EmbedBuilder()
 			.setColor(0x5865f2) // Blurple color for context
 			.setAuthor({
 				name: message.author.tag,
 				iconURL: message.author.displayAvatarURL(),
-			})
-			.setDescription(message.content || "*No text content*")
+			});
+
+		// Only set description if it exists
+		if (description) {
+			embed.setDescription(description);
+		}
+
+		embed
 			.addFields({
 				name: "📍 Channel",
 				value: `<#${message.channel.id}>`,
@@ -575,18 +676,38 @@ export class StarboardManager {
 				value: `[Click here](${message.url})`,
 				inline: true,
 			})
-			.setTimestamp(message.createdAt)
-			.setFooter({
-				text: isReply
-					? "Original message (replied to)"
-					: `Message ID: ${message.id}`,
-			});
+			.setTimestamp(message.createdAt);
 
-		// Add image if message has attachments
+		// Handle all attachments (images, videos, files, etc.)
 		if (message.attachments.size > 0) {
-			const firstAttachment = message.attachments.first();
-			if (firstAttachment?.contentType?.startsWith("image/")) {
-				embed.setImage(firstAttachment.url);
+			const attachments = Array.from(message.attachments.values());
+
+			// Add image attachments
+			const imageAttachments = attachments.filter((att) =>
+				att.contentType?.startsWith("image/"),
+			);
+			if (imageAttachments.length > 0) {
+				embed.setImage(imageAttachments[0].url);
+			}
+
+			// Note: Video attachments are handled by posting the actual video file
+			// No need to add them as embed fields since they're displayed directly
+
+			// Add other file attachments
+			const otherAttachments = attachments.filter(
+				(att) =>
+					!att.contentType?.startsWith("image/") &&
+					!att.contentType?.startsWith("video/"),
+			);
+			if (otherAttachments.length > 0) {
+				const fileList = otherAttachments
+					.map((att) => `[${att.name}](${att.url})`)
+					.join("\n");
+				embed.addFields({
+					name: "📎 Files",
+					value: fileList,
+					inline: false,
+				});
 			}
 		}
 
@@ -628,6 +749,241 @@ export class StarboardManager {
 		} catch (error) {
 			console.error("🔸 Error getting starboard entries:", error);
 			return [];
+		}
+	}
+
+	/**
+	 * Sync starboard with Discord reactions - reconcile missed messages
+	 * Scans channels for messages with star threshold and ensures they're on starboard
+	 */
+	async syncStarboard(guildId: string): Promise<{
+		scanned: number;
+		added: number;
+		updated: number;
+		errors: string[];
+	}> {
+		const stats = { scanned: 0, added: 0, updated: 0, errors: [] as string[] };
+
+		try {
+			const guild = this.client.guilds.cache.get(guildId);
+			if (!guild || !config.starboardChannelId) {
+				stats.errors.push("Guild or starboard channel not configured");
+				return stats;
+			}
+
+			console.log("🔄 Starting starboard sync (last 24 hours)...");
+
+			// Get all text channels in the guild
+			const textChannels = guild.channels.cache.filter(
+				(channel) =>
+					channel.isTextBased() && channel.id !== config.starboardChannelId,
+			);
+
+			for (const [, channel] of textChannels) {
+				try {
+					if (!channel.isTextBased()) continue;
+
+					// Fetch messages from the last 24 hours only
+					const messages = new Map();
+					let lastMessageId: string | undefined;
+					let totalFetched = 0;
+					const maxMessages = 1000; // Fetch up to 1000 messages per channel
+					const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
+
+					while (totalFetched < maxMessages) {
+						const fetchLimit = Math.min(100, maxMessages - totalFetched);
+						const batch = await (channel as TextChannel).messages.fetch({
+							limit: fetchLimit,
+							before: lastMessageId,
+						});
+
+						if (batch.size === 0) break;
+
+						let foundOldMessage = false;
+						for (const [id, message] of batch) {
+							// Stop if we've reached messages older than 24 hours
+							if (message.createdTimestamp < twentyFourHoursAgo) {
+								foundOldMessage = true;
+								break;
+							}
+							messages.set(id, message);
+						}
+
+						totalFetched += batch.size;
+						lastMessageId = batch.last()?.id;
+
+						// Stop if we found messages older than 24 hours
+						if (foundOldMessage) break;
+
+						// If we got less than requested, we've reached the end
+						if (batch.size < fetchLimit) break;
+					}
+
+					for (const [, message] of messages) {
+						stats.scanned++;
+
+						if (message.author?.bot) continue;
+
+						// Check for star reactions
+						const starReaction = message.reactions.cache.get(this.STAR_EMOJI);
+						if (!starReaction || starReaction.count < this.STAR_THRESHOLD) {
+							continue;
+						}
+
+						const starCount = starReaction.count;
+						const existingEntry = await this.getStarboardEntry(
+							message.id,
+							guildId,
+						);
+
+						if (!existingEntry) {
+							// Message should be on starboard but isn't - add it
+							console.log(
+								`🔹 Found missed starboard message ${message.id} with ${starCount} stars`,
+							);
+							await this.createStarboardEntry(message, starCount);
+							stats.added++;
+						} else {
+							// Entry exists - check if starboard message still exists
+							try {
+								const starboardChannel = guild.channels.cache.get(
+									config.starboardChannelId!,
+								) as TextChannel;
+
+								if (starboardChannel) {
+									const starboardMessage =
+										await starboardChannel.messages.fetch(
+											existingEntry.starboardMessageId,
+										);
+
+									if (!starboardMessage) {
+										// Starboard message was deleted but cache entry exists - repost it
+										console.log(
+											`🔹 Reposting deleted starboard message ${message.id} with ${starCount} stars`,
+										);
+										await this.createStarboardEntry(message, starCount);
+										stats.added++;
+									} else if (existingEntry.starCount !== starCount) {
+										// Entry exists and starboard message exists but star count is out of sync - update it
+										await this.updateStarboardMessage(existingEntry, starCount);
+										stats.updated++;
+									}
+								}
+							} catch (error) {
+								// Starboard message doesn't exist - repost it
+								console.log(
+									`🔹 Reposting missing starboard message ${message.id} with ${starCount} stars`,
+								);
+								await this.createStarboardEntry(message, starCount);
+								stats.added++;
+							}
+						}
+					}
+				} catch (error) {
+					const errorMsg = `Failed to scan channel ${channel.id}: ${error}`;
+					console.error(`🔸 ${errorMsg}`);
+					stats.errors.push(errorMsg);
+				}
+			}
+
+			console.log(
+				`✅ Starboard sync complete (last 24h): ${stats.added} added, ${stats.updated} updated, ${stats.scanned} scanned`,
+			);
+			return stats;
+		} catch (error) {
+			stats.errors.push(`Sync failed: ${error}`);
+			console.error("🔸 Error syncing starboard:", error);
+			return stats;
+		}
+	}
+
+	/**
+	 * Start periodic starboard sync (every 30 minutes)
+	 */
+	startPeriodicSync(guildId: string, intervalMs = 1800000): void {
+		if (this.syncInterval) {
+			clearInterval(this.syncInterval);
+		}
+
+		this.syncInterval = setInterval(async () => {
+			console.log("🔄 Running periodic starboard sync...");
+			await this.syncStarboard(guildId);
+		}, intervalMs);
+
+		console.log(
+			`🔹 Started periodic starboard sync (every ${intervalMs / 60000} minutes)`,
+		);
+	}
+
+	/**
+	 * Stop periodic sync
+	 */
+	stopPeriodicSync(): void {
+		if (this.syncInterval) {
+			clearInterval(this.syncInterval);
+			this.syncInterval = null;
+			console.log("🔹 Stopped periodic starboard sync");
+		}
+	}
+
+	/**
+	 * Re-sync a specific message to update its starboard entry with new attachment handling
+	 */
+	async resyncMessage(messageId: string, guildId: string): Promise<boolean> {
+		try {
+			const guild = this.client.guilds.cache.get(guildId);
+			if (!guild) {
+				console.error(`🔸 Guild ${guildId} not found`);
+				return false;
+			}
+
+			// Find the message across all channels
+			let message = null;
+			for (const [, channel] of guild.channels.cache) {
+				if (channel.isTextBased()) {
+					try {
+						const foundMessage = await channel.messages.fetch(messageId);
+						if (foundMessage) {
+							message = foundMessage;
+							break;
+						}
+					} catch (error) {
+						// Message not in this channel, continue
+					}
+				}
+			}
+
+			if (!message) {
+				console.error(`🔸 Message ${messageId} not found in guild`);
+				return false;
+			}
+
+			// Get current star count
+			const starReaction = message.reactions.cache.get(this.STAR_EMOJI);
+			if (!starReaction || starReaction.count < this.STAR_THRESHOLD) {
+				console.log(`🔸 Message ${messageId} doesn't meet star threshold`);
+				return false;
+			}
+
+			const starCount = starReaction.count;
+			const existingEntry = await this.getStarboardEntry(messageId, guildId);
+
+			if (existingEntry) {
+				// Update existing entry with new attachment handling
+				console.log(
+					`🔄 Re-syncing message ${messageId} with ${starCount} stars`,
+				);
+				await this.updateStarboardMessage(existingEntry, starCount);
+				return true;
+			} else {
+				// Create new entry
+				console.log(`🔄 Creating new starboard entry for message ${messageId}`);
+				await this.createStarboardEntry(message, starCount);
+				return true;
+			}
+		} catch (error) {
+			console.error(`🔸 Error re-syncing message ${messageId}:`, error);
+			return false;
 		}
 	}
 

@@ -14,9 +14,10 @@ import { RedisCache, getRedisClient } from "./RedisManager";
 export class DiscordDataCache {
 	private redisCache: RedisCache | null = null;
 	private redisAvailable = false;
+	private initializationPromise: Promise<void> | null = null;
 
 	constructor() {
-		this.initializeRedis();
+		this.initializationPromise = this.initializeRedis();
 	}
 
 	private async initializeRedis() {
@@ -24,10 +25,18 @@ export class DiscordDataCache {
 			const redisClient = await getRedisClient();
 			this.redisCache = new RedisCache(redisClient);
 			this.redisAvailable = true;
-			// console.log("🔹 Discord data cache initialized with Redis");
+			console.log("🔹 Discord data cache initialized with Redis");
 		} catch (error) {
-			console.warn(`🔸 Redis not available, using MongoDB fallback: ${error}`);
+			console.warn(`🔸 Redis not available, using fallback: ${error}`);
 			this.redisAvailable = false;
+		}
+	}
+
+	// Ensure Redis is initialized before operations
+	private async ensureInitialized(): Promise<void> {
+		if (this.initializationPromise) {
+			await this.initializationPromise;
+			this.initializationPromise = null;
 		}
 	}
 
@@ -398,6 +407,49 @@ export class DiscordDataCache {
 		if (this.redisAvailable && this.redisCache) {
 			await this.redisCache.setRateLimit(userId, action, limit, ttl);
 		}
+	}
+
+	// Starboard Entry Methods
+	async getStarboardEntry(
+		messageId: string,
+		guildId: string,
+	): Promise<StarboardEntry | null> {
+		await this.ensureInitialized();
+		if (this.redisAvailable && this.redisCache) {
+			const cached = await this.redisCache.getStarboardEntry(
+				messageId,
+				guildId,
+			);
+			if (cached) {
+				return cached as StarboardEntry;
+			}
+		}
+		return null;
+	}
+
+	async setStarboardEntry(entry: StarboardEntry): Promise<void> {
+		await this.ensureInitialized();
+		if (this.redisAvailable && this.redisCache) {
+			await this.redisCache.setStarboardEntry(entry);
+		}
+	}
+
+	async deleteStarboardEntry(
+		messageId: string,
+		guildId: string,
+	): Promise<void> {
+		await this.ensureInitialized();
+		if (this.redisAvailable && this.redisCache) {
+			await this.redisCache.deleteStarboardEntry(messageId, guildId);
+		}
+	}
+
+	async getAllStarboardEntries(guildId: string): Promise<StarboardEntry[]> {
+		await this.ensureInitialized();
+		if (this.redisAvailable && this.redisCache) {
+			return await this.redisCache.getAllStarboardEntries(guildId);
+		}
+		return [];
 	}
 
 	// Utility methods

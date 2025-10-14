@@ -299,6 +299,37 @@ export class RedisCache {
 		await this.del(`starboard_entry:${guildId}:${messageId}`);
 	}
 
+	async getAllStarboardEntries(guildId: string): Promise<StarboardEntry[]> {
+		const pattern = `starboard_entry:${guildId}:*`;
+		const keys = await this.scan(pattern);
+		const entries: StarboardEntry[] = [];
+
+		for (const key of keys) {
+			const entry = await this.get<StarboardEntry>(key);
+			if (entry) {
+				entries.push(entry);
+			}
+		}
+
+		return entries;
+	}
+
+	private async scan(pattern: string): Promise<string[]> {
+		const keys: string[] = [];
+		let cursor = 0;
+
+		do {
+			const result = await this.client.scan(cursor, {
+				MATCH: pattern,
+				COUNT: 100,
+			});
+			cursor = result.cursor;
+			keys.push(...result.keys);
+		} while (cursor !== 0);
+
+		return keys;
+	}
+
 	// Roll Data Methods
 	async setRollData(
 		userId: string,

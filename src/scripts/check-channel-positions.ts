@@ -1,90 +1,79 @@
-import { executeQuery } from "../features/database-manager/PostgresConnection";
+import { config } from "../config";
 import { DatabaseCore } from "../features/database-manager/PostgresCore";
 
 async function checkChannelPositions() {
-	const dbCore = new DatabaseCore();
-	await dbCore.initialize();
-
+	console.log("🔍 Checking channel positions in database...");
+	
+	const guildId = "1254694808228986912";
+	
 	try {
-		console.log("🔍 Checking channel positions...");
-
-		// Get all channels with their positions
-		const channels = await executeQuery(`
-			SELECT discord_id, channel_name, position, guild_id
-			FROM channels 
-			WHERE is_active = TRUE
-			ORDER BY guild_id, position
-		`);
-
-		console.log(`Found ${channels.length} active channels:`);
-		console.log("=".repeat(80));
-
-		let currentGuild = "";
+		const dbCore = new DatabaseCore();
+		
+		// Get all active channels using the proper method
+		console.log("📊 All active channels:");
+		const channels = await dbCore.getActiveChannels(guildId);
+		
+		console.log(`Total channels found: ${channels.length}`);
+		
 		for (const channel of channels) {
-			const guildId = channel.guildId || "unknown";
-			const channelName = channel.channelName || "unknown";
-			const position = channel.position || 0;
-			const discordId = channel.discordId || "unknown";
-
-			if (guildId !== currentGuild) {
-				currentGuild = guildId;
-				console.log(`\nGuild: ${guildId}`);
-				console.log("-".repeat(40));
-			}
-			console.log(
-				`  ${channelName.padEnd(30)} | Position: ${position.toString().padStart(3)} | ID: ${discordId}`,
+			console.log(`\n📺 Position ${channel.position}:`);
+			console.log(`  Name: ${channel.channelName}`);
+			console.log(`  ID: ${channel.discordId}`);
+			console.log(`  Active: ${channel.isActive}`);
+			console.log(`  Members: ${channel.memberCount}`);
+			console.log(`  Created: ${channel.createdAt}`);
+			console.log(`  Updated: ${channel.updatedAt}`);
+		}
+		
+		// Check specifically for AFK channel
+		const afkChannel = channels.find(ch => 
+			ch.channelName?.toLowerCase().includes('afk')
+		);
+		
+		if (afkChannel) {
+			console.log(`\n🎯 AFK Channel Details:`);
+			console.log(`  Name: ${afkChannel.channelName}`);
+			console.log(`  Position: ${afkChannel.position}`);
+			console.log(`  ID: ${afkChannel.discordId}`);
+			console.log(`  Active: ${afkChannel.isActive}`);
+			
+			// Check if there are duplicate positions
+			const samePositionChannels = channels.filter(ch => 
+				ch.position === afkChannel.position && ch.discordId !== afkChannel.discordId
 			);
+			
+			if (samePositionChannels.length > 0) {
+				console.log(`\n⚠️  Duplicate Position ${afkChannel.position}:`);
+				for (const ch of samePositionChannels) {
+					console.log(`  - ${ch.channelName} (${ch.discordId})`);
+				}
+			}
+		} else {
+			console.log(`\n❌ AFK channel not found in database`);
 		}
-
-		// Check for duplicate positions within each guild
-		console.log("\n🔍 Checking for duplicate positions...");
-		const duplicates = await executeQuery(`
-			SELECT guild_id, position, COUNT(*) as count
-			FROM channels 
-			WHERE is_active = TRUE
-			GROUP BY guild_id, position
-			HAVING COUNT(*) > 1
-			ORDER BY guild_id, position
-		`);
-
+		
+		// Check for position gaps or duplicates
+		console.log(`\n🔍 Position Analysis:`);
+		const positions = channels.map(ch => ch.position).sort((a, b) => a - b);
+		console.log(`Positions: ${positions.join(', ')}`);
+		
+		const duplicates = positions.filter((pos, index) => positions.indexOf(pos) !== index);
 		if (duplicates.length > 0) {
-			console.log("❌ Found duplicate positions:");
-			for (const dup of duplicates) {
-				console.log(
-					`  Guild ${dup.guild_id}: Position ${dup.position} has ${dup.count} channels`,
-				);
-			}
-		} else {
-			console.log("✅ No duplicate positions found");
+			console.log(`⚠️  Duplicate positions found: ${[...new Set(duplicates)].join(', ')}`);
 		}
-
-		// Check for gaps in positions
-		console.log("\n🔍 Checking for position gaps...");
-		const gaps = await executeQuery(`
-			WITH guild_positions AS (
-				SELECT guild_id, position, 
-					   LAG(position) OVER (PARTITION BY guild_id ORDER BY position) as prev_position
-				FROM channels 
-				WHERE is_active = TRUE
-			)
-			SELECT guild_id, position, prev_position
-			FROM guild_positions
-			WHERE prev_position IS NOT NULL AND position - prev_position > 1
-			ORDER BY guild_id, position
-		`);
-
+		
+		const gaps = [];
+		for (let i = 0; i < positions.length - 1; i++) {
+			if (positions[i + 1] - positions[i] > 1) {
+				gaps.push(`${positions[i]} -> ${positions[i + 1]}`);
+			}
+		}
 		if (gaps.length > 0) {
-			console.log("⚠️ Found position gaps:");
-			for (const gap of gaps) {
-				console.log(
-					`  Guild ${gap.guild_id}: Gap between position ${gap.prev_position} and ${gap.position}`,
-				);
-			}
-		} else {
-			console.log("✅ No position gaps found");
+			console.log(`⚠️  Position gaps found: ${gaps.join(', ')}`);
 		}
+		
 	} catch (error) {
-		console.error("❌ Error checking channel positions:", error);
+		console.error("❌ Position check failed:", error);
 	}
 }
 

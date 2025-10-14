@@ -82,6 +82,21 @@ export class Bot {
 			(this.client as ClientWithVoiceManager).starboardManager =
 				starboardManager(this.client);
 
+			// Sync starboard with Discord reactions
+			try {
+				const starboardManager = (this.client as ClientWithVoiceManager)
+					.starboardManager;
+				if (starboardManager && config.starboardChannelId && config.guildId) {
+					console.log("🔄 Running starboard sync...");
+					await starboardManager.syncStarboard(config.guildId);
+
+					// Start periodic sync
+					starboardManager.startPeriodicSync(config.guildId);
+				}
+			} catch (error) {
+				console.error("🔸 Error during starboard sync:", error);
+			}
+
 			// Initialize VC Logs Watcher
 			try {
 				await initializePostgresSchema();
