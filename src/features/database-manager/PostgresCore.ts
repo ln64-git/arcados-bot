@@ -636,7 +636,8 @@ export class DatabaseCore {
 			`SELECT COUNT(*) as count FROM ${this.tables.users} WHERE guild_id = $1`,
 			`SELECT COUNT(*) as count FROM ${this.tables.messages} WHERE guild_id = $1`,
 			`SELECT COUNT(*) as count FROM ${this.tables.roles} WHERE guild_id = $1`,
-			`SELECT COUNT(*) as count FROM ${this.tables.users} WHERE guild_id = $1 AND voice_interactions != '[]'::jsonb`,
+			// Count users with at least one voice interaction; cast voice_interactions to jsonb explicitly
+			`SELECT COUNT(*) as count FROM ${this.tables.users} WHERE guild_id = $1 AND jsonb_array_length(voice_interactions::jsonb) > 0`,
 		];
 
 		const results = await Promise.all(
@@ -1231,8 +1232,9 @@ export class DatabaseCore {
 				INSERT INTO ${this.tables.voiceChannelSessions} (
 					user_id, guild_id, channel_id, channel_name, joined_at, left_at, duration, is_active
 				) VALUES (
-					$1, $2, $3, $4, $5, $6, $7, $8
+					$1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::timestamp, $6::timestamp, $7::int, $8::boolean
 				)
+				ON CONFLICT (user_id, channel_id, is_active) DO NOTHING
 			`;
 			await executeQuery(query, [
 				session.userId,
@@ -1358,38 +1360,59 @@ export class DatabaseCore {
 					left_at = COALESCE(left_at, CURRENT_TIMESTAMP),
 					duration = COALESCE(duration, GREATEST(0, EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - joined_at))::int)),
 					updated_at = CURRENT_TIMESTAMP
-				WHERE user_id = $1 AND is_active = TRUE AND channel_id <> $2
+				WHERE user_id = $1::varchar AND guild_id = $2::varchar AND is_active = TRUE AND channel_id <> $3::varchar
 			`,
-			[session.userId, session.channelId],
+			[session.userId, session.guildId, session.channelId],
 		);
 
 		// 2) Insert or refresh active session for this channel
-		const query = `
-			INSERT INTO ${this.tables.voiceChannelSessions} (
-				user_id, guild_id, channel_id, channel_name, joined_at, left_at, duration, is_active
-			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8
-			)
-			ON CONFLICT (user_id, channel_id) 
-			WHERE is_active = TRUE
-			DO UPDATE SET
-				channel_name = EXCLUDED.channel_name,
-				joined_at = EXCLUDED.joined_at,
-				left_at = EXCLUDED.left_at,
-				duration = EXCLUDED.duration,
-				is_active = EXCLUDED.is_active,
-				updated_at = CURRENT_TIMESTAMP
-		`;
-		await client.query(query, [
-			session.userId,
-			session.guildId,
-			session.channelId,
-			session.channelName,
-			session.joinedAt,
-			session.leftAt,
-			session.duration,
-			session.isActive,
-		]);
+		// Try UPDATE existing active row first to avoid relying on partial unique indexes
+		const updateResult = await client.query(
+			`
+				UPDATE ${this.tables.voiceChannelSessions}
+				SET 
+					channel_name = $4,
+					joined_at = $5,
+					left_at = $6,
+					duration = $7,
+					is_active = $8,
+					updated_at = CURRENT_TIMESTAMP
+				WHERE user_id = $1::varchar AND guild_id = $2::varchar AND channel_id = $3::varchar AND is_active = TRUE
+			`,
+			[
+				session.userId,
+				session.guildId,
+				session.channelId,
+				session.channelName,
+				session.joinedAt,
+				session.leftAt,
+				session.duration,
+				session.isActive,
+			],
+		);
+
+		if (updateResult.rowCount === 0) {
+			await client.query(
+				`
+					INSERT INTO ${this.tables.voiceChannelSessions} (
+						user_id, guild_id, channel_id, channel_name, joined_at, left_at, duration, is_active
+					) VALUES (
+						$1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::timestamp, $6::timestamp, $7::int, $8::boolean
+					)
+					ON CONFLICT (user_id, channel_id, is_active) DO NOTHING
+				`,
+				[
+					session.userId,
+					session.guildId,
+					session.channelId,
+					session.channelName,
+					session.joinedAt,
+					session.leftAt,
+					session.duration,
+					session.isActive,
+				],
+			);
+		}
 	}
 
 	async endVoiceChannelSessionTransaction(

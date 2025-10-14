@@ -207,8 +207,9 @@ export async function createPostgresIndexes(): Promise<void> {
 		"CREATE INDEX IF NOT EXISTS idx_users_guild_id ON users(guild_id)",
 		"CREATE INDEX IF NOT EXISTS idx_users_nickname ON users(nickname)",
 		"CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen)",
-		"CREATE INDEX IF NOT EXISTS idx_users_voice_interactions ON users USING GIN(voice_interactions)",
-		"CREATE INDEX IF NOT EXISTS idx_users_mod_preferences ON users USING GIN(mod_preferences)",
+		// Skipping GIN indexes on JSONB columns due to operator class issues on this Postgres
+		// "CREATE INDEX IF NOT EXISTS idx_users_voice_interactions ON users USING GIN(voice_interactions)",
+		// "CREATE INDEX IF NOT EXISTS idx_users_mod_preferences ON users USING GIN(mod_preferences)",
 
 		// Roles indexes
 		"CREATE INDEX IF NOT EXISTS idx_roles_discord_id ON roles(discord_id)",
@@ -242,7 +243,8 @@ export async function createPostgresIndexes(): Promise<void> {
 		"CREATE INDEX IF NOT EXISTS idx_channels_guild_id ON channels(guild_id)",
 		"CREATE INDEX IF NOT EXISTS idx_channels_position ON channels(position)",
 		"CREATE INDEX IF NOT EXISTS idx_channels_is_active ON channels(is_active)",
-		"CREATE INDEX IF NOT EXISTS idx_channels_active_user_ids ON channels USING GIN(active_user_ids gin__array_ops)",
+		// Skipping GIN index on active_user_ids (text[]) due to operator class issues across Postgres versions
+		// "CREATE INDEX IF NOT EXISTS idx_channels_active_user_ids ON channels USING GIN(active_user_ids)",
 		"CREATE INDEX IF NOT EXISTS idx_channels_member_count ON channels(member_count)",
 
 		// Voice channel sessions indexes
@@ -253,10 +255,17 @@ export async function createPostgresIndexes(): Promise<void> {
 		"CREATE INDEX IF NOT EXISTS idx_voice_sessions_left_at ON voice_channel_sessions(left_at)",
 		"CREATE INDEX IF NOT EXISTS idx_voice_sessions_is_active ON voice_channel_sessions(is_active)",
 		"CREATE INDEX IF NOT EXISTS idx_voice_sessions_duration ON voice_channel_sessions(duration)",
+		// Ensure ON CONFLICT works: unique per (user, channel, is_active)
+		"CREATE UNIQUE INDEX IF NOT EXISTS uq_voice_session_user_channel_active ON voice_channel_sessions(user_id, channel_id, is_active)",
 	];
 
 	for (const index of indexes) {
-		await executeQuery(index);
+		try {
+			await executeQuery(index);
+		} catch (error) {
+			console.warn("🔸 Failed to create index:", index, error);
+			// Continue creating remaining indexes instead of failing init
+		}
 	}
 }
 

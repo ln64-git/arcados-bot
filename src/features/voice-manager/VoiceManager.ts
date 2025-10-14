@@ -146,6 +146,7 @@ export class VoiceManager implements IVoiceManager {
 	private startSessionReconciliation(): void {
 		if (this.sessionReconcileTimer) return;
 		// Reconcile every 30 seconds for better consistency
+
 		this.sessionReconcileTimer = setInterval(async () => {
 			// Prevent concurrent reconciliation
 			if (this.isReconciling) {
@@ -487,12 +488,36 @@ export class VoiceManager implements IVoiceManager {
 			let totalFixed = 0;
 
 			for (const guild of Array.from(this.client.guilds.cache.values())) {
+				// Only upsert/sync for the configured server
+				if (guild.id !== config.guildId) {
+					continue;
+				}
 				for (const channel of Array.from(guild.channels.cache.values())) {
 					if (
 						channel.isVoiceBased() &&
 						channel.type === ChannelType.GuildVoice
 					) {
 						const voiceChannel = channel as VoiceChannel;
+
+						// Ensure channel is upserted during sync so DB reflects Discord
+						try {
+							await this.dbCore.upsertChannel({
+								discordId: voiceChannel.id,
+								guildId: guild.id,
+								channelName: voiceChannel.name,
+								position: voiceChannel.position ?? 0,
+								isActive: true,
+								activeUserIds: Array.from(voiceChannel.members.keys()),
+								memberCount: voiceChannel.members.size,
+								status: null,
+								lastStatusChange: null,
+							});
+						} catch (error) {
+							console.warn(
+								`🔸 Failed to upsert channel ${voiceChannel.id} during sync:`,
+								error,
+							);
+						}
 
 						// Include excluded channels in sync - we want to track users but not manage ownership
 						// Only skip spawn channels from sync
@@ -648,7 +673,20 @@ export class VoiceManager implements IVoiceManager {
 						if (!member.user.bot) {
 							const user = await this.dbCore.getUser(userId, guild.id);
 							if (user) {
-								const interactions = user.voiceInteractions || [];
+				const interactions = Array.isArray(user.voiceInteractions)
+					? user.voiceInteractions
+					: (() => {
+						try {
+							return JSON.parse(
+								(Array.isArray(user.voiceInteractions)
+									? user.voiceInteractions
+									: (user as any).voice_interactions || "[]",
+							) as string,
+							);
+						} catch {
+							return [] as typeof user.voiceInteractions;
+						}
+					})();
 								const hasActiveSessionInThisChannel = interactions.some(
 									(interaction) =>
 										interaction.channelId === channel.id && !interaction.leftAt,
@@ -899,7 +937,20 @@ export class VoiceManager implements IVoiceManager {
 						if (!member.user.bot) {
 							const user = await this.dbCore.getUser(userId, guild.id);
 							if (user) {
-								const interactions = user.voiceInteractions || [];
+								const interactions = Array.isArray(user.voiceInteractions)
+									? user.voiceInteractions
+									: (() => {
+										try {
+											return JSON.parse(
+												(Array.isArray(user.voiceInteractions)
+													? user.voiceInteractions
+													: (user as any).voice_interactions || "[]",
+											) as string,
+											);
+										} catch {
+											return [] as typeof user.voiceInteractions;
+										}
+									})();
 								const hasActiveSessionInThisChannel = interactions.some(
 									(interaction) =>
 										interaction.channelId === channel.id && !interaction.leftAt,
@@ -1615,17 +1666,19 @@ export class VoiceManager implements IVoiceManager {
 
 		// Update channel (name/status) in database (all channels are tracked)
 		try {
-			await this.dbCore.upsertChannel({
-				discordId: newVoiceChannel.id,
-				guildId: newVoiceChannel.guild.id,
-				channelName: newVoiceChannel.name,
-				position: newVoiceChannel.position,
-				isActive: true,
-				activeUserIds: Array.from(newVoiceChannel.members.keys()),
-				memberCount: newVoiceChannel.members.size,
-				status: newTopic || undefined,
-				lastStatusChange: statusChanged ? new Date() : undefined,
-			});
+			if (newVoiceChannel.guild.id === config.guildId) {
+				await this.dbCore.upsertChannel({
+					discordId: newVoiceChannel.id,
+					guildId: newVoiceChannel.guild.id,
+					channelName: newVoiceChannel.name,
+					position: newVoiceChannel.position,
+					isActive: true,
+					activeUserIds: Array.from(newVoiceChannel.members.keys()),
+					memberCount: newVoiceChannel.members.size,
+					status: newTopic || undefined,
+					lastStatusChange: statusChanged ? new Date() : undefined,
+				});
+			}
 		} catch (error) {
 			console.warn(`🔸 Failed to update channel name in database: ${error}`);
 		}
@@ -1897,15 +1950,17 @@ export class VoiceManager implements IVoiceManager {
 
 		// Track channel in database (newly created channels are not excluded)
 		try {
-			await this.dbCore.upsertChannel({
-				discordId: channel.id,
-				guildId: channel.guild.id,
-				channelName: channel.name,
-				position: channel.position,
-				isActive: true,
-				activeUserIds: [member.id],
-				memberCount: 1,
-			});
+			if (channel.guild.id === config.guildId) {
+				await this.dbCore.upsertChannel({
+					discordId: channel.id,
+					guildId: channel.guild.id,
+					channelName: channel.name,
+					position: channel.position,
+					isActive: true,
+					activeUserIds: [member.id],
+					memberCount: 1,
+				});
+			}
 		} catch (error) {
 			console.warn(`🔸 Failed to track new channel in database: ${error}`);
 		}

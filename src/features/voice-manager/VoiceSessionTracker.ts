@@ -1,5 +1,5 @@
 import type { GuildMember, VoiceChannel } from "discord.js";
-import { isDevelopment } from "../../config";
+import { config, isDevelopment } from "../../config";
 import type { VoiceChannelSession } from "../../types/database";
 import { getCacheManager } from "../cache-management/DiscordDataCache";
 import { executeTransaction } from "../database-manager/PostgresConnection";
@@ -30,6 +30,11 @@ export class VoiceSessionTracker {
 		const userId = member.id;
 		const guildId = channel.guild.id;
 		const joinedAt = new Date();
+
+		// Only track sessions for configured guild
+		if (guildId !== config.guildId) {
+			return;
+		}
 
 		// Validate all required fields before proceeding
 		if (!userId || !guildId || !channel.id || !channel.name) {
@@ -98,15 +103,17 @@ export class VoiceSessionTracker {
 			}
 
 			// 2. Upsert channel to ensure it exists (with proper defaults)
-			await this.dbCore.upsertChannelTransaction(client, {
-				discordId: channel.id,
-				guildId: guildId,
-				channelName: channel.name,
-				position: channel.position,
-				isActive: true,
-				activeUserIds: [], // Ensure array, not NULL
-				memberCount: 0, // Ensure integer, not NULL
-			});
+			if (guildId === config.guildId) {
+				await this.dbCore.upsertChannelTransaction(client, {
+					discordId: channel.id,
+					guildId: guildId,
+					channelName: channel.name,
+					position: channel.position,
+					isActive: true,
+					activeUserIds: [], // Ensure array, not NULL
+					memberCount: 0, // Ensure integer, not NULL
+				});
+			}
 
 			// 3. Create voice channel session (primary tracking)
 			await this.dbCore.createVoiceChannelSessionTransaction(client, {
