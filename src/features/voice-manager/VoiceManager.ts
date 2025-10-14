@@ -51,6 +51,7 @@ export class VoiceManager implements IVoiceManager {
 	private orphanedChannelWatcher: NodeJS.Timeout | null = null;
 	private sessionReconcileTimer: NodeJS.Timeout | null = null;
 	private isWatchingOrphanedChannels = false;
+	private isReconciling = false; // Prevent concurrent reconciliation
 	private dbCore: DatabaseCore;
 	private sessionTracker: VoiceSessionTracker;
 	private namingService: ChannelNamingService;
@@ -145,20 +146,31 @@ export class VoiceManager implements IVoiceManager {
 		if (this.sessionReconcileTimer) return;
 		// Reconcile every 30 seconds for better consistency
 		this.sessionReconcileTimer = setInterval(async () => {
+			// Prevent concurrent reconciliation
+			if (this.isReconciling) {
+				if (this.debugEnabled) {
+					console.log("🔸 Skipping reconciliation - already in progress");
+				}
+				return;
+			}
+
+			this.isReconciling = true;
 			try {
 				// First validate and fix member counts
 				await this.validateChannelMemberCounts();
 
-				// Then perform comprehensive incremental sync
-				await this.performIncrementalSync([]);
-
-				// Finally, sync all channel member counts to ensure consistency
-				await this.dbCore.syncAllChannelsActiveUsers();
+				// Check for issues and only sync if needed
+				const issues = await this.findDatabaseIssues();
+				if (issues.length > 0) {
+					await this.performIncrementalSync(issues);
+				}
 			} catch (error) {
 				if (this.debugEnabled)
 					console.warn("🔸 Session reconciliation error:", error);
+			} finally {
+				this.isReconciling = false;
 			}
-		}, 30 * 1000); // Reduced from 60s to 30s for better responsiveness
+		}, 120 * 1000); // Run every 2 minutes to reduce race conditions
 	}
 
 	private stopSessionReconciliation(): void {
@@ -489,12 +501,7 @@ export class VoiceManager implements IVoiceManager {
 							continue;
 						}
 
-						const discordMembers = Array.from(
-							voiceChannel.members.keys(),
-						).filter((userId) => {
-							const member = voiceChannel.members.get(userId);
-							return member && !member.user.bot;
-						});
+						const discordMembers = Array.from(voiceChannel.members.keys());
 
 						// Get active sessions from database for this channel
 						const activeSessions = await this.dbCore.getActiveChannelMembers(
@@ -531,14 +538,15 @@ export class VoiceManager implements IVoiceManager {
 									}
 								} catch (error) {
 									// If it's a duplicate key error, that's expected - user already has a session
-									if (error.code === "23505") {
+									const err = error as { code?: string; message?: string };
+									if (err.code === "23505") {
 										console.log(
 											`  ℹ️ User ${userId} already has active session in ${voiceChannel.name}`,
 										);
 									} else {
 										console.error(
 											`  🔸 Failed to create session for user ${userId}:`,
-											error.message,
+											err.message,
 										);
 									}
 								}
@@ -556,9 +564,10 @@ export class VoiceManager implements IVoiceManager {
 									);
 									totalFixed++;
 								} catch (error) {
+									const err = error as { message?: string };
 									console.error(
 										`  🔸 Failed to close orphaned session for user ${userId}:`,
-										error.message,
+										err.message,
 									);
 								}
 							}
@@ -638,12 +647,11 @@ export class VoiceManager implements IVoiceManager {
 						if (!member.user.bot) {
 							const user = await this.dbCore.getUser(userId, guild.id);
 							if (user) {
-								const hasActiveSessionInThisChannel =
-									user.voiceInteractions.some(
-										(interaction) =>
-											interaction.channelId === channel.id &&
-											!interaction.leftAt,
-									);
+								const interactions = user.voiceInteractions || [];
+								const hasActiveSessionInThisChannel = interactions.some(
+									(interaction) =>
+										interaction.channelId === channel.id && !interaction.leftAt,
+								);
 
 								if (!hasActiveSessionInThisChannel) {
 									orphaned.push(
@@ -667,37 +675,33 @@ export class VoiceManager implements IVoiceManager {
 		const missing: string[] = [];
 
 		try {
-			// Check all guilds for users with active voice interactions
-			for (const guild of Array.from(this.client.guilds.cache.values())) {
-				const users = await this.dbCore.getUsersByGuild(guild.id);
-
-				for (const user of users) {
-					const activeSessions = user.voiceInteractions.filter(
-						(interaction) => !interaction.leftAt,
+			// Source of truth: active rows in voice_channel_sessions
+			const activeSessions = await this.dbCore.getAllActiveSessions();
+			for (const session of activeSessions) {
+				const guild = this.client.guilds.cache.get(session.guildId);
+				if (!guild) {
+					missing.push(
+						`Active session for user ${session.userId} in unknown guild ${session.guildId}`,
 					);
-
-					for (const session of activeSessions) {
-						const channel = guild.channels.cache.get(session.channelId);
-						if (!channel || !channel.isVoiceBased()) {
-							missing.push(
-								`Active session for user ${user.discordId} in non-existent channel ${session.channelId}`,
-							);
-							continue;
-						}
-
-						const voiceChannel = channel as VoiceChannel;
-						const member = voiceChannel.members.get(user.discordId);
-
-						if (!member) {
-							missing.push(
-								`Active session for user ${user.discordId} but user not in channel ${session.channelName}`,
-							);
-						}
-					}
+					continue;
+				}
+				const channel = guild.channels.cache.get(session.channelId);
+				if (!channel || !channel.isVoiceBased()) {
+					missing.push(
+						`Active session for user ${session.userId} in non-existent channel ${session.channelId}`,
+					);
+					continue;
+				}
+				const voiceChannel = channel as VoiceChannel;
+				const member = voiceChannel.members.get(session.userId);
+				if (!member) {
+					missing.push(
+						`Active session for user ${session.userId} but user not in channel ${session.channelName}`,
+					);
 				}
 			}
-		} catch (error) {
-			console.error("🔸 Error finding missing voice sessions:", error);
+		} catch (error: unknown) {
+			console.error("🔸 Error finding missing voice sessions:", error as Error);
 		}
 
 		return missing;
@@ -735,6 +739,9 @@ export class VoiceManager implements IVoiceManager {
 	 */
 	private async validateChannelMemberCounts(): Promise<void> {
 		try {
+			// Add a small delay to allow Discord events to settle
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+
 			let totalChannelsChecked = 0;
 			let discrepanciesFound = 0;
 			let discrepanciesFixed = 0;
@@ -757,7 +764,7 @@ export class VoiceManager implements IVoiceManager {
 
 						const discordMemberCount = Array.from(
 							voiceChannel.members.values(),
-						).filter((member) => !member.user.bot).length;
+						).length;
 
 						const dbMemberCount = await this.dbCore.getActiveChannelMemberCount(
 							voiceChannel.id,
@@ -796,10 +803,6 @@ export class VoiceManager implements IVoiceManager {
 						`🔧 Fixed ${discrepanciesFixed} member count discrepancies`,
 					);
 				}
-			} else if (this.debugEnabled) {
-				console.log(
-					`✅ Member count validation passed: ${totalChannelsChecked} channels checked`,
-				);
 			}
 		} catch (error) {
 			console.error("🔸 Error validating channel member counts:", error);
@@ -807,11 +810,41 @@ export class VoiceManager implements IVoiceManager {
 	}
 
 	/**
+	 * Find all database issues that need to be fixed
+	 */
+	private async findDatabaseIssues(): Promise<string[]> {
+		const issues: string[] = [];
+
+		// Check for orphaned voice sessions
+		const orphanedSessions = await this.findOrphanedVoiceSessions();
+		if (orphanedSessions.length > 0) {
+			issues.push(`Found ${orphanedSessions.length} orphaned voice sessions`);
+		}
+
+		// Check for missing voice sessions
+		const missingSessions = await this.findMissingVoiceSessions();
+		if (missingSessions.length > 0) {
+			issues.push(`Found ${missingSessions.length} missing voice sessions`);
+		}
+
+		// Check for ownership inconsistencies
+		const ownershipIssues = await this.findOwnershipInconsistencies();
+		if (ownershipIssues.length > 0) {
+			issues.push(`Found ${ownershipIssues.length} ownership inconsistencies`);
+		}
+
+		return issues;
+	}
+
+	/**
 	 * Perform incremental sync to fix identified issues
 	 */
 	private async performIncrementalSync(issues: string[]): Promise<void> {
 		try {
-			console.log("🔄 Starting incremental sync...");
+			// Only log if there are significant issues to fix
+			if (issues.length > 0) {
+				console.log("🔄 Starting incremental sync...");
+			}
 
 			// Sync orphaned voice sessions
 			const orphanedSessions = await this.findOrphanedVoiceSessions();
@@ -841,10 +874,12 @@ export class VoiceManager implements IVoiceManager {
 			}
 
 			// Sync all channel member counts to ensure database consistency
-			console.log("🔧 Syncing all channel member counts...");
 			await this.dbCore.syncAllChannelsActiveUsers();
 
-			console.log("✅ Incremental sync completed");
+			// Only log completion if there were issues to fix
+			if (issues.length > 0) {
+				console.log("✅ Incremental sync completed");
+			}
 		} catch (error) {
 			console.error("🔸 Error during incremental sync:", error);
 		}
@@ -863,12 +898,11 @@ export class VoiceManager implements IVoiceManager {
 						if (!member.user.bot) {
 							const user = await this.dbCore.getUser(userId, guild.id);
 							if (user) {
-								const hasActiveSessionInThisChannel =
-									user.voiceInteractions.some(
-										(interaction) =>
-											interaction.channelId === channel.id &&
-											!interaction.leftAt,
-									);
+								const interactions = user.voiceInteractions || [];
+								const hasActiveSessionInThisChannel = interactions.some(
+									(interaction) =>
+										interaction.channelId === channel.id && !interaction.leftAt,
+								);
 
 								if (!hasActiveSessionInThisChannel) {
 									// Create missing voice session
@@ -901,61 +935,55 @@ export class VoiceManager implements IVoiceManager {
 	 */
 	private async closeMissingVoiceSessions(): Promise<void> {
 		try {
-			// Check all guilds for users with active voice interactions
-			for (const guild of Array.from(this.client.guilds.cache.values())) {
-				const users = await this.dbCore.getUsersByGuild(guild.id);
-
-				for (const user of users) {
-					const activeSessions = user.voiceInteractions.filter(
-						(interaction) => !interaction.leftAt,
-					);
-
-					for (const session of activeSessions) {
-						try {
-							const channel = guild.channels.cache.get(session.channelId);
-							if (!channel || !channel.isVoiceBased()) {
-								// Close session for non-existent channel
-								await this.dbCore.updateVoiceInteraction(
-									user.discordId,
-									guild.id,
-									session.channelId,
-									new Date(),
-									0,
-								);
-								console.log(
-									`🔹 Closed session for user ${user.discordId} in non-existent channel`,
-								);
-								continue;
-							}
-
-							const voiceChannel = channel as VoiceChannel;
-							const member = voiceChannel.members.get(user.discordId);
-
-							if (!member) {
-								// Close session for user not in channel
-								await this.dbCore.updateVoiceInteraction(
-									user.discordId,
-									guild.id,
-									session.channelId,
-									new Date(),
-									0,
-								);
-								console.log(
-									`🔹 Closed session for user ${user.discordId} not in channel ${session.channelName}`,
-								);
-							}
-						} catch (sessionError) {
-							console.warn(
-								`🔸 Error closing session for user ${user.discordId} in channel ${session.channelId}:`,
-								sessionError,
-							);
-							// Continue with other sessions even if one fails
-						}
+			const activeSessions = await this.dbCore.getAllActiveSessions();
+			for (const session of activeSessions) {
+				try {
+					const guild = this.client.guilds.cache.get(session.guildId);
+					if (!guild) {
+						await this.dbCore.endVoiceChannelSession(
+							session.userId,
+							session.channelId,
+							new Date(),
+						);
+						console.log(
+							`🔹 Closed session for user ${session.userId} in unknown guild ${session.guildId}`,
+						);
+						continue;
 					}
+					const channel = guild.channels.cache.get(session.channelId);
+					if (!channel || !channel.isVoiceBased()) {
+						await this.dbCore.endVoiceChannelSession(
+							session.userId,
+							session.channelId,
+							new Date(),
+						);
+						console.log(
+							`🔹 Closed session for user ${session.userId} in non-existent channel`,
+						);
+						continue;
+					}
+					const voiceChannel = channel as VoiceChannel;
+					const member = voiceChannel.members.get(session.userId);
+					if (!member) {
+						await this.dbCore.endVoiceChannelSession(
+							session.userId,
+							session.channelId,
+							new Date(),
+						);
+						console.log(
+							`🔹 Closed session for user ${session.userId} not in channel ${session.channelName}`,
+						);
+					}
+				} catch (sessionError) {
+					console.warn(
+						`🔸 Error closing session for user ${session.userId} in channel ${session.channelId}:`,
+						sessionError,
+					);
+					// Continue with other sessions even if one fails
 				}
 			}
-		} catch (error) {
-			console.error("🔸 Error closing missing voice sessions:", error);
+		} catch (error: unknown) {
+			console.error("🔸 Error closing missing voice sessions:", error as Error);
 		}
 	}
 
@@ -1313,6 +1341,14 @@ export class VoiceManager implements IVoiceManager {
 		// This includes excluded channels - we want to track users but not manage ownership
 		if (!isSpawnChannel) {
 			try {
+				// Validate channel data before tracking
+				if (!channel.id || !channel.name || !newState.member?.id) {
+					console.warn(
+						`🔸 Skipping voice tracking - invalid channel data: id=${channel.id}, name=${channel.name}, memberId=${newState.member?.id}`,
+					);
+					return;
+				}
+
 				await this.sessionTracker.trackUserJoin(
 					newState.member,
 					channel as VoiceChannel,
@@ -1394,6 +1430,14 @@ export class VoiceManager implements IVoiceManager {
 		// This includes excluded channels - we want to track users but not manage ownership
 		if (!isSpawnChannel) {
 			try {
+				// Validate channel data before tracking
+				if (!channel.id || !channel.name || !oldState.member?.id) {
+					console.warn(
+						`🔸 Skipping voice tracking - invalid channel data: id=${channel.id}, name=${channel.name}, memberId=${oldState.member?.id}`,
+					);
+					return;
+				}
+
 				await this.sessionTracker.trackUserLeave(
 					oldState.member,
 					channel as VoiceChannel,
@@ -1450,6 +1494,20 @@ export class VoiceManager implements IVoiceManager {
 		// This includes excluded channels - we want to track users but not manage ownership
 		if (!oldIsSpawnChannel && !newIsSpawnChannel) {
 			try {
+				// Validate channel data before tracking
+				if (
+					!oldState.channel?.id ||
+					!oldState.channel?.name ||
+					!newState.channel?.id ||
+					!newState.channel?.name ||
+					!newState.member?.id
+				) {
+					console.warn(
+						`🔸 Skipping voice move tracking - invalid channel data: oldId=${oldState.channel?.id}, oldName=${oldState.channel?.name}, newId=${newState.channel?.id}, newName=${newState.channel?.name}, memberId=${newState.member?.id}`,
+					);
+					return;
+				}
+
 				await this.sessionTracker.trackUserMove(
 					newState.member,
 					oldState.channel as VoiceChannel,
@@ -1529,10 +1587,8 @@ export class VoiceManager implements IVoiceManager {
 				channelName: newVoiceChannel.name,
 				position: newVoiceChannel.position,
 				isActive: true,
-				activeUserIds: Array.from(newVoiceChannel.members.keys()).filter(
-					(id) => !newVoiceChannel.members.get(id)?.user.bot,
-				),
-				memberCount: newVoiceChannel.members.filter((m) => !m.user.bot).size,
+				activeUserIds: Array.from(newVoiceChannel.members.keys()),
+				memberCount: newVoiceChannel.members.size,
 			});
 		} catch (error) {
 			console.warn(`🔸 Failed to update channel name in database: ${error}`);
@@ -1706,9 +1762,14 @@ export class VoiceManager implements IVoiceManager {
 			return;
 		}
 
-		// Calculate position - place directly below the spawn channel
+		// Calculate position - place directly above the spawn channel
+		// Set position to spawnChannelPosition - 1 to ensure it appears above
 		const spawnChannelPosition = spawnChannel.position;
-		const newChannelPosition = spawnChannelPosition + 1;
+		const newChannelPosition = Math.max(0, spawnChannelPosition - 1);
+
+		console.log(
+			`🔹 Creating channel "${channelName}" at position ${newChannelPosition} (spawn channel is at position ${spawnChannelPosition})`,
+		);
 
 		// Check if spawn channel is private/locked (privacy setting)
 		const spawnChannelPermissions = spawnChannel.permissionOverwrites.cache.get(

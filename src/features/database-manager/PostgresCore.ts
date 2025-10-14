@@ -41,6 +41,19 @@ export class DatabaseCore {
 
 	async initialize(): Promise<void> {
 		await initializePostgresSchema();
+
+		// One-time normalization: ensure channels.active_user_ids is never NULL
+		try {
+			await executeQuery(
+				`UPDATE ${this.tables.channels} SET active_user_ids = '{}'::text[] WHERE active_user_ids IS NULL`,
+			);
+		} catch (e) {
+			// Best-effort; do not block initialization
+			console.warn(
+				"🔸 Failed to normalize active_user_ids (will continue):",
+				e,
+			);
+		}
 	}
 
 	// Performance wrapper for database operations
@@ -1317,12 +1330,37 @@ export class DatabaseCore {
 		client: PoolClient,
 		session: Omit<VoiceChannelSession, "id" | "createdAt" | "updatedAt">,
 	): Promise<void> {
+		// 1) End any other active sessions for this user (ensures only one active session globally)
+		//    Compute duration based on joined_at where available
+		await client.query(
+			`
+				UPDATE ${this.tables.voiceChannelSessions}
+				SET 
+					is_active = FALSE,
+					left_at = COALESCE(left_at, CURRENT_TIMESTAMP),
+					duration = COALESCE(duration, GREATEST(0, EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - joined_at))::int)),
+					updated_at = CURRENT_TIMESTAMP
+				WHERE user_id = $1 AND is_active = TRUE AND channel_id <> $2
+			`,
+			[session.userId, session.channelId],
+		);
+
+		// 2) Insert or refresh active session for this channel
 		const query = `
 			INSERT INTO ${this.tables.voiceChannelSessions} (
 				user_id, guild_id, channel_id, channel_name, joined_at, left_at, duration, is_active
 			) VALUES (
 				$1, $2, $3, $4, $5, $6, $7, $8
 			)
+			ON CONFLICT (user_id, channel_id) 
+			WHERE is_active = TRUE
+			DO UPDATE SET
+				channel_name = EXCLUDED.channel_name,
+				joined_at = EXCLUDED.joined_at,
+				left_at = EXCLUDED.left_at,
+				duration = EXCLUDED.duration,
+				is_active = EXCLUDED.is_active,
+				updated_at = CURRENT_TIMESTAMP
 		`;
 		await client.query(query, [
 			session.userId,
@@ -1419,6 +1457,51 @@ export class DatabaseCore {
 				await this.syncChannelActiveUsers(channel.discordId);
 			}
 		}, "syncAllChannelsActiveUsers()");
+	}
+
+	// ==================== VOICE SESSION QUERIES (HELPERS) ====================
+
+	/** Check if a user has an active session in the given channel */
+	async hasActiveSession(userId: string, channelId: string): Promise<boolean> {
+		const row = await executeQueryOne<{ exists: boolean }>(
+			`
+				SELECT EXISTS (
+					SELECT 1 FROM ${this.tables.voiceChannelSessions}
+					WHERE user_id = $1 AND channel_id = $2 AND is_active = TRUE
+				) AS exists
+			`,
+			[userId, channelId],
+		);
+		return Boolean(row?.exists);
+	}
+
+	/** Get all active voice sessions (minimal fields for reconciliation) */
+	async getAllActiveSessions(): Promise<
+		Array<{
+			userId: string;
+			channelId: string;
+			channelName: string;
+			guildId: string;
+		}>
+	> {
+		const rows = await executeQuery<{
+			user_id: string;
+			channel_id: string;
+			channel_name: string;
+			guild_id: string;
+		}>(
+			`
+				SELECT user_id, channel_id, channel_name, guild_id
+				FROM ${this.tables.voiceChannelSessions}
+				WHERE is_active = TRUE
+			`,
+		);
+		return rows.map((r) => ({
+			userId: (r as any).userId ?? (r as any).user_id,
+			channelId: (r as any).channelId ?? (r as any).channel_id,
+			channelName: (r as any).channelName ?? (r as any).channel_name,
+			guildId: (r as any).guildId ?? (r as any).guild_id,
+		}));
 	}
 
 	// ==================== MAINTENANCE ====================

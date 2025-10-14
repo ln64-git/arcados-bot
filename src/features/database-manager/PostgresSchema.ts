@@ -140,10 +140,10 @@ export async function createPostgresTables(): Promise<void> {
 			discord_id VARCHAR(20) NOT NULL,
 			guild_id VARCHAR(20) NOT NULL,
 			channel_name VARCHAR(100) NOT NULL,
-			position INTEGER NOT NULL DEFAULT 0,
-			is_active BOOLEAN DEFAULT TRUE,
-			active_user_ids TEXT[] DEFAULT '{}',
-			member_count INTEGER DEFAULT 0,
+				position INTEGER NOT NULL DEFAULT 0,
+				is_active BOOLEAN DEFAULT TRUE,
+				active_user_ids TEXT[] NOT NULL DEFAULT '{}',
+				member_count INTEGER NOT NULL DEFAULT 0,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(discord_id, guild_id)
@@ -189,6 +189,8 @@ export async function createPostgresTables(): Promise<void> {
 		ON voice_channel_sessions (user_id, channel_id) 
 		WHERE is_active = TRUE
 		`,
+
+		// Note: Global uniqueness per user is enforced at runtime; see DatabaseCore.initialize()
 	];
 
 	for (const table of tables) {

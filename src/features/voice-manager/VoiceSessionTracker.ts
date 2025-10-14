@@ -1,4 +1,5 @@
 import type { GuildMember, VoiceChannel } from "discord.js";
+import { isDevelopment } from "../../config";
 import type { VoiceChannelSession } from "../../types/database";
 import { getCacheManager } from "../cache-management/DiscordDataCache";
 import { executeTransaction } from "../database-manager/PostgresConnection";
@@ -7,6 +8,7 @@ import type { DatabaseCore } from "../database-manager/PostgresCore";
 export class VoiceSessionTracker {
 	private dbCore: DatabaseCore;
 	private cache = getCacheManager();
+	private readonly debugEnabled = isDevelopment;
 
 	constructor(dbCore: DatabaseCore) {
 		this.dbCore = dbCore;
@@ -23,95 +25,87 @@ export class VoiceSessionTracker {
 			throw new Error("Member and channel are required");
 		}
 
-		// Skip bots
-		if (member.user.bot) return;
+		const isBot = member.user.bot;
 
 		const userId = member.id;
 		const guildId = channel.guild.id;
 		const joinedAt = new Date();
 
+		// Validate all required fields before proceeding
+		if (!userId || !guildId || !channel.id || !channel.name) {
+			throw new Error(
+				`Invalid data: userId=${userId}, guildId=${guildId}, channelId=${channel.id}, channelName=${channel.name}`,
+			);
+		}
+
 		await executeTransaction(async (client) => {
-			// NEW: Check for existing active session
-			const existingSession =
-				await this.dbCore.getCurrentVoiceChannelSessionTransaction(
-					client,
-					userId,
-				);
+			// Proactively end any other active sessions for this user in other channels
+			await client.query(
+				`
+					UPDATE voice_channel_sessions
+					SET 
+						is_active = FALSE,
+						left_at = COALESCE(left_at, CURRENT_TIMESTAMP),
+						duration = COALESCE(duration, GREATEST(0, EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - joined_at))::int)),
+						updated_at = CURRENT_TIMESTAMP
+					WHERE user_id = $1 AND is_active = TRUE AND channel_id <> $2
+				`,
+				[userId, channel.id],
+			);
 
-			// If user has an active session in a DIFFERENT channel, close it first
-			if (existingSession && existingSession.channelId !== channel.id) {
-				const leftAt = new Date();
-				const joinedAt =
-					existingSession.joinedAt instanceof Date
-						? existingSession.joinedAt
-						: new Date(existingSession.joinedAt);
-				const duration = Math.floor(
-					(leftAt.getTime() - joinedAt.getTime()) / 1000,
-				);
-				await this.dbCore.endVoiceChannelSessionTransaction(
-					client,
-					userId,
-					existingSession.channelId,
-					leftAt,
-					duration,
-				);
+			// Note: We don't check for existing session in same channel here
+			// The database will handle conflicts gracefully with ON CONFLICT clause
+
+			// 1. Upsert user to ensure they exist (only for non-bots)
+			if (!isBot) {
+				await this.dbCore.upsertUserTransaction(client, {
+					discordId: userId,
+					guildId: guildId,
+					bot: false,
+					username: member.user.username || "Unknown",
+					displayName: member.displayName || member.user.username || "Unknown",
+					nickname: member.nickname || undefined,
+					discriminator:
+						(member.user as { discriminator?: string })?.discriminator ||
+						"0000",
+					avatar: member.user.avatar || undefined,
+					status: member.presence?.status || undefined,
+					roles: Array.from(member.roles?.cache?.keys?.() || []),
+					joinedAt: member.joinedAt || joinedAt,
+					lastSeen: joinedAt,
+					avatarHistory: [],
+					usernameHistory: [],
+					displayNameHistory: [],
+					nicknameHistory: [],
+					statusHistory: [],
+					emoji: undefined,
+					title: undefined,
+					summary: undefined,
+					keywords: [],
+					notes: [],
+					relationships: [],
+					modPreferences: {
+						bannedUsers: [],
+						mutedUsers: [],
+						kickedUsers: [],
+						deafenedUsers: [],
+						renamedUsers: [],
+						modHistory: [],
+						lastUpdated: joinedAt,
+					},
+					voiceInteractions: [],
+				});
 			}
 
-			// If user already has an active session in THIS channel, skip creation
-			if (existingSession && existingSession.channelId === channel.id) {
-				console.log(
-					`ℹ️ User ${userId} already has active session in channel ${channel.id}, skipping duplicate`,
-				);
-				return;
-			}
-
-			// 1. Upsert user to ensure they exist
-			await this.dbCore.upsertUserTransaction(client, {
-				discordId: userId,
-				guildId: guildId,
-				bot: Boolean(member.user.bot),
-				username: member.user.username || "Unknown",
-				displayName: member.displayName || member.user.username || "Unknown",
-				nickname: member.nickname || undefined,
-				discriminator:
-					(member.user as { discriminator?: string })?.discriminator || "0000",
-				avatar: member.user.avatar || undefined,
-				status: member.presence?.status || undefined,
-				roles: Array.from(member.roles?.cache?.keys?.() || []),
-				joinedAt: member.joinedAt || joinedAt,
-				lastSeen: joinedAt,
-				avatarHistory: [],
-				usernameHistory: [],
-				displayNameHistory: [],
-				nicknameHistory: [],
-				statusHistory: [],
-				emoji: undefined,
-				title: undefined,
-				summary: undefined,
-				keywords: [],
-				notes: [],
-				relationships: [],
-				modPreferences: {
-					bannedUsers: [],
-					mutedUsers: [],
-					kickedUsers: [],
-					deafenedUsers: [],
-					renamedUsers: [],
-					modHistory: [],
-					lastUpdated: joinedAt,
-				},
-				voiceInteractions: [],
-			});
-
-			// 2. Upsert channel to ensure it exists (metadata only)
+			// 2. Upsert channel to ensure it exists (with proper defaults)
 			await this.dbCore.upsertChannelTransaction(client, {
 				discordId: channel.id,
 				guildId: guildId,
 				channelName: channel.name,
 				position: channel.position,
 				isActive: true,
-				activeUserIds: undefined, // Don't overwrite existing members
-				memberCount: undefined, // Don't overwrite existing count
+				activeUserIds: [], // Ensure array, not NULL
+				memberCount: 0, // Ensure integer, not NULL
 			});
 
 			// 3. Create voice channel session (primary tracking)
@@ -139,7 +133,9 @@ export class VoiceSessionTracker {
 			await this.cache.addChannelMember(channel.id, userId, joinedAt);
 		} catch (error) {
 			// Cache failures shouldn't break voice tracking
-			console.warn(`🔸 Cache update failed for user ${userId}:`, error);
+			if (this.debugEnabled) {
+				console.warn(`🔸 Cache update failed for user ${userId}:`, error);
+			}
 		}
 
 		// 6. Immediate sync to update channel member counts
@@ -168,6 +164,13 @@ export class VoiceSessionTracker {
 		const guildId = channel.guild.id;
 		const leftAt = new Date();
 
+		// Validate all required fields before proceeding
+		if (!userId || !guildId || !channel.id || !channel.name) {
+			throw new Error(
+				`Invalid data: userId=${userId}, guildId=${guildId}, channelId=${channel.id}, channelName=${channel.name}`,
+			);
+		}
+
 		await executeTransaction(async (client) => {
 			// 1. Get current session to calculate duration
 			const currentSession =
@@ -176,25 +179,60 @@ export class VoiceSessionTracker {
 					userId,
 				);
 
-			if (currentSession && currentSession.channelId === channel.id) {
-				const joinedAt =
-					currentSession.joinedAt instanceof Date
-						? currentSession.joinedAt
-						: new Date(currentSession.joinedAt);
-				const duration = Math.floor(
-					(leftAt.getTime() - joinedAt.getTime()) / 1000,
-				);
+			if (currentSession) {
+				if (currentSession.channelId === channel.id) {
+					const joinedAt =
+						currentSession.joinedAt instanceof Date
+							? currentSession.joinedAt
+							: new Date(currentSession.joinedAt);
+					const duration = Math.floor(
+						(leftAt.getTime() - joinedAt.getTime()) / 1000,
+					);
 
-				// 2. End voice channel session
-				await this.dbCore.endVoiceChannelSessionTransaction(
-					client,
-					userId,
-					channel.id,
-					leftAt,
-					duration,
-				);
+					// End voice channel session
+					await this.dbCore.endVoiceChannelSessionTransaction(
+						client,
+						userId,
+						channel.id,
+						leftAt,
+						duration,
+					);
 
-				// 3. Member tracking now handled by voice_channel_sessions table
+					if (this.debugEnabled) {
+						console.log(
+							`🔸 Closed session for user ${userId} in channel ${channel.name}`,
+						);
+					}
+				} else {
+					// User was in a different channel, close that session too
+					const joinedAt =
+						currentSession.joinedAt instanceof Date
+							? currentSession.joinedAt
+							: new Date(currentSession.joinedAt);
+					const duration = Math.floor(
+						(leftAt.getTime() - joinedAt.getTime()) / 1000,
+					);
+
+					await this.dbCore.endVoiceChannelSessionTransaction(
+						client,
+						userId,
+						currentSession.channelId,
+						leftAt,
+						duration,
+					);
+
+					if (this.debugEnabled) {
+						console.log(
+							`🔸 Closed session for user ${userId} in different channel ${currentSession.channelId}`,
+						);
+					}
+				}
+			} else {
+				if (this.debugEnabled) {
+					console.log(
+						`🔸 No active session found for user ${userId} leaving channel ${channel.name}`,
+					);
+				}
 			}
 		});
 
@@ -204,7 +242,9 @@ export class VoiceSessionTracker {
 			await this.cache.removeChannelMember(channel.id, userId);
 		} catch (error) {
 			// Cache failures shouldn't break voice tracking
-			console.warn(`🔸 Cache cleanup failed for user ${userId}:`, error);
+			if (this.debugEnabled) {
+				console.warn(`🔸 Cache cleanup failed for user ${userId}:`, error);
+			}
 		}
 
 		// 5. Immediate sync to update channel member counts
@@ -226,8 +266,40 @@ export class VoiceSessionTracker {
 		oldChannel: VoiceChannel,
 		newChannel: VoiceChannel,
 	): Promise<void> {
+		if (!member || !oldChannel || !newChannel) {
+			throw new Error("Member, oldChannel, and newChannel are required");
+		}
+
+		const isBot = member.user.bot;
+
+		// Validate all required fields before proceeding
+		if (
+			!member.id ||
+			!oldChannel.id ||
+			!oldChannel.name ||
+			!newChannel.id ||
+			!newChannel.name
+		) {
+			throw new Error(
+				`Invalid data: userId=${member.id}, oldChannelId=${oldChannel.id}, oldChannelName=${oldChannel.name}, newChannelId=${newChannel.id}, newChannelName=${newChannel.name}`,
+			);
+		}
+
 		// Handle as leave + join in single transaction
 		await executeTransaction(async (client) => {
+			// Proactively end any other active sessions for this user across other channels
+			await client.query(
+				`
+					UPDATE voice_channel_sessions
+					SET 
+						is_active = FALSE,
+						left_at = COALESCE(left_at, CURRENT_TIMESTAMP),
+						duration = COALESCE(duration, GREATEST(0, EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - joined_at))::int)),
+						updated_at = CURRENT_TIMESTAMP
+					WHERE user_id = $1 AND is_active = TRUE AND channel_id NOT IN ($2, $3)
+				`,
+				[member.id, oldChannel.id, newChannel.id],
+			);
 			// Leave old channel
 			const leftAt = new Date();
 			const currentSession =
@@ -258,42 +330,45 @@ export class VoiceSessionTracker {
 
 			// Join new channel
 			const joinedAt = new Date();
-			await this.dbCore.upsertUserTransaction(client, {
-				discordId: member.id,
-				guildId: newChannel.guild.id,
-				bot: Boolean(member.user.bot),
-				username: member.user.username || "Unknown",
-				displayName: member.displayName || member.user.username || "Unknown",
-				nickname: member.nickname || undefined,
-				discriminator:
-					(member.user as { discriminator?: string })?.discriminator || "0000",
-				avatar: member.user.avatar || undefined,
-				status: member.presence?.status || undefined,
-				roles: Array.from(member.roles?.cache?.keys?.() || []),
-				joinedAt: member.joinedAt || joinedAt,
-				lastSeen: joinedAt,
-				avatarHistory: [],
-				usernameHistory: [],
-				displayNameHistory: [],
-				nicknameHistory: [],
-				statusHistory: [],
-				emoji: undefined,
-				title: undefined,
-				summary: undefined,
-				keywords: [],
-				notes: [],
-				relationships: [],
-				modPreferences: {
-					bannedUsers: [],
-					mutedUsers: [],
-					kickedUsers: [],
-					deafenedUsers: [],
-					renamedUsers: [],
-					modHistory: [],
-					lastUpdated: joinedAt,
-				},
-				voiceInteractions: [],
-			});
+			if (!isBot) {
+				await this.dbCore.upsertUserTransaction(client, {
+					discordId: member.id,
+					guildId: newChannel.guild.id,
+					bot: false,
+					username: member.user.username || "Unknown",
+					displayName: member.displayName || member.user.username || "Unknown",
+					nickname: member.nickname || undefined,
+					discriminator:
+						(member.user as { discriminator?: string })?.discriminator ||
+						"0000",
+					avatar: member.user.avatar || undefined,
+					status: member.presence?.status || undefined,
+					roles: Array.from(member.roles?.cache?.keys?.() || []),
+					joinedAt: member.joinedAt || joinedAt,
+					lastSeen: joinedAt,
+					avatarHistory: [],
+					usernameHistory: [],
+					displayNameHistory: [],
+					nicknameHistory: [],
+					statusHistory: [],
+					emoji: undefined,
+					title: undefined,
+					summary: undefined,
+					keywords: [],
+					notes: [],
+					relationships: [],
+					modPreferences: {
+						bannedUsers: [],
+						mutedUsers: [],
+						kickedUsers: [],
+						deafenedUsers: [],
+						renamedUsers: [],
+						modHistory: [],
+						lastUpdated: joinedAt,
+					},
+					voiceInteractions: [],
+				});
+			}
 
 			await this.dbCore.upsertChannelTransaction(client, {
 				discordId: newChannel.id,
