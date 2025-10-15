@@ -81,7 +81,7 @@ export class OpenAIManager {
 
 		try {
 			const systemPrompt =
-				"You are a helpful AI assistant. Provide clear, accurate, and helpful responses to user questions.";
+				"You are a helpful AI assistant providing concise responses for Discord embeds. Format your responses using Discord's formatting features:\n\n- Use **bold** for section headers and subtitles\n- Use *italics* for emphasis on key terms\n- NO bullet points - use paragraph format instead\n- Keep responses concise and focused\n- Structure: **Subtitle** followed by relevant context\n- Avoid lengthy explanations - be direct and informative\n- Each section should be 1-2 sentences maximum";
 			const response = await this.model.invoke([
 				{ role: "system", content: systemPrompt },
 				{ role: "user", content: prompt },
@@ -195,7 +195,7 @@ export class OpenAIManager {
 
 		try {
 			const systemPrompt =
-				"You are a fact-checking AI assistant. Analyze the given information and provide accurate, well-researched facts. If something cannot be verified, clearly state that. Always be objective and cite sources when possible.";
+				"You are a fact-checking AI assistant providing concise responses for Discord embeds. Analyze the given information and provide accurate, well-researched facts. Format your response using Discord's formatting features:\n\n- Use **bold** for section headers and subtitles\n- Use *italics* for emphasis on key terms\n- NO bullet points - use paragraph format instead\n- Structure: **Subtitle** followed by relevant context on the next line\n- Keep responses concise and focused\n- If something cannot be verified, clearly state that\n- Always be objective and cite sources when possible\n- Each section should be 1-2 sentences maximum\n- Format like: **Claim Analysis** followed by assessment, **Evidence** followed by specific facts/data/sources that support or refute the claim, **Conclusion** followed by verdict\n- The Evidence section must contain actual supporting facts, not just descriptions";
 			const response = await this.model.invoke([
 				{ role: "system", content: systemPrompt },
 				{
@@ -257,6 +257,84 @@ export class OpenAIManager {
 				success: false,
 				content: "",
 				error: "Failed to find sources for the claim. Please try again later.",
+			};
+		}
+	}
+
+	async defineTerm(prompt: string, userId: string): Promise<AIResponse> {
+		if (!this.checkRateLimit(userId)) {
+			return {
+				success: false,
+				content: "",
+				error:
+					"Rate limit exceeded. Please wait before making another request.",
+			};
+		}
+
+		try {
+			const systemPrompt =
+				"You are a helpful AI assistant specialized in providing clear, concise definitions for Discord embeds. When given a term, concept, or phrase, provide a precise and easy-to-understand definition. Format your response using Discord's formatting features:\n\n- Use **bold** for section headers and subtitles\n- Use *italics* for emphasis on key terms\n- NO bullet points - use paragraph format instead\n- Keep definitions focused and informative\n- Structure: **Subtitle** followed by relevant context\n- If the term has multiple meanings, mention the most common ones briefly\n- Each section should be 1-2 sentences maximum";
+			const response = await this.model.invoke([
+				{ role: "system", content: systemPrompt },
+				{
+					role: "user",
+					content: `Please define: ${prompt}`,
+				},
+			]);
+
+			const content =
+				typeof response.content === "string"
+					? response.content
+					: String(response.content);
+			return {
+				success: true,
+				content: this.truncateResponse(content),
+			};
+		} catch (error) {
+			console.error("🔸 Error in defineTerm:", error);
+			return {
+				success: false,
+				content: "",
+				error: "Failed to define the term. Please try again later.",
+			};
+		}
+	}
+
+	async provideContext(prompt: string, userId: string): Promise<AIResponse> {
+		if (!this.checkRateLimit(userId)) {
+			return {
+				success: false,
+				content: "",
+				error:
+					"Rate limit exceeded. Please wait before making another request.",
+			};
+		}
+
+		try {
+			const systemPrompt =
+				"You are a helpful AI assistant specialized in providing comprehensive context and background information for Discord embeds. When given a topic, provide relevant background information in a format suitable for Discord embeds. Use Discord's formatting features:\n\n- Use **bold** for section headers and subtitles\n- Use *italics* for emphasis on key terms\n- NO bullet points - use paragraph format instead\n- Keep responses concise and focused\n- Structure: **Subtitle** followed by relevant context\n- Avoid lengthy explanations - be direct and informative\n- Focus on the most important context that helps understanding\n- Each section should be 1-2 sentences maximum";
+			const response = await this.model.invoke([
+				{ role: "system", content: systemPrompt },
+				{
+					role: "user",
+					content: `Please provide context for: ${prompt}`,
+				},
+			]);
+
+			const content =
+				typeof response.content === "string"
+					? response.content
+					: String(response.content);
+			return {
+				success: true,
+				content: this.truncateResponse(content),
+			};
+		} catch (error) {
+			console.error("🔸 Error in provideContext:", error);
+			return {
+				success: false,
+				content: "",
+				error: "Failed to provide context. Please try again later.",
 			};
 		}
 	}

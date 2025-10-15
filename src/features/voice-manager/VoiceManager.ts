@@ -569,37 +569,53 @@ export class VoiceManager implements IVoiceManager {
 				for (const channel of voiceChannels) {
 					const voiceChannel = channel as VoiceChannel;
 
-					// Try to fetch fresh position from Discord API to avoid cache issues
+					// Check if this channel was recently created or repositioned (within last 2 minutes)
+					// If so, don't overwrite position with potentially stale Discord API data
+					const channelAge = Date.now() - voiceChannel.createdTimestamp;
+					const isRecentlyCreated = channelAge < 120000; // 2 minutes
+
 					let finalPosition = voiceChannel.position;
-					try {
-						const freshChannel = await guild.channels.fetch(voiceChannel.id);
-						if (freshChannel?.isVoiceBased()) {
-							finalPosition = freshChannel.position;
-							if (finalPosition !== voiceChannel.position) {
-								console.log(
-									`🔄 Position updated for ${voiceChannel.name}: ${voiceChannel.position} → ${finalPosition}`,
-								);
-							}
-						}
-					} catch (error) {
-						console.warn(
-							`🔸 Failed to fetch fresh position for ${voiceChannel.name}:`,
-							error,
+					let shouldUpdatePosition = true;
+
+					if (isRecentlyCreated) {
+						console.log(
+							`🔍 DEBUG: Skipping position update for recently created channel "${voiceChannel.name}" (age: ${channelAge}ms)`,
 						);
+						shouldUpdatePosition = false;
+					} else {
+						// Try to fetch fresh position from Discord API to avoid cache issues
+						try {
+							const freshChannel = await guild.channels.fetch(voiceChannel.id);
+							if (freshChannel?.isVoiceBased()) {
+								finalPosition = freshChannel.position;
+								if (finalPosition !== voiceChannel.position) {
+									console.log(
+										`🔄 Position updated for ${voiceChannel.name}: ${voiceChannel.position} → ${finalPosition}`,
+									);
+								}
+							}
+						} catch (error) {
+							console.warn(
+								`🔸 Failed to fetch fresh position for ${voiceChannel.name}:`,
+								error,
+							);
+						}
 					}
 
 					// Ensure channel is upserted during sync so DB reflects Discord
-					// Always use Discord's actual position - Discord is source of truth
+					// Only update position if channel is not recently created
 					try {
 						console.log(
-							`🔍 DEBUG: Sync operation updating channel "${voiceChannel.name}" at position ${finalPosition}`,
+							`🔍 DEBUG: Sync operation updating channel "${voiceChannel.name}" at position ${finalPosition} (updatePosition: ${shouldUpdatePosition})`,
 						);
 
 						await this.dbCore.upsertChannel({
 							discordId: voiceChannel.id,
 							guildId: guild.id,
 							channelName: voiceChannel.name,
-							position: finalPosition, // Use fresh position from Discord API
+							position: shouldUpdatePosition
+								? finalPosition
+								: voiceChannel.position, // Use current position if not updating
 							isActive: true,
 							activeUserIds: Array.from(voiceChannel.members.keys()),
 							memberCount: voiceChannel.members.size,

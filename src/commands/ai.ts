@@ -8,6 +8,105 @@ import { OpenAIManager } from "../features/ai-assistant/OpenAIManager";
 import type { Command } from "../types";
 import { isGuildMember } from "../types";
 
+interface DiscordField {
+	name: string;
+	value: string;
+	inline?: boolean;
+}
+
+interface StructuredContent {
+	description?: string;
+	fields: DiscordField[];
+}
+
+function normalizeBullets(text: string): string {
+	// Replace various bullet styles with consistent filled bullet (•)
+	return text
+		.replace(/^[\s]*[o○◦‣⁃▪▫‥][\s]*/gm, "• ") // Replace unfilled bullets
+		.replace(/^[\s]*[-–—][\s]*/gm, "• ") // Replace dashes
+		.replace(/^[\s]*[∗][\s]*/gm, "• ") // Replace asterisk bullets
+		.replace(/^[\s]*[→][\s]*/gm, "• ") // Replace arrow bullets
+		.replace(/^[\s]*[▪][\s]*/gm, "• ") // Replace square bullets
+		.replace(/^[\s]*[▫][\s]*/gm, "• "); // Replace hollow square bullets
+}
+
+function parseContentForDiscord(content: string): StructuredContent {
+	const lines = content.split("\n");
+	const result: StructuredContent = {
+		fields: [],
+	};
+
+	let currentField: DiscordField | null = null;
+	const descriptionLines: string[] = [];
+	let isInDescription = true;
+
+	for (const line of lines) {
+		const trimmedLine = normalizeBullets(line.trim());
+
+		// Check if this is a bold header (potential field name)
+		if (
+			trimmedLine.startsWith("**") &&
+			trimmedLine.endsWith("**") &&
+			trimmedLine.length > 4
+		) {
+			// Save previous field if exists
+			if (currentField) {
+				result.fields.push(currentField);
+			}
+
+			// Start new field
+			const fieldName = trimmedLine.slice(2, -2); // Remove **
+			currentField = {
+				name: fieldName,
+				value: "",
+				inline: false,
+			};
+			isInDescription = false;
+		}
+		// Check if this is a bullet point or content line
+		else if (
+			trimmedLine.startsWith("•") ||
+			(trimmedLine.length > 0 && !trimmedLine.startsWith("**"))
+		) {
+			if (currentField) {
+				// Add to current field
+				if (currentField.value) {
+					currentField.value += "\n";
+				}
+				currentField.value += trimmedLine;
+			} else if (isInDescription) {
+				// Add to description
+				descriptionLines.push(trimmedLine);
+			}
+		}
+		// Empty line - continue current context
+		else if (trimmedLine === "") {
+			if (currentField && currentField.value) {
+				currentField.value += "\n";
+			} else if (isInDescription) {
+				descriptionLines.push("");
+			}
+		}
+	}
+
+	// Save final field
+	if (currentField) {
+		result.fields.push(currentField);
+	}
+
+	// Set description if we have content
+	if (descriptionLines.length > 0) {
+		result.description = descriptionLines.join("\n").trim();
+	}
+
+	// If no fields were created but we have content, put it all in description
+	if (result.fields.length === 0 && content.trim()) {
+		result.description = content.trim();
+	}
+
+	return result;
+}
+
 let openaiManager: OpenAIManager | null = null;
 
 // Initialize OpenAIManager lazily
@@ -38,6 +137,8 @@ export const aiCommand: Command = {
 					{ name: "Imagine", value: "imagine" },
 					{ name: "Fact Check", value: "fact-check" },
 					{ name: "Source", value: "source" },
+					{ name: "Define", value: "define" },
+					{ name: "Context", value: "context" },
 				),
 		)
 		.addStringOption((option) =>
@@ -102,6 +203,18 @@ export const aiCommand: Command = {
 					color = 0x3c3d7d; // Same as starboard
 					break;
 				}
+				case "define": {
+					response = await manager.defineTerm(prompt, userId);
+					title = `Define gpt-4o-mini\n*${prompt}*`;
+					color = 0x3c3d7d; // Same as starboard
+					break;
+				}
+				case "context": {
+					response = await manager.provideContext(prompt, userId);
+					title = `Context gpt-4o-mini\n*${prompt}*`;
+					color = 0x3c3d7d; // Same as starboard
+					break;
+				}
 				default: {
 					await interaction.editReply({
 						content: "🔸 Invalid AI mode specified!",
@@ -132,9 +245,22 @@ export const aiCommand: Command = {
 				})
 				.setTimestamp();
 
-			// Only add description for non-imagine modes
+			// Parse and structure content for Discord embeds
 			if (mode !== "imagine") {
-				embed.setDescription(response.content);
+				const structuredContent = parseContentForDiscord(response.content);
+
+				if (structuredContent.description) {
+					embed.setDescription(structuredContent.description);
+				}
+
+				// Add fields for better organization
+				structuredContent.fields.forEach((field) => {
+					embed.addFields({
+						name: field.name,
+						value: field.value,
+						inline: field.inline || false,
+					});
+				});
 			}
 
 			// Add image if available (prefer attachment to avoid URL expiry)

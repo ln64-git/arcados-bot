@@ -964,12 +964,18 @@ export class DatabaseCore {
 		const updates: Array<{ channelId: string; newPosition: number }> = [];
 
 		for (const channel of channels) {
+			const channelData = channel as {
+				discordId: string;
+				channelName: string;
+				position: number;
+			};
+
 			// Skip the channel we're excluding (if provided)
-			if (excludeChannelId && (channel as any).discordId === excludeChannelId) {
+			if (excludeChannelId && channelData.discordId === excludeChannelId) {
 				continue;
 			}
 
-			const currentPosition = (channel as any).position;
+			const currentPosition = channelData.position;
 			let newPosition = currentPosition;
 
 			// If this position is already used, find the next available position
@@ -980,7 +986,7 @@ export class DatabaseCore {
 			// If position changed, add to updates
 			if (newPosition !== currentPosition) {
 				updates.push({
-					channelId: (channel as any).discordId,
+					channelId: channelData.discordId,
 					newPosition,
 				});
 			}
@@ -995,6 +1001,9 @@ export class DatabaseCore {
 			);
 
 			for (const update of updates) {
+				console.log(
+					`🔧 Updating channel ${update.channelId} position to ${update.newPosition}`,
+				);
 				await executeQuery(
 					`
 					UPDATE ${this.tables.channels}
@@ -1028,8 +1037,12 @@ export class DatabaseCore {
 
 			// Reassign positions sequentially
 			for (let i = 0; i < channels.length; i++) {
-				const channel = channels[i] as any;
-				const currentPosition = channel.position;
+				const channelData = channels[i] as {
+					discordId: string;
+					channelName: string;
+					position: number;
+				};
+				const currentPosition = channelData.position;
 				const newPosition = i;
 
 				// If position needs to change
@@ -1040,7 +1053,7 @@ export class DatabaseCore {
 						SET position = $1, updated_at = CURRENT_TIMESTAMP
 						WHERE discord_id = $2 AND guild_id = $3
 					`,
-						[newPosition, channel.discordId, guildId],
+						[newPosition, channelData.discordId, guildId],
 					);
 					compactedCount++;
 				}
@@ -1735,12 +1748,24 @@ export class DatabaseCore {
 				WHERE is_active = TRUE
 			`,
 		);
-		return rows.map((r) => ({
-			userId: (r as any).userId ?? (r as any).user_id,
-			channelId: (r as any).channelId ?? (r as any).channel_id,
-			channelName: (r as any).channelName ?? (r as any).channel_name,
-			guildId: (r as any).guildId ?? (r as any).guild_id,
-		}));
+		return rows.map((r) => {
+			const row = r as {
+				userId?: string;
+				user_id?: string;
+				channelId?: string;
+				channel_id?: string;
+				channelName?: string;
+				channel_name?: string;
+				guildId?: string;
+				guild_id?: string;
+			};
+			return {
+				userId: row.userId ?? row.user_id ?? "",
+				channelId: row.channelId ?? row.channel_id ?? "",
+				channelName: row.channelName ?? row.channel_name ?? "",
+				guildId: row.guildId ?? row.guild_id ?? "",
+			};
+		});
 	}
 
 	// ==================== MAINTENANCE ====================
