@@ -523,6 +523,9 @@ export class VoiceManager implements IVoiceManager {
 	private async syncAllVoiceChannelsFromDiscord(): Promise<void> {
 		try {
 			console.log("🔄 Syncing voice channels from Discord API...");
+			console.log(
+				`🔍 DEBUG: Sync operation started at ${new Date().toISOString()}`,
+			);
 			let totalSynced = 0;
 			let totalFixed = 0;
 
@@ -588,6 +591,10 @@ export class VoiceManager implements IVoiceManager {
 					// Ensure channel is upserted during sync so DB reflects Discord
 					// Always use Discord's actual position - Discord is source of truth
 					try {
+						console.log(
+							`🔍 DEBUG: Sync operation updating channel "${voiceChannel.name}" at position ${finalPosition}`,
+						);
+
 						await this.dbCore.upsertChannel({
 							discordId: voiceChannel.id,
 							guildId: guild.id,
@@ -599,6 +606,10 @@ export class VoiceManager implements IVoiceManager {
 							status: undefined,
 							lastStatusChange: undefined,
 						});
+
+						console.log(
+							`🔍 DEBUG: Sync operation completed for "${voiceChannel.name}"`,
+						);
 					} catch (error) {
 						console.warn(
 							`🔸 Failed to upsert channel ${voiceChannel.id} during sync:`,
@@ -693,6 +704,11 @@ export class VoiceManager implements IVoiceManager {
 			console.log(
 				`✅ Discord sync completed: ${totalSynced} channels checked, ${totalFixed} sessions fixed`,
 			);
+			console.log(
+				`🔍 DEBUG: Sync operation completed at ${new Date().toISOString()}`,
+			);
+
+			// Position conflicts will be resolved by the sync operation itself
 		} catch (error) {
 			console.error("🔸 Error syncing voice channels from Discord:", error);
 		}
@@ -1773,14 +1789,16 @@ export class VoiceManager implements IVoiceManager {
 		const oldVoiceChannel = oldChannel as VoiceChannel;
 		const newVoiceChannel = newChannel as VoiceChannel;
 
-		// Determine if topic/status or name changed
+		// Determine if topic/status, name, or position changed
 		const oldTopic = (oldVoiceChannel as unknown as { topic?: string }).topic;
 		const newTopic = (newVoiceChannel as unknown as { topic?: string }).topic;
 		const nameChanged = oldVoiceChannel.name !== newVoiceChannel.name;
 		const statusChanged = oldTopic !== newTopic;
+		const positionChanged =
+			oldVoiceChannel.position !== newVoiceChannel.position;
 
 		// If nothing relevant changed, exit early
-		if (!nameChanged && !statusChanged) {
+		if (!nameChanged && !statusChanged && !positionChanged) {
 			return;
 		}
 
@@ -1830,6 +1848,16 @@ export class VoiceManager implements IVoiceManager {
 			);
 		}
 
+		// Log position changes
+		if (positionChanged) {
+			console.log(
+				`🔍 Channel position changed: "${newVoiceChannel.name}" position ${oldVoiceChannel.position} → ${newVoiceChannel.position}`,
+			);
+			console.log(
+				`🔍 DEBUG: Position change detected for channel ${newVoiceChannel.id}`,
+			);
+		}
+
 		// Check if this channel has an owner (regardless of naming pattern)
 		// This allows us to capture renames for any channel that has been claimed/owned
 		const owner = await this.getChannelOwner(newVoiceChannel.id);
@@ -1847,6 +1875,10 @@ export class VoiceManager implements IVoiceManager {
 		// Update channel (name/status) in database (all channels are tracked)
 		try {
 			if (newVoiceChannel.guild.id === config.guildId) {
+				console.log(
+					`🔍 DEBUG: handleChannelUpdate updating database for "${newVoiceChannel.name}" at position ${newVoiceChannel.position}`,
+				);
+
 				await this.dbCore.upsertChannel({
 					discordId: newVoiceChannel.id,
 					guildId: newVoiceChannel.guild.id,
@@ -1858,6 +1890,10 @@ export class VoiceManager implements IVoiceManager {
 					status: newTopic || undefined,
 					lastStatusChange: statusChanged ? new Date() : undefined,
 				});
+
+				console.log(
+					`🔍 DEBUG: handleChannelUpdate database update completed for "${newVoiceChannel.name}"`,
+				);
 			}
 		} catch (error) {
 			console.warn(`🔸 Failed to update channel name in database: ${error}`);
@@ -2036,24 +2072,35 @@ export class VoiceManager implements IVoiceManager {
 			return;
 		}
 
-		// Let Discord handle position placement
-		// Request placement directly above spawn channel (spawnPosition - 1)
+		// Let Discord handle position placement automatically
+		// Don't specify position - let Discord decide where to place it
 		const spawnChannelPosition = spawnChannel.position;
-		const newChannelPosition = Math.max(0, spawnChannelPosition - 1);
 
-		console.log(
-			`🔹 Creating channel "${channelName}" requesting position ${newChannelPosition} (spawn channel is at position ${spawnChannelPosition})`,
-		);
-
-		// Check if spawn channel is private/locked (privacy setting)
+		// Check if spawn channel is private for permission copying
 		const spawnChannelPermissions = spawnChannel.permissionOverwrites.cache.get(
 			member.guild.roles.everyone.id,
 		);
-
-		// A channel is considered private if @everyone has Connect denied OR ViewChannel denied
 		const isSpawnChannelPrivate =
 			spawnChannelPermissions?.deny.has(PermissionFlagsBits.Connect) ||
 			spawnChannelPermissions?.deny.has(PermissionFlagsBits.ViewChannel);
+
+		console.log(
+			`🔹 Creating channel "${channelName}" - letting Discord decide position (spawn channel is at position ${spawnChannelPosition})`,
+		);
+
+		// DEBUG: Log current Discord positions before channel creation
+		console.log("🔍 DEBUG: Discord positions BEFORE channel creation:");
+		const beforeChannels = Array.from(member.guild.channels.cache.values())
+			.filter((c) => c.isVoiceBased() && c.type === ChannelType.GuildVoice)
+			.map((c) => c as VoiceChannel)
+			.sort((a, b) => a.position - b.position);
+		beforeChannels.forEach((channel, index) => {
+			console.log(
+				`  ${index + 1}. ${channel.name} (${channel.id}) - Position: ${channel.position}`,
+			);
+		});
+
+		// Use the privacy check we already did above
 
 		console.log(`🔹 Spawn channel ${spawnChannel.name} privacy check:`, {
 			hasEveryoneOverwrite: !!spawnChannelPermissions,
@@ -2101,13 +2148,20 @@ export class VoiceManager implements IVoiceManager {
 			permissionOverwrites = []; // Clear the array since we'll handle this separately
 		}
 
+		console.log(
+			"🔍 DEBUG: About to create channel - letting Discord decide position",
+		);
+
 		const channel = await member.guild.channels.create({
 			name: channelName,
 			type: ChannelType.GuildVoice,
 			parent: member.voice.channel?.parent,
-			position: newChannelPosition,
 			permissionOverwrites,
 		});
+
+		console.log(
+			`🔍 DEBUG: Channel created! Discord assigned position: ${channel.position}`,
+		);
 
 		// Clone permissions from spawn channel if it was private
 		if (isSpawnChannelPrivate) {
@@ -2125,29 +2179,82 @@ export class VoiceManager implements IVoiceManager {
 			}
 		}
 
-		await member.voice.setChannel(channel as VoiceChannel);
-		await this.setChannelOwner(channel.id, member.id, member.guild.id);
+		// Log Discord's position assignment
+		console.log(
+			`🔹 Discord assigned position ${channel.position} to "${channel.name}"`,
+		);
 
-		// Track channel in database immediately (no delay needed)
+		// Force correct positioning: wink's Channel should be below Cantina, above spawn
+		// Find Cantina channel and place wink's Channel below it
+		const cantinaChannel = Array.from(member.guild.channels.cache.values())
+			.filter((c) => c.isVoiceBased() && c.type === ChannelType.GuildVoice)
+			.map((c) => c as VoiceChannel)
+			.find((c) => c.name.includes("Cantina"));
+
+		if (cantinaChannel) {
+			const targetPosition = cantinaChannel.position + 1; // Below Cantina
+			if (channel.position !== targetPosition) {
+				console.log(
+					`🔧 Correcting position for "${channel.name}" from ${channel.position} to ${targetPosition} (below Cantina at ${cantinaChannel.position})`,
+				);
+				try {
+					await channel.setPosition(targetPosition);
+					console.log(
+						`🔹 Position corrected: "${channel.name}" now at position ${channel.position}`,
+					);
+				} catch (error) {
+					console.warn(
+						`🔸 Failed to correct position for "${channel.name}": ${error}`,
+					);
+				}
+			}
+		} else {
+			console.warn("🔸 Could not find Cantina channel for position reference");
+		}
+
+		// DEBUG: Log Discord positions AFTER channel creation and any corrections
+		console.log("🔍 DEBUG: Discord positions AFTER channel creation:");
+		const afterChannels = Array.from(member.guild.channels.cache.values())
+			.filter((c) => c.isVoiceBased() && c.type === ChannelType.GuildVoice)
+			.map((c) => c as VoiceChannel)
+			.sort((a, b) => a.position - b.position);
+		afterChannels.forEach((channel, index) => {
+			console.log(
+				`  ${index + 1}. ${channel.name} (${channel.id}) - Position: ${channel.position}`,
+			);
+		});
+
+		// Track channel in database AFTER position correction
 		try {
 			if (channel.guild.id === config.guildId) {
+				console.log(
+					`🔍 DEBUG: About to update database with channel "${channel.name}" at FINAL position ${channel.position}`,
+				);
+
 				await this.dbCore.upsertChannel({
 					discordId: channel.id,
 					guildId: channel.guild.id,
 					channelName: channel.name,
-					position: channel.position, // Use Discord's actual position after creation
+					position: channel.position, // Use Discord's FINAL position after correction
 					isActive: true,
 					activeUserIds: [member.id],
 					memberCount: 1,
 				});
 
 				console.log(
-					`🔹 Tracked new channel "${channel.name}" at Discord position ${channel.position} (calculated: ${newChannelPosition})`,
+					`🔹 Tracked new channel "${channel.name}" at FINAL Discord position ${channel.position}`,
+				);
+
+				console.log(
+					`🔍 DEBUG: Database update completed for channel "${channel.name}"`,
 				);
 			}
 		} catch (error) {
 			console.warn(`🔸 Failed to track new channel in database: ${error}`);
 		}
+
+		await member.voice.setChannel(channel as VoiceChannel);
+		await this.setChannelOwner(channel.id, member.id, member.guild.id);
 
 		// Apply user preferences immediately (no delay)
 		await this.applyUserPreferencesToChannel(channel.id, member.id);

@@ -1076,27 +1076,19 @@ export class DatabaseCore {
 						[channel.guildId, channel.position, channel.discordId],
 					);
 
-					// If there's a position conflict, log it and find the next available position
+					// If there's a position conflict, log it but accept Discord's position
 					if (conflictCheck.rows.length > 0) {
 						const conflictingChannel = conflictCheck.rows[0];
 						console.warn(
 							`⚠️  Position conflict detected: ${channel.channelName} (${channel.discordId}) wants position ${channel.position}, but ${conflictingChannel.channel_name} (${conflictingChannel.discord_id}) already has it`,
 						);
 
-						// Find the next available position
-						const maxPositionResult = await client.query(
-							`
-							SELECT COALESCE(MAX(position), -1) as max_pos
-							FROM ${this.tables.channels}
-							WHERE guild_id = $1 AND is_active = TRUE
-						`,
-							[channel.guildId],
-						);
-
-						finalPosition = maxPositionResult.rows[0].max_pos + 1;
+						// Accept Discord's position assignment - Discord is the source of truth
+						// The sync operation will handle position corrections later
 						console.log(
-							`🔧 Resolved position conflict: ${channel.channelName} assigned position ${finalPosition}`,
+							`🔧 Accepting Discord's position ${channel.position} for ${channel.channelName} - Discord is source of truth`,
 						);
+						finalPosition = channel.position; // Accept Discord's assignment
 					}
 				}
 

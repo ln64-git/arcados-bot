@@ -108,16 +108,36 @@ export class VoiceSessionTracker {
 			}
 
 			// 2. Upsert channel to ensure it exists (with proper defaults)
+			// Only update if this is a new channel or if we need to update member counts
 			if (guildId === config.guildId) {
+				console.log(
+					`🔍 DEBUG: VoiceSessionTracker updating channel "${channel.name}" at position ${channel.position}`,
+				);
+
+				// Check if this channel was just created (within last 30 seconds)
+				// If so, don't update position to avoid overwriting corrected position
+				const channelAge = Date.now() - channel.createdTimestamp;
+				const isNewChannel = channelAge < 30000; // 30 seconds
+
+				if (isNewChannel) {
+					console.log(
+						`🔍 DEBUG: Skipping position update for new channel "${channel.name}" (age: ${channelAge}ms)`,
+					);
+				}
+
 				await this.dbCore.upsertChannelTransaction(client, {
 					discordId: channel.id,
 					guildId: guildId,
 					channelName: channel.name,
-					position: channel.position,
+					position: isNewChannel ? undefined : channel.position, // Don't update position for new channels
 					isActive: true,
 					activeUserIds: [], // Ensure array, not NULL
 					memberCount: 0, // Ensure integer, not NULL
 				});
+
+				console.log(
+					`🔍 DEBUG: VoiceSessionTracker database update completed for "${channel.name}"`,
+				);
 			}
 
 			// 3. Create voice channel session (primary tracking)
