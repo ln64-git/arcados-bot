@@ -12,6 +12,7 @@ export interface BotConfig {
 	botOwnerId?: string;
 	spawnChannelIds?: string[];
 	excludedChannelIds?: string[];
+	permanentChannelIds?: string[];
 	starboardChannelId?: string;
 
 	// Database settings
@@ -53,6 +54,9 @@ function validateConfig(): BotConfig {
 			: undefined,
 		excludedChannelIds: process.env.EXCLUDED_CHANNEL_IDS
 			? process.env.EXCLUDED_CHANNEL_IDS.split(",").map((id) => id.trim())
+			: undefined,
+		permanentChannelIds: process.env.PERMANENT_CHANNEL_IDS
+			? process.env.PERMANENT_CHANNEL_IDS.split(",").map((id) => id.trim())
 			: undefined,
 		starboardChannelId: process.env.STARBOARD_CHANNEL_ID,
 

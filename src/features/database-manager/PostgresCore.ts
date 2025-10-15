@@ -1007,64 +1007,84 @@ export class DatabaseCore {
 		}
 	}
 
+	/**
+	 * Compacts channel positions to eliminate gaps
+	 * Reassigns positions sequentially (0, 1, 2, 3...) while preserving order
+	 */
+	async compactChannelPositions(guildId: string): Promise<number> {
+		return this.withPerformanceTracking(async () => {
+			// Get all active channels ordered by their current position
+			const channels = await executeQuery(
+				`
+				SELECT discord_id, channel_name, position
+				FROM ${this.tables.channels}
+				WHERE guild_id = $1 AND is_active = TRUE
+				ORDER BY position ASC, created_at ASC
+			`,
+				[guildId],
+			);
+
+			let compactedCount = 0;
+
+			// Reassign positions sequentially
+			for (let i = 0; i < channels.length; i++) {
+				const channel = channels[i] as any;
+				const currentPosition = channel.position;
+				const newPosition = i;
+
+				// If position needs to change
+				if (currentPosition !== newPosition) {
+					await executeQuery(
+						`
+						UPDATE ${this.tables.channels}
+						SET position = $1, updated_at = CURRENT_TIMESTAMP
+						WHERE discord_id = $2 AND guild_id = $3
+					`,
+						[newPosition, channel.discordId, guildId],
+					);
+					compactedCount++;
+				}
+			}
+
+			if (compactedCount > 0) {
+				console.log(
+					`🔧 Compacted ${compactedCount} channel positions in guild ${guildId}`,
+				);
+			}
+
+			return compactedCount;
+		}, `compactChannelPositions(${guildId})`);
+	}
+
 	async upsertChannel(
 		channel: Omit<Channel, "id" | "createdAt" | "updatedAt">,
 	): Promise<void> {
 		return this.withPerformanceTracking(async () => {
-			// Use transaction to ensure atomic position management
+			// Use transaction to ensure atomic updates
 			await executeTransaction(async (client) => {
-				// First, ensure existing channels have unique positions
-				await this.ensureUniqueChannelPositions(client, channel.guildId);
-
-				// Check if this channel already exists
-				const existingChannel = await executeQueryOne(
-					`
-					SELECT discord_id, position
-					FROM ${this.tables.channels}
-					WHERE discord_id = $1 AND guild_id = $2
-				`,
-					[channel.discordId, channel.guildId],
-				);
-
+				// Check for position conflicts before upserting
 				let finalPosition = channel.position;
 
-				// If channel exists, check for position conflicts
-				if (existingChannel) {
-					const conflictCheck = await executeQuery(
+				if (channel.position !== undefined) {
+					// Check if another channel already has this position
+					const conflictCheck = await client.query(
 						`
-						SELECT discord_id
+						SELECT discord_id, channel_name
 						FROM ${this.tables.channels}
 						WHERE guild_id = $1 AND position = $2 AND discord_id != $3 AND is_active = TRUE
 					`,
 						[channel.guildId, channel.position, channel.discordId],
 					);
 
-					// If there's a position conflict, find the next available position
-					if (conflictCheck.length > 0) {
-						const maxPosition = await executeQueryOne(
-							`
-							SELECT COALESCE(MAX(position), -1) as max_pos
-							FROM ${this.tables.channels}
-							WHERE guild_id = $1 AND is_active = TRUE
-						`,
-							[channel.guildId],
+					// If there's a position conflict, log it and find the next available position
+					if (conflictCheck.rows.length > 0) {
+						const conflictingChannel = conflictCheck.rows[0];
+						console.warn(
+							`⚠️  Position conflict detected: ${channel.channelName} (${channel.discordId}) wants position ${channel.position}, but ${conflictingChannel.channel_name} (${conflictingChannel.discord_id}) already has it`,
 						);
-						finalPosition = ((maxPosition as any)?.maxPos ?? -1) + 1;
-					}
-				} else {
-					// For new channels, check if the desired position is available
-					const conflictCheck = await executeQuery(
-						`
-						SELECT discord_id
-						FROM ${this.tables.channels}
-						WHERE guild_id = $1 AND position = $2 AND is_active = TRUE
-					`,
-						[channel.guildId, channel.position],
-					);
 
-					// If position is taken, find the next available position
-					if (conflictCheck.length > 0) {
-						const maxPosition = await executeQueryOne(
+						// Find the next available position
+						const maxPositionResult = await client.query(
 							`
 							SELECT COALESCE(MAX(position), -1) as max_pos
 							FROM ${this.tables.channels}
@@ -1072,11 +1092,15 @@ export class DatabaseCore {
 						`,
 							[channel.guildId],
 						);
-						finalPosition = ((maxPosition as any)?.maxPos ?? -1) + 1;
+
+						finalPosition = maxPositionResult.rows[0].max_pos + 1;
+						console.log(
+							`🔧 Resolved position conflict: ${channel.channelName} assigned position ${finalPosition}`,
+						);
 					}
 				}
 
-				// Upsert the channel with the secure position
+				// Upsert the channel with the resolved position
 				const query = `
 					INSERT INTO ${this.tables.channels} (
 						discord_id, guild_id, channel_name, position, is_active, active_user_ids, member_count, status, last_status_change

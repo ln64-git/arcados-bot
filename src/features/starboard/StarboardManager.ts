@@ -771,7 +771,7 @@ export class StarboardManager {
 				return stats;
 			}
 
-			console.log("🔄 Starting starboard sync (last 24 hours)...");
+			console.log("🔄 Starting starboard sync (last 1 hour)...");
 
 			// Get all text channels in the guild
 			const textChannels = guild.channels.cache.filter(
@@ -783,12 +783,12 @@ export class StarboardManager {
 				try {
 					if (!channel.isTextBased()) continue;
 
-					// Fetch messages from the last 24 hours only
+					// Fetch messages from the last 1 hour only
 					const messages = new Map();
 					let lastMessageId: string | undefined;
 					let totalFetched = 0;
 					const maxMessages = 1000; // Fetch up to 1000 messages per channel
-					const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
+					const oneHourAgo = Date.now() - 60 * 60 * 1000; // 1 hour ago
 
 					while (totalFetched < maxMessages) {
 						const fetchLimit = Math.min(100, maxMessages - totalFetched);
@@ -801,8 +801,8 @@ export class StarboardManager {
 
 						let foundOldMessage = false;
 						for (const [id, message] of batch) {
-							// Stop if we've reached messages older than 24 hours
-							if (message.createdTimestamp < twentyFourHoursAgo) {
+							// Stop if we've reached messages older than 1 hour
+							if (message.createdTimestamp < oneHourAgo) {
 								foundOldMessage = true;
 								break;
 							}
@@ -812,7 +812,7 @@ export class StarboardManager {
 						totalFetched += batch.size;
 						lastMessageId = batch.last()?.id;
 
-						// Stop if we found messages older than 24 hours
+						// Stop if we found messages older than 1 hour
 						if (foundOldMessage) break;
 
 						// If we got less than requested, we've reached the end
@@ -887,7 +887,7 @@ export class StarboardManager {
 			}
 
 			console.log(
-				`✅ Starboard sync complete (last 24h): ${stats.added} added, ${stats.updated} updated, ${stats.scanned} scanned`,
+				`✅ Starboard sync complete (last 1h): ${stats.added} added, ${stats.updated} updated, ${stats.scanned} scanned`,
 			);
 			return stats;
 		} catch (error) {
