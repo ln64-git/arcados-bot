@@ -11,22 +11,22 @@ import type {
 	VoiceSession,
 } from "../../types/database";
 import { GuildSyncEngine } from "./GuildSyncEngine";
-import { MigrationManager } from "./MigrationManager";
-import { DatabaseCore } from "./PostgresCore";
+import { SurrealCore } from "./SurrealCore";
+import { SurrealLiveQueries } from "./SurrealLiveQueries";
 
 export class DatabaseManager {
 	private client: Client;
-	private core: DatabaseCore;
+	private core: SurrealCore;
 	private syncer: GuildSyncEngine;
-	private migrationManager: MigrationManager;
+	private liveQueries: SurrealLiveQueries;
 	private watchInterval: NodeJS.Timeout | null = null;
 	private isWatching = false;
 
 	constructor(client: Client) {
 		this.client = client;
-		this.core = new DatabaseCore();
+		this.core = SurrealCore.getInstance();
 		this.syncer = new GuildSyncEngine(this.core);
-		this.migrationManager = new MigrationManager();
+		this.liveQueries = new SurrealLiveQueries();
 	}
 
 	// ==================== INITIALIZATION ====================
@@ -35,25 +35,8 @@ export class DatabaseManager {
 		// Initialize core database
 		await this.core.initialize();
 
-		// Initialize migration manager
-		await this.migrationManager.initialize();
-
-		// Check if migration is needed
-		const needsMigration = await this.migrationManager.isMigrationNeeded();
-		if (needsMigration) {
-			console.log("🔧 Database migration needed, running migration...");
-			const migrationResult =
-				await this.migrationManager.migrateUserPreferencesToUsers();
-			if (migrationResult.success) {
-				console.log(
-					`✅ Migration completed: ${migrationResult.migratedUsers} users, ${migrationResult.migratedPreferences} preferences`,
-				);
-				// Clean up old collections after successful migration
-				await this.migrationManager.cleanupOldCollections();
-			} else {
-				console.error("🔸 Migration failed:", migrationResult.errors);
-			}
-		}
+		// Initialize live queries
+		await this.liveQueries.initialize();
 
 		// Start autonomous watching
 		await this.startAutonomousWatching();
@@ -321,15 +304,15 @@ export class DatabaseManager {
 	// ==================== MIGRATION METHODS ====================
 
 	async getMigrationStatus() {
-		return this.migrationManager.getMigrationStatus();
+		return { success: true, message: "No migration needed for SurrealDB" };
 	}
 
 	async runMigration() {
-		return this.migrationManager.migrateUserPreferencesToUsers();
+		return { success: true, message: "No migration needed for SurrealDB" };
 	}
 
 	async cleanupOldCollections() {
-		return this.migrationManager.cleanupOldCollections();
+		return { success: true, message: "No cleanup needed for SurrealDB" };
 	}
 
 	// Delegate to syncer for sync operations
@@ -391,19 +374,38 @@ export class DatabaseManager {
 			const syncStatus = await this.checkGuildSyncStatus(guild.id);
 			const stats = await this.getGuildStats(guild.id);
 
-			// Get actual Discord data for comparison
-			const discordUsers = guild.memberCount;
-			const discordRoles = guild.roles.cache.size;
+			// Ensure Discord data is fetched
+			await guild.members.fetch();
+			await guild.roles.fetch();
 
-			// Calculate sync percentages using actual database stats
+			// Get actual Discord data for comparison
+			const discordUsers = guild.memberCount || 0;
+			const discordRoles = guild.roles.cache.size || 0;
+
+			// Calculate sync percentages - how much of Discord data is in database
 			const userSyncPercent =
-				stats.totalUsers > 0
+				discordUsers > 0
 					? Math.round((stats.totalUsers / discordUsers) * 100)
-					: 0;
+					: stats.totalUsers > 0
+						? 100
+						: 0;
 			const roleSyncPercent =
-				stats.totalRoles > 0
+				discordRoles > 0
 					? Math.round((stats.totalRoles / discordRoles) * 100)
-					: 0;
+					: stats.totalRoles > 0
+						? 100
+						: 0;
+
+			// Debug logging for sync percentages
+			console.log(
+				`🔍 Sync Debug - Discord: ${discordUsers} users, ${discordRoles} roles`,
+			);
+			console.log(
+				`🔍 Sync Debug - Database: ${stats.totalUsers} users, ${stats.totalRoles} roles`,
+			);
+			console.log(
+				`🔍 Sync Debug - Percentages: ${userSyncPercent}% users, ${roleSyncPercent}% roles`,
+			);
 
 			// Determine health status based on actual data
 			const isHealthy =
@@ -612,6 +614,9 @@ export class DatabaseManager {
 			this.watchInterval = null;
 		}
 		this.isWatching = false;
+
+		// Cleanup live queries
+		await this.liveQueries.cleanup();
 
 		// Cleanup active sessions
 		await this.cleanupActiveSessions();

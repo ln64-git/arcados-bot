@@ -47,26 +47,47 @@ export class GuildSyncEngine {
 		let syncedMessages = 0;
 
 		try {
+			console.log(`🔍 Starting sync for guild: ${guild.name} (${guild.id})`);
+			console.log(`🔍 Force full sync: ${forceFullSync}`);
+
 			// Check if we need a full sync
 			const syncStatus = await this.checkGuildSyncStatus(guild.id);
 			const needsFullSync = forceFullSync || syncStatus.needsFullSync;
 
+			console.log(`🔍 Needs full sync: ${needsFullSync}`);
+			console.log(`🔍 Sync status:`, syncStatus);
+
 			if (needsFullSync) {
+				console.log(`🔍 Starting full sync process...`);
+
 				// Sync roles first
+				console.log(`🔍 Syncing roles...`);
 				const rolesResult = await this.syncRoles(guild);
 				syncedRoles = rolesResult.synced;
 				errors.push(...rolesResult.errors);
+				console.log(
+					`🔍 Roles sync result: ${syncedRoles} synced, ${rolesResult.errors.length} errors`,
+				);
 
 				// Sync users
+				console.log(`🔍 Syncing users...`);
 				const usersResult = await this.syncUsers(guild);
 				syncedUsers = usersResult.synced;
 				errors.push(...usersResult.errors);
+				console.log(
+					`🔍 Users sync result: ${syncedUsers} synced, ${usersResult.errors.length} errors`,
+				);
 
 				// Sync messages
+				console.log(`🔍 Syncing messages...`);
 				const messagesResult = await this.syncMessages(guild, messageLimit);
 				syncedMessages = messagesResult.synced;
 				errors.push(...messagesResult.errors);
+				console.log(
+					`🔍 Messages sync result: ${syncedMessages} synced, ${messagesResult.errors.length} errors`,
+				);
 			} else {
+				console.log(`🔍 Starting incremental sync...`);
 				const incrementalResult = await this.performIncrementalSync(guild);
 				syncedUsers = incrementalResult.syncedUsers;
 				syncedRoles = incrementalResult.syncedRoles;
@@ -74,6 +95,7 @@ export class GuildSyncEngine {
 				errors.push(...incrementalResult.errors);
 			}
 
+			console.log(`🔍 Updating guild sync status...`);
 			// Update guild sync status
 			await this.core.updateGuildSync({
 				guildId: guild.id,
@@ -84,6 +106,9 @@ export class GuildSyncEngine {
 				isFullySynced: true,
 			});
 
+			console.log(
+				`🔍 Sync completed: ${syncedUsers} users, ${syncedRoles} roles, ${syncedMessages} messages`,
+			);
 			return {
 				success: errors.length === 0,
 				syncedUsers,
@@ -116,6 +141,17 @@ export class GuildSyncEngine {
 		let synced = 0;
 
 		try {
+			console.log(`🔍 Fetching roles from guild: ${guild.name}`);
+			console.log(`🔍 Guild roles cache size: ${guild.roles.cache.size}`);
+
+			// Collect all roles for batch processing
+			const roles: Array<
+				Omit<
+					import("../../types/database").Role,
+					"_id" | "createdAt" | "updatedAt"
+				>
+			> = [];
+
 			for (const [, discordRole] of guild.roles.cache) {
 				try {
 					const role: Omit<
@@ -133,11 +169,27 @@ export class GuildSyncEngine {
 						guildId: guild.id,
 					};
 
-					await this.core.upsertRole(role);
-					synced++;
+					roles.push(role);
 				} catch (error) {
 					errors.push(
-						`Failed to sync role ${discordRole.name}: ${error instanceof Error ? error.message : "Unknown error"}`,
+						`Failed to prepare role ${discordRole.name}: ${error instanceof Error ? error.message : "Unknown error"}`,
+					);
+				}
+			}
+
+			console.log(`🔍 Prepared ${roles.length} roles for batch upsert`);
+
+			// Batch upsert all roles at once
+			if (roles.length > 0) {
+				try {
+					console.log(`🔍 Executing batch upsert for ${roles.length} roles`);
+					await this.core.batchUpsertRoles(roles);
+					synced = roles.length;
+					console.log(`🔍 Successfully synced ${synced} roles`);
+				} catch (error) {
+					console.error("🔸 Failed to batch sync roles:", error);
+					errors.push(
+						`Failed to batch sync roles: ${error instanceof Error ? error.message : "Unknown error"}`,
 					);
 				}
 			}
@@ -147,6 +199,9 @@ export class GuildSyncEngine {
 			);
 		}
 
+		console.log(
+			`🔍 Roles sync completed: ${synced} synced, ${errors.length} errors`,
+		);
 		return { synced, errors };
 	}
 
@@ -157,8 +212,23 @@ export class GuildSyncEngine {
 		let synced = 0;
 
 		try {
+			console.log(`🔍 Fetching members from guild: ${guild.name}`);
+			console.log(`🔍 Guild member count: ${guild.memberCount}`);
+			console.log(`🔍 Guild members cache size: ${guild.members.cache.size}`);
+
 			// Fetch all members
 			await guild.members.fetch();
+			console.log(
+				`🔍 After fetch - Guild members cache size: ${guild.members.cache.size}`,
+			);
+
+			// Collect all users for batch processing
+			const users: Array<
+				Omit<
+					import("../../types/database").User,
+					"id" | "createdAt" | "updatedAt"
+				>
+			> = [];
 
 			for (const [, member] of guild.members.cache) {
 				try {
@@ -199,11 +269,27 @@ export class GuildSyncEngine {
 						guildId: guild.id,
 					};
 
-					await this.core.upsertUser(user);
-					synced++;
+					users.push(user);
 				} catch (error) {
 					errors.push(
-						`Failed to sync user ${member.user.username}: ${error instanceof Error ? error.message : "Unknown error"}`,
+						`Failed to prepare user ${member.user.username}: ${error instanceof Error ? error.message : "Unknown error"}`,
+					);
+				}
+			}
+
+			console.log(`🔍 Prepared ${users.length} users for batch upsert`);
+
+			// Batch upsert all users at once
+			if (users.length > 0) {
+				try {
+					console.log(`🔍 Executing batch upsert for ${users.length} users`);
+					await this.core.batchUpsertUsers(users);
+					synced = users.length;
+					console.log(`🔍 Successfully synced ${synced} users`);
+				} catch (error) {
+					console.error("🔸 Failed to batch sync users:", error);
+					errors.push(
+						`Failed to batch sync users: ${error instanceof Error ? error.message : "Unknown error"}`,
 					);
 				}
 			}
@@ -213,6 +299,9 @@ export class GuildSyncEngine {
 			);
 		}
 
+		console.log(
+			`🔍 Users sync completed: ${synced} synced, ${errors.length} errors`,
+		);
 		return { synced, errors };
 	}
 
@@ -224,6 +313,10 @@ export class GuildSyncEngine {
 		let synced = 0;
 
 		try {
+			// Get guild sync status to check lastMessageId
+			const guildSync = await this.core.getGuildSync(guild.id);
+			const lastMessageId = guildSync?.lastMessageId;
+
 			// Get text channels
 			const channels = guild.channels.cache.filter((channel) =>
 				channel.isTextBased(),
@@ -241,6 +334,7 @@ export class GuildSyncEngine {
 					let batchCount = 0;
 					const maxBatches = Math.ceil(limit / 100);
 					let channelSynced = 0;
+					let foundLastMessage = false;
 
 					while (hasMore && batchCount < maxBatches) {
 						const messages = await channel.messages.fetch({
@@ -261,6 +355,13 @@ export class GuildSyncEngine {
 
 						for (const [messageId, message] of messages) {
 							try {
+								// If we've reached the last synced message, stop processing
+								if (lastMessageId && messageId === lastMessageId) {
+									foundLastMessage = true;
+									hasMore = false;
+									break;
+								}
+
 								// Skip messages from bot users
 								if (message.author.bot) {
 									lastMessage = messageId;
@@ -282,6 +383,13 @@ export class GuildSyncEngine {
 								if (message.content.startsWith("m!")) {
 									lastMessage = messageId;
 									continue;
+								}
+
+								// Check if message already exists in database
+								const existingMessage = await this.core.getMessage(messageId);
+								if (existingMessage) {
+									lastMessage = messageId;
+									continue; // Skip already synced messages
 								}
 
 								const dbMessage = this.convertMessageToDB(message);
@@ -310,6 +418,11 @@ export class GuildSyncEngine {
 						batchCount++;
 						if (messages.size < 100) {
 							hasMore = false;
+						}
+
+						// If we found the last synced message, stop processing this channel
+						if (foundLastMessage) {
+							break;
 						}
 
 						// Small delay to prevent rate limiting

@@ -5,7 +5,6 @@ import { getDatabase } from "../features/database-manager/DatabaseConnection.js"
 
 async function debugAggregationQuery() {
 	try {
-		console.log("🔍 Debugging Aggregation Query");
 		console.log("=".repeat(40));
 
 		const channelId = "1423358562683326647";

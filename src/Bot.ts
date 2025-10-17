@@ -10,7 +10,7 @@ import {
 import { config } from "./config";
 import { getRedisClient } from "./features/cache-management/RedisManager";
 import { DatabaseManager } from "./features/database-manager/DatabaseManager";
-import { initializePostgresSchema } from "./features/database-manager/PostgresSchema.js";
+// PostgresSchema removed - using SurrealDB now
 import { memoryManager } from "./features/performance-monitoring/MemoryManager";
 import { speakVoiceCall } from "./features/speak-voice-call/speakVoiceCall";
 import { starboardManager } from "./features/starboard/StarboardManager";
@@ -99,10 +99,10 @@ export class Bot {
 
 			// Initialize VC Logs Watcher
 			try {
-				await initializePostgresSchema();
+				// PostgresSchema initialization removed - SurrealDB schema is handled by DatabaseManager
 				this.vcLogsWatcher = new VCLogsWatcher(
 					this.client,
-					null, // Will need to update VCLogsWatcher to work with PostgreSQL
+					null, // Will need to update VCLogsWatcher to work with SurrealDB
 					"1254696036988092437",
 				);
 				await this.vcLogsWatcher.startWatching();

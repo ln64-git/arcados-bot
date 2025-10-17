@@ -2,15 +2,15 @@ import type { GuildMember, VoiceChannel } from "discord.js";
 import { config, isDevelopment } from "../../config";
 import type { VoiceChannelSession } from "../../types/database";
 import { getCacheManager } from "../cache-management/DiscordDataCache";
-import { executeTransaction } from "../database-manager/PostgresConnection";
-import type { DatabaseCore } from "../database-manager/PostgresCore";
+import { executeTransaction } from "../database-manager/SurrealConnection";
+import type { SurrealCore } from "../database-manager/SurrealCore";
 
 export class VoiceSessionTracker {
-	private dbCore: DatabaseCore;
+	private dbCore: SurrealCore;
 	private cache = getCacheManager();
 	private readonly debugEnabled = isDevelopment;
 
-	constructor(dbCore: DatabaseCore) {
+	constructor(dbCore: SurrealCore) {
 		this.dbCore = dbCore;
 	}
 
@@ -48,19 +48,13 @@ export class VoiceSessionTracker {
 			);
 		}
 
-		await executeTransaction(async (client) => {
+		await executeTransaction(async (surreal) => {
 			// Proactively end any other active sessions for this user in other channels
-			await client.query(
-				`
-					UPDATE voice_channel_sessions
-					SET 
-						is_active = FALSE,
-						left_at = COALESCE(left_at, CURRENT_TIMESTAMP),
-						duration = COALESCE(duration, GREATEST(0, EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - joined_at))::int)),
-						updated_at = CURRENT_TIMESTAMP
-					WHERE user_id = $1 AND is_active = TRUE AND channel_id <> $2
-				`,
-				[userId, channel.id],
+			await this.dbCore.endVoiceChannelSessionTransaction(
+				surreal,
+				userId,
+				channel.id,
+				new Date(),
 			);
 
 			// Note: We don't check for existing session in same channel here
@@ -68,7 +62,7 @@ export class VoiceSessionTracker {
 
 			// 1. Upsert user to ensure they exist (only for non-bots)
 			if (!isBot) {
-				await this.dbCore.upsertUserTransaction(client, {
+				await this.dbCore.upsertUser({
 					discordId: userId,
 					guildId: guildId,
 					bot: false,
@@ -110,10 +104,6 @@ export class VoiceSessionTracker {
 			// 2. Upsert channel to ensure it exists (with proper defaults)
 			// Only update if this is a new channel or if we need to update member counts
 			if (guildId === config.guildId) {
-				console.log(
-					`🔍 DEBUG: VoiceSessionTracker updating channel "${channel.name}" at position ${channel.position}`,
-				);
-
 				// Check if this channel was just created (within last 30 seconds)
 				// If so, don't update position to avoid overwriting corrected position
 				const channelAge = Date.now() - channel.createdTimestamp;
@@ -125,23 +115,19 @@ export class VoiceSessionTracker {
 					);
 				}
 
-				await this.dbCore.upsertChannelTransaction(client, {
+				await this.dbCore.upsertChannel({
 					discordId: channel.id,
 					guildId: guildId,
 					channelName: channel.name,
-					position: isNewChannel ? undefined : channel.position, // Don't update position for new channels
+					position: isNewChannel ? 0 : channel.position, // Use 0 for new channels
 					isActive: true,
 					activeUserIds: [], // Ensure array, not NULL
 					memberCount: 0, // Ensure integer, not NULL
 				});
-
-				console.log(
-					`🔍 DEBUG: VoiceSessionTracker database update completed for "${channel.name}"`,
-				);
 			}
 
 			// 3. Create voice channel session (primary tracking)
-			await this.dbCore.createVoiceChannelSessionTransaction(client, {
+			await this.dbCore.createVoiceChannelSessionTransaction(surreal, {
 				userId: userId,
 				guildId: guildId,
 				channelId: channel.id,
@@ -213,11 +199,11 @@ export class VoiceSessionTracker {
 			);
 		}
 
-		await executeTransaction(async (client) => {
+		await executeTransaction(async (surreal) => {
 			// 1. Get current session to calculate duration
 			const currentSession =
 				await this.dbCore.getCurrentVoiceChannelSessionTransaction(
-					client,
+					surreal,
 					userId,
 					guildId,
 				);
@@ -246,7 +232,7 @@ export class VoiceSessionTracker {
 
 					// End voice channel session
 					await this.dbCore.endVoiceChannelSessionTransaction(
-						client,
+						surreal,
 						userId,
 						channel.id,
 						leftAt,
@@ -267,7 +253,7 @@ export class VoiceSessionTracker {
 					);
 
 					await this.dbCore.endVoiceChannelSessionTransaction(
-						client,
+						surreal,
 						userId,
 						currentSession.channelId,
 						leftAt,
@@ -338,18 +324,24 @@ export class VoiceSessionTracker {
 
 		// Handle as leave + join in single transaction
 		await executeTransaction(async (client) => {
+			// Calculate duration in application code
+			const now = new Date();
+			const duration = Math.floor(
+				(now.getTime() - oldChannel.createdAt.getTime()) / 1000,
+			);
+
 			// Proactively end any other active sessions for this user across other channels
 			await client.query(
 				`
-					UPDATE voice_channel_sessions
+					UPDATE voiceChannelSessions
 					SET 
-						is_active = FALSE,
-						left_at = COALESCE(left_at, CURRENT_TIMESTAMP),
-						duration = COALESCE(duration, GREATEST(0, EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - joined_at))::int)),
-						updated_at = CURRENT_TIMESTAMP
-					WHERE user_id = $1 AND is_active = TRUE AND channel_id NOT IN ($2, $3)
+						isActive = false,
+						leftAt = time::now(),
+						duration = $1,
+						updatedAt = time::now()
+					WHERE userId = $2 AND isActive = true AND channelId NOT IN ($3, $4)
 				`,
-				[member.id, oldChannel.id, newChannel.id],
+				[duration, member.id, oldChannel.id, newChannel.id],
 			);
 			// Leave old channel
 			const leftAt = new Date();

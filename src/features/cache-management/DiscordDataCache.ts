@@ -8,7 +8,7 @@ import type {
 	VoiceChannelConfig,
 	VoiceChannelOwner,
 } from "../../types";
-import { DatabaseCore } from "../database-manager/PostgresCore";
+import { SurrealCore } from "../database-manager/SurrealCore";
 import { RedisCache, getRedisClient } from "./RedisManager";
 
 export class DiscordDataCache {
@@ -267,9 +267,9 @@ export class DiscordDataCache {
 			}
 		}
 
-		// Fallback to PostgreSQL via DatabaseCore
+		// Fallback to SurrealDB via SurrealCore
 		try {
-			const dbCore = new DatabaseCore();
+			const dbCore = SurrealCore.getInstance();
 			const user = await dbCore.getUser(userId, guildId);
 			if (user?.modPreferences) {
 				const typedPreferences =
@@ -307,9 +307,9 @@ export class DiscordDataCache {
 			);
 		}
 
-		// Persist to PostgreSQL via DatabaseCore
+		// Persist to SurrealDB via SurrealCore
 		try {
-			const dbCore = new DatabaseCore();
+			const dbCore = SurrealCore.getInstance();
 			await dbCore.updateModPreferences(preferences.userId, preferences);
 		} catch (error) {
 			console.warn(

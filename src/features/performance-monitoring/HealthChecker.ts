@@ -1,5 +1,5 @@
 import { getRedisClient } from "../cache-management/RedisManager";
-import { DatabaseCore } from "../database-manager/PostgresCore";
+import { SurrealCore } from "../database-manager/SurrealCore";
 import { getEventQueue } from "../event-system/EventQueue";
 import { memoryManager } from "./MemoryManager";
 
@@ -54,9 +54,9 @@ export class HealthChecker {
 		// Check database connection
 		let databaseHealthy = false;
 		try {
-			// TODO: Update to use PostgreSQL - temporarily disabled
-			const db = null as any;
-			await db.admin().ping();
+			// Test SurrealDB connection with a simple query
+			const db = SurrealCore.getInstance();
+			await db.initialize(); // This will test the connection
 			databaseHealthy = true;
 		} catch (error) {
 			errors.push(`Database: ${error}`);

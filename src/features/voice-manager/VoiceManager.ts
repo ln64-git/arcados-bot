@@ -31,7 +31,7 @@ import type {
 import type { VoiceInteraction } from "../../types/database";
 import { clonePermissionOverwrites } from "../../utils/permissions";
 import { getCacheManager } from "../cache-management/DiscordDataCache";
-import { DatabaseCore } from "../database-manager/PostgresCore";
+import { SurrealCore } from "../database-manager/SurrealCore";
 import { getEventQueue } from "../event-system/EventQueue";
 import { ChannelNamingService } from "./ChannelNamingService";
 import { VoiceSessionTracker } from "./VoiceSessionTracker";
@@ -53,7 +53,7 @@ export class VoiceManager implements IVoiceManager {
 	private sessionReconcileTimer: NodeJS.Timeout | null = null;
 	private isWatchingOrphanedChannels = false;
 	private isReconciling = false; // Prevent concurrent reconciliation
-	private dbCore: DatabaseCore;
+	private dbCore: SurrealCore;
 	private sessionTracker: VoiceSessionTracker;
 	private namingService: ChannelNamingService;
 	private activeVoiceSessions: Map<string, VoiceInteraction> = new Map();
@@ -75,7 +75,7 @@ export class VoiceManager implements IVoiceManager {
 
 	constructor(client: Client) {
 		this.client = client;
-		this.dbCore = new DatabaseCore();
+		this.dbCore = SurrealCore.getInstance();
 		this.sessionTracker = new VoiceSessionTracker(this.dbCore);
 		this.namingService = new ChannelNamingService();
 		this.setupEventHandlers();
@@ -103,10 +103,13 @@ export class VoiceManager implements IVoiceManager {
 				if (channel.isVoiceBased() && channel.type === ChannelType.GuildVoice) {
 					const activeSessions =
 						await this.dbCore.getActiveVoiceChannelSessions(channel.id);
-					const userSessionMap = new Map<string, typeof activeSessions>();
+
+					// Ensure activeSessions is an array
+					const sessions = Array.isArray(activeSessions) ? activeSessions : [];
+					const userSessionMap = new Map<string, typeof sessions>();
 
 					// Group sessions by user
-					for (const session of activeSessions) {
+					for (const session of sessions) {
 						if (!userSessionMap.has(session.userId)) {
 							userSessionMap.set(session.userId, []);
 						}
@@ -522,10 +525,6 @@ export class VoiceManager implements IVoiceManager {
 	 */
 	private async syncAllVoiceChannelsFromDiscord(): Promise<void> {
 		try {
-			console.log("🔄 Syncing voice channels from Discord API...");
-			console.log(
-				`🔍 DEBUG: Sync operation started at ${new Date().toISOString()}`,
-			);
 			let totalSynced = 0;
 			let totalFixed = 0;
 
@@ -578,9 +577,6 @@ export class VoiceManager implements IVoiceManager {
 					let shouldUpdatePosition = true;
 
 					if (isRecentlyCreated) {
-						console.log(
-							`🔍 DEBUG: Skipping position update for recently created channel "${voiceChannel.name}" (age: ${channelAge}ms)`,
-						);
 						shouldUpdatePosition = false;
 					} else {
 						// Try to fetch fresh position from Discord API to avoid cache issues
@@ -605,10 +601,6 @@ export class VoiceManager implements IVoiceManager {
 					// Ensure channel is upserted during sync so DB reflects Discord
 					// Only update position if channel is not recently created
 					try {
-						console.log(
-							`🔍 DEBUG: Sync operation updating channel "${voiceChannel.name}" at position ${finalPosition} (updatePosition: ${shouldUpdatePosition})`,
-						);
-
 						await this.dbCore.upsertChannel({
 							discordId: voiceChannel.id,
 							guildId: guild.id,
@@ -622,10 +614,6 @@ export class VoiceManager implements IVoiceManager {
 							status: undefined,
 							lastStatusChange: undefined,
 						});
-
-						console.log(
-							`🔍 DEBUG: Sync operation completed for "${voiceChannel.name}"`,
-						);
 					} catch (error) {
 						console.warn(
 							`🔸 Failed to upsert channel ${voiceChannel.id} during sync:`,
@@ -719,9 +707,6 @@ export class VoiceManager implements IVoiceManager {
 
 			console.log(
 				`✅ Discord sync completed: ${totalSynced} channels checked, ${totalFixed} sessions fixed`,
-			);
-			console.log(
-				`🔍 DEBUG: Sync operation completed at ${new Date().toISOString()}`,
 			);
 
 			// Position conflicts will be resolved by the sync operation itself
@@ -1866,12 +1851,6 @@ export class VoiceManager implements IVoiceManager {
 
 		// Log position changes
 		if (positionChanged) {
-			console.log(
-				`🔍 Channel position changed: "${newVoiceChannel.name}" position ${oldVoiceChannel.position} → ${newVoiceChannel.position}`,
-			);
-			console.log(
-				`🔍 DEBUG: Position change detected for channel ${newVoiceChannel.id}`,
-			);
 		}
 
 		// Check if this channel has an owner (regardless of naming pattern)
@@ -1891,10 +1870,6 @@ export class VoiceManager implements IVoiceManager {
 		// Update channel (name/status) in database (all channels are tracked)
 		try {
 			if (newVoiceChannel.guild.id === config.guildId) {
-				console.log(
-					`🔍 DEBUG: handleChannelUpdate updating database for "${newVoiceChannel.name}" at position ${newVoiceChannel.position}`,
-				);
-
 				await this.dbCore.upsertChannel({
 					discordId: newVoiceChannel.id,
 					guildId: newVoiceChannel.guild.id,
@@ -1906,10 +1881,6 @@ export class VoiceManager implements IVoiceManager {
 					status: newTopic || undefined,
 					lastStatusChange: statusChanged ? new Date() : undefined,
 				});
-
-				console.log(
-					`🔍 DEBUG: handleChannelUpdate database update completed for "${newVoiceChannel.name}"`,
-				);
 			}
 		} catch (error) {
 			console.warn(`🔸 Failed to update channel name in database: ${error}`);
@@ -2104,8 +2075,6 @@ export class VoiceManager implements IVoiceManager {
 			`🔹 Creating channel "${channelName}" - letting Discord decide position (spawn channel is at position ${spawnChannelPosition})`,
 		);
 
-		// DEBUG: Log current Discord positions before channel creation
-		console.log("🔍 DEBUG: Discord positions BEFORE channel creation:");
 		const beforeChannels = Array.from(member.guild.channels.cache.values())
 			.filter((c) => c.isVoiceBased() && c.type === ChannelType.GuildVoice)
 			.map((c) => c as VoiceChannel)
@@ -2164,10 +2133,6 @@ export class VoiceManager implements IVoiceManager {
 			permissionOverwrites = []; // Clear the array since we'll handle this separately
 		}
 
-		console.log(
-			"🔍 DEBUG: About to create channel - letting Discord decide position",
-		);
-
 		const channel = await member.guild.channels.create({
 			name: channelName,
 			type: ChannelType.GuildVoice,
@@ -2175,11 +2140,6 @@ export class VoiceManager implements IVoiceManager {
 			permissionOverwrites,
 		});
 
-		console.log(
-			`🔍 DEBUG: Channel created! Discord assigned position: ${channel.position}`,
-		);
-
-		// Clone permissions from spawn channel if it was private
 		if (isSpawnChannelPrivate) {
 			try {
 				await clonePermissionOverwrites(
@@ -2228,8 +2188,6 @@ export class VoiceManager implements IVoiceManager {
 			console.warn("🔸 Could not find Cantina channel for position reference");
 		}
 
-		// DEBUG: Log Discord positions AFTER channel creation and any corrections
-		console.log("🔍 DEBUG: Discord positions AFTER channel creation:");
 		const afterChannels = Array.from(member.guild.channels.cache.values())
 			.filter((c) => c.isVoiceBased() && c.type === ChannelType.GuildVoice)
 			.map((c) => c as VoiceChannel)
@@ -2243,10 +2201,6 @@ export class VoiceManager implements IVoiceManager {
 		// Track channel in database AFTER position correction
 		try {
 			if (channel.guild.id === config.guildId) {
-				console.log(
-					`🔍 DEBUG: About to update database with channel "${channel.name}" at FINAL position ${channel.position}`,
-				);
-
 				await this.dbCore.upsertChannel({
 					discordId: channel.id,
 					guildId: channel.guild.id,
@@ -2259,10 +2213,6 @@ export class VoiceManager implements IVoiceManager {
 
 				console.log(
 					`🔹 Tracked new channel "${channel.name}" at FINAL Discord position ${channel.position}`,
-				);
-
-				console.log(
-					`🔍 DEBUG: Database update completed for channel "${channel.name}"`,
 				);
 			}
 		} catch (error) {

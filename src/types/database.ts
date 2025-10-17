@@ -1,8 +1,8 @@
 import type { APIEmbed } from "discord.js";
 
-// User tracking
+// User tracking (document-first structure)
 export interface User {
-	id?: number;
+	id?: string; // SurrealDB record ID
 	bot: boolean;
 	discordId: string;
 	guildId: string;
@@ -15,11 +15,11 @@ export interface User {
 	roles: string[]; // Role IDs
 	joinedAt: Date;
 	lastSeen: Date;
-	avatarHistory: AvatarHistory[]; // Previous avatars
+	avatarHistory: AvatarHistory[]; // Previous avatars (embedded)
 	usernameHistory: string[]; // Track username changes
 	displayNameHistory: string[]; // Track display name changes
 	nicknameHistory: string[]; // Track nickname changes
-	statusHistory: UserStatus[]; // Track text status changes
+	statusHistory: UserStatus[]; // Track text status changes (embedded)
 
 	// metadata
 	emoji?: string;
@@ -27,16 +27,16 @@ export interface User {
 	summary?: string;
 	keywords?: string[];
 	notes?: string[];
-	relationships: Relationship[];
+	relationships: Relationship[]; // Embedded relationships
 
-	// moderation preferences
+	// moderation preferences (embedded object)
 	modPreferences: ModPreferences;
 
-	// NEW: Voice interaction history
+	// Voice interaction history (embedded)
 	voiceInteractions: VoiceInteraction[];
 
-	createdAt: Date;
-	updatedAt: Date;
+	createdAt?: Date;
+	updatedAt?: Date;
 }
 
 // Voice interaction tracking
@@ -104,19 +104,19 @@ export interface UserStatus {
 
 // Role tracking
 export interface Role {
-	id?: number;
+	id?: string; // SurrealDB record ID
 	discordId: string;
 	name: string;
 	color: number;
 	mentionable: boolean;
 	guildId: string;
-	createdAt: Date;
-	updatedAt: Date;
+	createdAt?: Date;
+	updatedAt?: Date;
 }
 
-// Message tracking
+// Message tracking (document-first structure)
 export interface Message {
-	id?: number;
+	id?: string; // SurrealDB record ID
 	discordId: string;
 	content: string;
 	authorId: string;
@@ -126,12 +126,12 @@ export interface Message {
 	editedAt?: Date;
 	deletedAt?: Date;
 	mentions: string[]; // User IDs mentioned
-	reactions: Reaction[];
+	reactions: Reaction[]; // Embedded reactions
 	replyTo?: string; // Message ID this is replying to
-	attachments: Attachment[];
-	embeds: APIEmbed[]; // Discord embed objects
-	createdAt: Date;
-	updatedAt: Date;
+	attachments: Attachment[]; // Embedded attachments
+	embeds: APIEmbed[]; // Discord embed objects (embedded)
+	createdAt?: Date;
+	updatedAt?: Date;
 }
 
 // Reaction tracking
@@ -154,7 +154,7 @@ export interface Attachment {
 
 // Simple relationship between two users
 export interface Relationship {
-	id?: number;
+	id?: string; // SurrealDB record ID
 	userId1: string;
 	userId2: string;
 	guildId: string;
@@ -183,8 +183,8 @@ export interface Relationship {
 	strength: "weak" | "moderate" | "strong";
 	lastInteraction: Date;
 
-	createdAt: Date;
-	updatedAt: Date;
+	createdAt?: Date;
+	updatedAt?: Date;
 }
 
 // Simple interaction types
@@ -192,7 +192,7 @@ export type InteractionType = "mention" | "reply" | "reaction" | "voice";
 
 // Basic interaction record
 export interface InteractionRecord {
-	id?: number;
+	id?: string; // SurrealDB record ID
 	fromUserId: string;
 	toUserId: string;
 	interactionType: InteractionType;
@@ -200,13 +200,13 @@ export interface InteractionRecord {
 	weight: number;
 	messageId?: string; // Reference to original message
 	channelId?: string; // Channel where interaction occurred
-	createdAt: Date;
-	updatedAt: Date;
+	createdAt?: Date;
+	updatedAt?: Date;
 }
 
 // Guild sync status
 export interface GuildSync {
-	id?: number;
+	id?: string; // SurrealDB record ID
 	guildId: string;
 	lastSyncAt: Date;
 	lastMessageId?: string; // Last message processed
@@ -214,29 +214,29 @@ export interface GuildSync {
 	totalMessages: number;
 	totalRoles: number;
 	isFullySynced: boolean;
-	createdAt: Date;
-	updatedAt: Date;
+	createdAt?: Date;
+	updatedAt?: Date;
 }
 
-// Channel tracking
+// Channel tracking (document-first structure)
 export interface Channel {
-	id?: number;
+	id?: string; // SurrealDB record ID
 	discordId: string;
 	guildId: string;
 	channelName: string;
 	position: number; // Channel position in the guild's channel list
 	isActive: boolean;
-	activeUserIds?: string[]; // Array of user Discord IDs currently in the channel (optional for upserts)
-	memberCount?: number; // Denormalized count for quick queries (optional for upserts)
+	activeUserIds: string[]; // Array of user Discord IDs currently in the channel (embedded)
+	memberCount: number; // Denormalized count for quick queries
 	status?: string; // Discord channel status/topic (voice channel description)
 	lastStatusChange?: Date; // Timestamp of the last status change
-	createdAt: Date;
-	updatedAt: Date;
+	createdAt?: Date;
+	updatedAt?: Date;
 }
 
 // Voice channel session tracking
 export interface VoiceChannelSession {
-	id?: number;
+	id?: string; // SurrealDB record ID
 	userId: string;
 	guildId: string;
 	channelId: string;
@@ -245,11 +245,11 @@ export interface VoiceChannelSession {
 	leftAt?: Date; // null if user is still in the channel
 	duration?: number; // Duration in seconds (calculated when user leaves)
 	isActive: boolean; // true if user is currently in the channel
-	createdAt: Date;
-	updatedAt: Date;
+	createdAt?: Date;
+	updatedAt?: Date;
 }
 
-// Database tables interface (PostgreSQL)
+// Database tables interface (SurrealDB)
 export interface DatabaseTables {
 	users: string;
 	roles: string;
