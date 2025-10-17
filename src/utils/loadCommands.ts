@@ -4,7 +4,6 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Collection } from "discord.js";
 import dotenv from "dotenv";
-import { memoryManager } from "../features/performance-monitoring/MemoryManager";
 
 dotenv.config();
 
@@ -19,7 +18,6 @@ const commandLoadTimes = new Map<string, number>();
 export async function loadCommands(
 	commandsCollection: Collection<string, unknown>,
 ) {
-	const startTime = memoryManager.startTimer();
 	const commands: unknown[] = [];
 	const commandsPath = path.join(__dirname, "../commands");
 
@@ -45,13 +43,8 @@ export async function loadCommands(
 		}
 
 		try {
-			const fileStartTime = memoryManager.startTimer();
 			const commandModule = await import(pathToFileURL(filePath).toString());
-			const fileLoadTime = memoryManager.endTimer(fileStartTime);
-
-			commandLoadTimes.set(file, fileLoadTime);
 			commandCache.set(cacheKey, commandModule);
-
 			return commandModule;
 		} catch (error) {
 			console.error(`🔸 Error loading command file ${file}:`, error);
@@ -89,9 +82,6 @@ export async function loadCommands(
 			console.warn(`🔸 Skipping ${file}: missing 'data' or 'execute'`);
 		}
 	}
-
-	const totalLoadTime = memoryManager.endTimer(startTime);
-	memoryManager.recordCommandExecutionTime(totalLoadTime);
 
 	return commands; // Important for later registration
 }

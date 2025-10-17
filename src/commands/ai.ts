@@ -5,9 +5,11 @@ import {
 	SlashCommandBuilder,
 } from "discord.js";
 import { config } from "../config";
-import { OpenAIManager } from "../features/ai-assistant/OpenAIManager";
+import {
+	type AIResponse,
+	OpenAIManager,
+} from "../features/ai-assistant/OpenAIManager";
 import type { Command } from "../types";
-import { isGuildMember } from "../types";
 
 interface DiscordField {
 	name: string;
@@ -152,7 +154,7 @@ export const aiCommand: Command = {
 
 	async execute(interaction: ChatInputCommandInteraction) {
 		const member = interaction.member;
-		if (!isGuildMember(member)) {
+		if (!member || !interaction.guild) {
 			await interaction.reply({
 				content: "🔸 This command can only be used in a server!",
 				ephemeral: true,
@@ -180,12 +182,7 @@ export const aiCommand: Command = {
 			const manager = getOpenAIManager();
 			const userId = interaction.user.id;
 
-			let response: {
-				success: boolean;
-				content: string;
-				error?: string;
-				imageUrl?: string;
-			};
+			let response: AIResponse;
 			let title: string;
 			let color: number;
 
@@ -286,7 +283,15 @@ export const aiCommand: Command = {
 				embed.setImage(response.imageUrl);
 			}
 
-			await interaction.editReply({ embeds: [embed], files });
+			const replyOptions: {
+				embeds: EmbedBuilder[];
+				files?: AttachmentBuilder[];
+			} = { embeds: [embed] };
+			if (files) {
+				replyOptions.files = files;
+			}
+
+			await interaction.editReply(replyOptions);
 		} catch (error) {
 			console.error("🔸 Error in AI command:", error);
 			await interaction.editReply({

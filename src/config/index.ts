@@ -54,9 +54,9 @@ function validateConfig(): BotConfig {
 		botToken: process.env.BOT_TOKEN as string,
 
 		// Optional Discord settings
-		guildId: process.env.GUILD_ID,
+		guildId: process.env.GUILD_ID || undefined,
 		botPrefix: process.env.BOT_PREFIX || "!",
-		botOwnerId: process.env.BOT_OWNER_ID,
+		botOwnerId: process.env.BOT_OWNER_ID || undefined,
 		spawnChannelIds: process.env.SPAWN_CHANNEL_IDS
 			? process.env.SPAWN_CHANNEL_IDS.split(",").map((id) => id.trim())
 			: undefined,
@@ -66,22 +66,22 @@ function validateConfig(): BotConfig {
 		permanentChannelIds: process.env.PERMANENT_CHANNEL_IDS
 			? process.env.PERMANENT_CHANNEL_IDS.split(",").map((id) => id.trim())
 			: undefined,
-		starboardChannelId: process.env.STARBOARD_CHANNEL_ID,
+		starboardChannelId: process.env.STARBOARD_CHANNEL_ID || undefined,
 
 		// Database settings
-		postgresUrl: process.env.POSTGRES_URL,
+		postgresUrl: process.env.POSTGRES_URL || undefined,
 		dbName: process.env.DB_NAME || "arcados",
 
 		// SurrealDB settings
-		surrealUrl: process.env.SURREAL_URL,
+		surrealUrl: process.env.SURREAL_URL || undefined,
 		surrealNamespace: process.env.SURREAL_NAMESPACE || "arcados-bot",
 		surrealDatabase: process.env.SURREAL_DATABASE || "arcados-bot",
 		surrealUsername: process.env.SURREAL_USERNAME || "root",
 		surrealPassword: process.env.SURREAL_PASSWORD || "root",
-		surrealToken: process.env.SURREAL_TOKEN, // For OAuth2 authentication
+		surrealToken: process.env.SURREAL_TOKEN || undefined, // For OAuth2 authentication
 
 		// Cache settings
-		redisUrl: process.env.REDIS_URL,
+		redisUrl: process.env.REDIS_URL || undefined,
 
 		// Development
 		nodeEnv:
@@ -90,9 +90,9 @@ function validateConfig(): BotConfig {
 		port: Number.parseInt(process.env.PORT || "3000", 10),
 
 		// Optional integrations
-		webhookUrl: process.env.WEBHOOK_URL,
-		openaiApiKey: process.env.OPENAI_API_KEY,
-		youtubeApiKey: process.env.YOUTUBE_API_KEY,
+		webhookUrl: process.env.WEBHOOK_URL || undefined,
+		openaiApiKey: process.env.OPENAI_API_KEY || undefined,
+		youtubeApiKey: process.env.YOUTUBE_API_KEY || undefined,
 	};
 
 	// Validate node environment

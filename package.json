@@ -5,10 +5,9 @@
 	"main": "src/main.ts",
 	"type": "module",
 	"scripts": {
-		"start": "npx tsx --expose-gc --max-old-space-size=512 src/main.ts",
+		"start": "npx tsx src/main.ts",
 		"start:dev": "npx tsx src/main.ts",
 		"dev": "npx tsx --watch src/main.ts",
-		"dev:gc": "npx tsx --expose-gc --max-old-space-size=512 --watch src/main.ts",
 		"build": "tsc",
 		"build:prod": "tsc && npm run clean:build",
 		"clean": "rm -rf dist",
@@ -16,24 +15,11 @@
 		"format": "biome format --write .",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
-		"test:perf": "NODE_ENV=development npx tsx src/features/performance-monitoring/PerformanceTest.ts",
-		"health": "NODE_ENV=development npx tsx -e \"import { healthChecker } from './src/features/performance-monitoring/HealthChecker.js'; healthChecker.getDetailedReport().then(console.log);\"",
-		"memory": "NODE_ENV=development npx tsx -e \"import { memoryManager } from './src/features/performance-monitoring/MemoryManager.js'; console.log('Memory Stats:', memoryManager.getCurrentMemoryUsage());\"",
-		"monitor": "NODE_ENV=development npx tsx -e \"import { performanceTest } from './src/features/performance-monitoring/PerformanceTest.js'; performanceTest.runAllTests();\"",
-		"start:prod": "NODE_ENV=production node --expose-gc --max-old-space-size=1024 dist/main.js",
-		"start:debug": "NODE_ENV=development npx tsx --inspect --expose-gc src/main.ts",
-		"benchmark": "NODE_ENV=development npx tsx -e \"import { performanceTest } from './src/features/performance-monitoring/PerformanceTest.js'; performanceTest.runAllTests().then(() => process.exit(0));\"",
-		"dev:monitor": "concurrently \"npm run dev\" \"npm run monitor\"",
-		"dev:full": "concurrently \"npm run dev:gc\" \"npm run monitor\"",
-		"stats": "NODE_ENV=development npx tsx -e \"import { getCommandStats } from './src/utils/loadCommands.js'; console.log('Command Stats:', getCommandStats());\"",
-		"gc": "NODE_ENV=development npx tsx -e \"if (global.gc) { global.gc(); console.log('Garbage collection triggered'); } else { console.log('GC not available'); }\""
+		"start:prod": "NODE_ENV=production node dist/main.js",
+		"start:debug": "NODE_ENV=development npx tsx --inspect src/main.ts",
+		"stats": "NODE_ENV=development npx tsx -e \"import { getCommandStats } from './src/utils/loadCommands.js'; console.log('Command Stats:', getCommandStats());\""
 	},
-	"keywords": [
-		"discord",
-		"bot",
-		"template",
-		"typescript"
-	],
+	"keywords": ["discord", "bot", "template", "typescript"],
 	"author": "",
 	"license": "MIT",
 	"devDependencies": {
@@ -53,9 +39,7 @@
 		"discord.js": "^14.16.3",
 		"dotenv": "^16.4.5",
 		"install": "^0.13.0",
-		"langchain": "^0.3.36",
-		"redis": "^4.6.0",
-		"surrealdb.js": "^1.0.0"
+		"langchain": "^0.3.36"
 	},
 	"engines": {
 		"node": ">=18.0.0",
@@ -70,11 +54,7 @@
 		},
 		"files": {
 			"ignoreUnknown": false,
-			"ignore": [
-				"node_modules",
-				"dist",
-				"*.min.js"
-			]
+			"ignore": ["node_modules", "dist", "*.min.js"]
 		},
 		"formatter": {
 			"enabled": true,

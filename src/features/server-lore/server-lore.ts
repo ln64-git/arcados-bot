@@ -22,7 +22,6 @@ export function getServerLoreEmbed(): EmbedBuilder {
 export async function setupServerLore(
 	interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-
 	await interaction.deferReply({ ephemeral: true });
 
 	const loreChannel = interaction.guild?.channels.cache.find(
