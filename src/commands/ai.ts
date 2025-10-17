@@ -4,6 +4,7 @@ import {
 	EmbedBuilder,
 	SlashCommandBuilder,
 } from "discord.js";
+import { config } from "../config";
 import { OpenAIManager } from "../features/ai-assistant/OpenAIManager";
 import type { Command } from "../types";
 import { isGuildMember } from "../types";
@@ -81,7 +82,7 @@ function parseContentForDiscord(content: string): StructuredContent {
 		}
 		// Empty line - continue current context
 		else if (trimmedLine === "") {
-			if (currentField && currentField.value) {
+			if (currentField?.value) {
 				currentField.value += "\n";
 			} else if (isInDescription) {
 				descriptionLines.push("");
@@ -116,7 +117,7 @@ function getOpenAIManager(): OpenAIManager {
 			openaiManager = new OpenAIManager();
 		} catch (error) {
 			throw new Error(
-				"🔸 AI service is not available. Please check configuration.",
+				"🔸 AI service is not configured. Please add your OpenAI API key to the .env file:\n`OPENAI_API_KEY=your_api_key_here`\n\nGet your API key from: https://platform.openai.com/api-keys",
 			);
 		}
 	}
@@ -154,6 +155,16 @@ export const aiCommand: Command = {
 		if (!isGuildMember(member)) {
 			await interaction.reply({
 				content: "🔸 This command can only be used in a server!",
+				ephemeral: true,
+			});
+			return;
+		}
+
+		// Check if OpenAI API key is configured
+		if (!config.openaiApiKey) {
+			await interaction.reply({
+				content:
+					"🔸 AI service is not configured. Please add your OpenAI API key to the .env file:\n`OPENAI_API_KEY=your_api_key_here`\n\nGet your API key from: https://platform.openai.com/api-keys",
 				ephemeral: true,
 			});
 			return;
@@ -254,13 +265,13 @@ export const aiCommand: Command = {
 				}
 
 				// Add fields for better organization
-				structuredContent.fields.forEach((field) => {
+				for (const field of structuredContent.fields) {
 					embed.addFields({
 						name: field.name,
 						value: field.value,
 						inline: field.inline || false,
 					});
-				});
+				}
 			}
 
 			// Add image if available (prefer attachment to avoid URL expiry)

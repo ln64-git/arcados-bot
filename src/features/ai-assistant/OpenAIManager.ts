@@ -20,7 +20,9 @@ export class OpenAIManager {
 
 	constructor() {
 		if (!config.openaiApiKey) {
-			throw new Error("🔸 OpenAI API key is not configured");
+			throw new Error(
+				"OpenAI API key is not configured in environment variables",
+			);
 		}
 
 		// Use OpenAI API
