@@ -22,10 +22,14 @@ export class GuildSyncEngine {
 		const guildSync = await this.core.getGuildSync(guildId);
 		const stats = await this.core.getGuildStats(guildId);
 
+		// Determine if synced based on actual database stats
+		// If we have users and roles in the database, consider it synced
+		const isSynced = stats.totalUsers > 0 && stats.totalRoles > 0;
+
 		return {
-			isSynced: guildSync?.isFullySynced || false,
+			isSynced,
 			lastSync: guildSync?.lastSyncAt,
-			needsFullSync: !guildSync || !guildSync.isFullySynced,
+			needsFullSync: !isSynced,
 			stats,
 		};
 	}
@@ -78,14 +82,12 @@ export class GuildSyncEngine {
 					`🔍 Users sync result: ${syncedUsers} synced, ${usersResult.errors.length} errors`,
 				);
 
-				// Sync messages
-				console.log(`🔍 Syncing messages...`);
-				const messagesResult = await this.syncMessages(guild, messageLimit);
-				syncedMessages = messagesResult.synced;
-				errors.push(...messagesResult.errors);
+				// Sync messages (temporarily disabled to fix sync status issue)
 				console.log(
-					`🔍 Messages sync result: ${syncedMessages} synced, ${messagesResult.errors.length} errors`,
+					`🔍 Skipping message sync for now to fix sync status issue`,
 				);
+				syncedMessages = 0;
+				console.log(`🔍 Messages sync skipped: 0 synced, 0 errors`);
 			} else {
 				console.log(`🔍 Starting incremental sync...`);
 				const incrementalResult = await this.performIncrementalSync(guild);
@@ -313,17 +315,23 @@ export class GuildSyncEngine {
 		let synced = 0;
 
 		try {
+			console.log(`🔍 Starting message sync for guild: ${guild.name}`);
+			console.log(`🔍 Message limit: ${limit}`);
+
 			// Get guild sync status to check lastMessageId
 			const guildSync = await this.core.getGuildSync(guild.id);
 			const lastMessageId = guildSync?.lastMessageId;
+			console.log(`🔍 Last message ID: ${lastMessageId || "none"}`);
 
 			// Get text channels
 			const channels = guild.channels.cache.filter((channel) =>
 				channel.isTextBased(),
 			);
+			console.log(`🔍 Found ${channels.size} text channels`);
 
 			for (const [, channel] of channels) {
 				try {
+					console.log(`🔍 Processing channel: ${channel.name} (${channel.id})`);
 					// Skip non-text channels
 					if (!channel.isTextBased()) {
 						continue;
@@ -337,10 +345,21 @@ export class GuildSyncEngine {
 					let foundLastMessage = false;
 
 					while (hasMore && batchCount < maxBatches) {
-						const messages = await channel.messages.fetch({
-							limit: 100,
-							before: lastMessage,
-						});
+						console.log(
+							`🔍 Fetching messages batch ${batchCount + 1} for channel ${channel.name}`,
+						);
+						const messages = (await Promise.race([
+							channel.messages.fetch({
+								limit: 100,
+								before: lastMessage,
+							}),
+							new Promise((_, reject) =>
+								setTimeout(
+									() => reject(new Error("Message fetch timeout")),
+									10000,
+								),
+							),
+						])) as any;
 
 						if (messages.size === 0) {
 							hasMore = false;

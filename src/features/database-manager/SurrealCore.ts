@@ -538,8 +538,8 @@ export class SurrealCore {
 
 	async getGuildSync(guildId: string): Promise<GuildSync | null> {
 		return this.withPerformanceTracking(async () => {
-			const query = `SELECT * FROM ${this.tables.guildSyncs} WHERE guild_id = $guild_id`;
-			return await executeQueryOne<GuildSync>(query, { guild_id: guildId });
+			const query = `SELECT * FROM ${this.tables.guildSyncs} WHERE guild_id = "${guildId}"`;
+			return await executeQueryOne<GuildSync>(query, {});
 		}, `getGuildSync(${guildId})`);
 	}
 
@@ -550,27 +550,21 @@ export class SurrealCore {
 			const recordId = `guild_syncs:${guildSync.guildId}`;
 
 			const query = `
-				UPDATE ${recordId} MERGE {
-					guild_id: $guild_id,
-					last_sync_at: $last_sync_at,
-					last_message_id: $last_message_id,
-					total_users: $total_users,
-					total_messages: $total_messages,
-					total_roles: $total_roles,
-					is_fully_synced: $is_fully_synced,
+				INSERT INTO guild_syncs {
+					id: ${recordId},
+					guild_id: "${guildSync.guildId}",
+					last_sync_at: "${guildSync.lastSyncAt?.toISOString() || new Date().toISOString()}",
+					last_message_id: ${guildSync.lastMessageId ? `"${guildSync.lastMessageId}"` : "null"},
+					total_users: ${guildSync.totalUsers},
+					total_messages: ${guildSync.totalMessages},
+					total_roles: ${guildSync.totalRoles},
+					is_fully_synced: ${guildSync.isFullySynced},
+					created_at: time::now(),
 					updated_at: time::now()
 				}
 			`;
 
-			await executeQuery(query, {
-				guild_id: guildSync.guildId,
-				last_sync_at: guildSync.lastSyncAt,
-				last_message_id: guildSync.lastMessageId,
-				total_users: guildSync.totalUsers,
-				total_messages: guildSync.totalMessages,
-				total_roles: guildSync.totalRoles,
-				is_fully_synced: guildSync.isFullySynced,
-			});
+			await executeQuery(query, {});
 		}, `updateGuildSync(${guildSync.guildId})`);
 	}
 
@@ -628,21 +622,21 @@ export class SurrealCore {
 		return this.withPerformanceTracking(
 			async () => {
 				const queries = [
-					`SELECT count() as count FROM ${this.tables.users} WHERE guildId = $guildId`,
-					`SELECT count() as count FROM ${this.tables.messages} WHERE guildId = $guildId`,
-					`SELECT count() as count FROM ${this.tables.roles} WHERE guildId = $guildId`,
-					`SELECT count() as count FROM ${this.tables.users} WHERE guildId = $guildId AND voiceInteractions IS NOT NULL AND array::len(voiceInteractions) > 0`,
+					`SELECT * FROM ${this.tables.users} WHERE guildId = "${guildId}"`,
+					`SELECT * FROM ${this.tables.messages} WHERE guildId = "${guildId}"`,
+					`SELECT * FROM ${this.tables.roles} WHERE guildId = "${guildId}"`,
+					`SELECT * FROM ${this.tables.users} WHERE guildId = "${guildId}" AND voiceInteractions IS NOT NULL AND array::len(voiceInteractions) > 0`,
 				];
 
 				const results = await Promise.all(
-					queries.map((query) => executeQueryOne(query, { guildId: guildId })),
+					queries.map((query) => executeQuery(query, {})),
 				);
 
 				return {
-					totalUsers: results[0]?.count || 0,
-					totalMessages: results[1]?.count || 0,
-					totalRoles: results[2]?.count || 0,
-					totalVoiceSessions: results[3]?.count || 0,
+					totalUsers: Array.isArray(results[0]) ? results[0].length : 0,
+					totalMessages: Array.isArray(results[1]) ? results[1].length : 0,
+					totalRoles: Array.isArray(results[2]) ? results[2].length : 0,
+					totalVoiceSessions: Array.isArray(results[3]) ? results[3].length : 0,
 				};
 			},
 			`getGuildStats(${guildId})`,
