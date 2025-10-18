@@ -1,8 +1,10 @@
 import { Bot } from "./Bot";
 
+let bot: Bot;
+
 async function main() {
 	try {
-		const bot = new Bot();
+		bot = new Bot();
 		await bot.init();
 	} catch (error) {
 		console.error("🔸 Bot initialization failed:", error);
@@ -25,11 +27,51 @@ process.on("unhandledRejection", (reason, promise) => {
 // Graceful shutdown
 process.on("SIGINT", async () => {
 	console.log("🔹 Received SIGINT, shutting down gracefully...");
+
+	// Immediately stop all console output to prevent lingering logs
+	const originalConsoleLog = console.log;
+	const originalConsoleError = console.error;
+	console.log = () => {};
+	console.error = () => {};
+
+	if (bot) {
+		// Set a timeout to force exit if shutdown takes too long
+		const shutdownTimeout = setTimeout(() => {
+			process.exit(0);
+		}, 1000); // Reduced to 1 second timeout
+
+		try {
+			await bot.shutdown();
+			clearTimeout(shutdownTimeout);
+		} catch (error) {
+			// Silent error handling
+		}
+	}
 	process.exit(0);
 });
 
 process.on("SIGTERM", async () => {
 	console.log("🔹 Received SIGTERM, shutting down gracefully...");
+
+	// Immediately stop all console output to prevent lingering logs
+	const originalConsoleLog = console.log;
+	const originalConsoleError = console.error;
+	console.log = () => {};
+	console.error = () => {};
+
+	if (bot) {
+		// Set a timeout to force exit if shutdown takes too long
+		const shutdownTimeout = setTimeout(() => {
+			process.exit(0);
+		}, 1000); // Reduced to 1 second timeout
+
+		try {
+			await bot.shutdown();
+			clearTimeout(shutdownTimeout);
+		} catch (error) {
+			// Silent error handling
+		}
+	}
 	process.exit(0);
 });
 
