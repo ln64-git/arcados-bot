@@ -92,9 +92,7 @@ export class SyncStateManager {
 		wasFullSync: boolean,
 	): Promise<void> {
 		try {
-			console.log(
-				`🔹 Recording sync completion for ${guildId}:${entityType}, wasFullSync: ${wasFullSync}`,
-			);
+			// Sync completion recorded silently
 
 			const metadata: Partial<SyncMetadata> = {
 				id: `${guildId}:${entityType}`,
@@ -118,10 +116,7 @@ export class SyncStateManager {
 			}
 
 			const result = await this.db.upsertSyncMetadata(metadata);
-			console.log(
-				`🔹 Upsert result for ${guildId}:${entityType}:`,
-				result.success ? "success" : result.error,
-			);
+			// Upsert result logged silently
 		} catch (error) {
 			console.error(
 				`🔸 Error recording sync completion for ${guildId}:${entityType}:`,

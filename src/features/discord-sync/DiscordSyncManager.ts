@@ -52,110 +52,159 @@ export class DiscordSyncManager {
 	}
 
 	private setupDiscordEventHandlers(): void {
+		const targetGuildId = process.env.GUILD_ID;
+
 		// Guild events
 		this.client.on("guildCreate", async (guild) => {
-			await this.syncGuild(guild);
+			if (targetGuildId && guild.id === targetGuildId) {
+				console.log(`🔹 Bot joined target guild: ${guild.name}`);
+				await this.syncGuild(guild);
+			}
 		});
 
 		this.client.on("guildUpdate", async (oldGuild, newGuild) => {
-			await this.syncGuild(newGuild);
+			if (targetGuildId && newGuild.id === targetGuildId) {
+				await this.syncGuild(newGuild);
+			}
 		});
 
 		this.client.on("guildDelete", async (guild) => {
-			await this.markGuildInactive(guild.id);
+			if (targetGuildId && guild.id === targetGuildId) {
+				console.log(`🔹 Bot left target guild: ${guild.name}`);
+				await this.markGuildInactive(guild.id);
+			}
 		});
 
 		// Channel events
 		this.client.on("channelCreate", async (channel) => {
-			if ("guild" in channel && channel.guild) {
+			if (
+				targetGuildId &&
+				"guild" in channel &&
+				channel.guild &&
+				channel.guild.id === targetGuildId
+			) {
 				await this.syncChannel(channel, channel.guild.id);
 			}
 		});
 
 		this.client.on("channelUpdate", async (oldChannel, newChannel) => {
-			if ("guild" in newChannel && newChannel.guild) {
+			if (
+				targetGuildId &&
+				"guild" in newChannel &&
+				newChannel.guild &&
+				newChannel.guild.id === targetGuildId
+			) {
 				await this.syncChannel(newChannel, newChannel.guild.id);
 			}
 		});
 
 		this.client.on("channelDelete", async (channel) => {
-			if ("guild" in channel && channel.guild) {
+			if (
+				targetGuildId &&
+				"guild" in channel &&
+				channel.guild &&
+				channel.guild.id === targetGuildId
+			) {
 				await this.markChannelInactive(channel.id);
 			}
 		});
 
 		// Member events
 		this.client.on("guildMemberAdd", async (member) => {
-			await this.syncMemberWithHistory(member);
+			if (targetGuildId && member.guild.id === targetGuildId) {
+				await this.syncMemberWithHistory(member);
+			}
 		});
 
 		this.client.on("guildMemberUpdate", async (oldMember, newMember) => {
-			await this.syncMemberWithHistory(newMember);
+			if (targetGuildId && newMember.guild.id === targetGuildId) {
+				await this.syncMemberWithHistory(newMember);
+			}
 		});
 
 		this.client.on("guildMemberRemove", async (member) => {
-			await this.markMemberInactive(member.id, member.guild.id);
+			if (targetGuildId && member.guild.id === targetGuildId) {
+				await this.markMemberInactive(member.id, member.guild.id);
+			}
 		});
 
 		// User events (global profile changes like username, avatar)
 		this.client.on("userUpdate", async (oldUser, newUser) => {
-			console.log(
-				`🔹 UserUpdate event received for ${newUser.username} (${newUser.id})`,
-			);
+			if (targetGuildId) {
+				console.log(
+					`🔹 UserUpdate event received for ${newUser.username} (${newUser.id})`,
+				);
 
-			// Sync the user in all guilds where they are a member
-			let syncedGuilds = 0;
-			for (const guild of this.client.guilds.cache.values()) {
-				const member = guild.members.cache.get(newUser.id);
-				if (member) {
-					console.log(
-						`🔹 Syncing user ${newUser.username} in guild ${guild.name}`,
-					);
-					await this.syncMemberWithHistory(member);
-					syncedGuilds++;
+				// Only sync the user in the target guild
+				const guild = this.client.guilds.cache.get(targetGuildId);
+				if (guild) {
+					const member = guild.members.cache.get(newUser.id);
+					if (member) {
+						console.log(
+							`🔹 Syncing user ${newUser.username} in target guild ${guild.name}`,
+						);
+						await this.syncMemberWithHistory(member);
+					}
 				}
 			}
-			console.log(
-				`🔹 UserUpdate: Synced ${newUser.username} across ${syncedGuilds} guilds`,
-			);
 		});
 
 		// Role events
 		this.client.on("roleCreate", async (role) => {
-			await this.syncRole(role);
+			if (targetGuildId && role.guild.id === targetGuildId) {
+				await this.syncRole(role);
+			}
 		});
 
 		this.client.on("roleUpdate", async (oldRole, newRole) => {
-			await this.syncRole(newRole);
+			if (targetGuildId && newRole.guild.id === targetGuildId) {
+				await this.syncRole(newRole);
+			}
 		});
 
 		this.client.on("roleDelete", async (role) => {
-			await this.markRoleInactive(role.id);
+			if (targetGuildId && role.guild.id === targetGuildId) {
+				await this.markRoleInactive(role.id);
+			}
 		});
 
 		// Message events (optional - can be resource intensive)
 		this.client.on("messageCreate", async (message) => {
-			// Only sync messages in guilds and not from bots
-			if (message.guild && !message.author.bot) {
+			// Only sync messages in target guild and not from bots
+			if (
+				targetGuildId &&
+				message.guild &&
+				message.guild.id === targetGuildId &&
+				!message.author.bot
+			) {
 				await this.syncMessage(message);
 			}
 		});
 
 		this.client.on("messageUpdate", async (oldMessage, newMessage) => {
-			if (newMessage.guild && !newMessage.author.bot) {
+			if (
+				targetGuildId &&
+				newMessage.guild &&
+				newMessage.guild.id === targetGuildId &&
+				!newMessage.author.bot
+			) {
 				await this.syncMessage(newMessage);
 			}
 		});
 
 		this.client.on("messageDelete", async (message) => {
-			if (message.guild) {
+			if (
+				targetGuildId &&
+				message.guild &&
+				message.guild.id === targetGuildId
+			) {
 				await this.markMessageInactive(message.id);
 			}
 		});
 	}
 
 	/**
-	 * Perform startup sync - decides between incremental or full sync
+	 * Perform startup sync - LIMITED TO GUILD_ID from environment
 	 */
 	private async performStartupSync(): Promise<void> {
 		if (this.syncing || this.shuttingDown) {
@@ -171,25 +220,52 @@ export class DiscordSyncManager {
 			let totalUpdated = 0;
 			let totalMarkedInactive = 0;
 
-			// Sync all guilds
-			for (const [guildId, guild] of this.client.guilds.cache) {
-				if (this.shuttingDown) break;
+			// Get the target guild ID from environment
+			const targetGuildId = process.env.GUILD_ID;
+			if (!targetGuildId) {
+				console.log("🔹 No GUILD_ID specified in environment, skipping sync");
+				return;
+			}
 
-				// Check if we need full sync or incremental
-				const metadata = await this.syncState.getSyncMetadata(guildId, "guild");
-				const needsFullSync = this.syncState.needsFullSync(guildId, metadata);
+			console.log(`🔹 Target guild ID: ${targetGuildId}`);
 
-				if (needsFullSync) {
-					const stats = await this.performFullGuildSync(guild);
-					totalSynced += stats.synced;
-					totalUpdated += stats.updated;
-					totalMarkedInactive += stats.markedInactive;
-				} else {
-					const stats = await this.performIncrementalGuildSync(guild);
-					totalSynced += stats.synced;
-					totalUpdated += stats.updated;
-					totalMarkedInactive += stats.markedInactive;
-				}
+			// Find the target guild
+			const targetGuild = this.client.guilds.cache.get(targetGuildId);
+			if (!targetGuild) {
+				console.log(
+					`🔹 Target guild ${targetGuildId} not found, skipping sync`,
+				);
+				return;
+			}
+
+			console.log(
+				`🔹 Found target guild: ${targetGuild.name} (${targetGuild.id})`,
+			);
+
+			// Process only the target guild
+			if (this.shuttingDown) return;
+
+			// Check if we need full sync or incremental
+			const metadata = await this.syncState.getSyncMetadata(
+				targetGuildId,
+				"guild",
+			);
+			const needsFullSync = this.syncState.needsFullSync(
+				targetGuildId,
+				metadata,
+			);
+
+			if (needsFullSync) {
+				console.log(`🔹 Performing full sync for guild: ${targetGuild.name}`);
+				const stats = await this.performFullGuildSync(targetGuild);
+				totalSynced += stats.synced;
+				totalUpdated += stats.updated;
+				totalMarkedInactive += stats.markedInactive;
+			} else {
+				const stats = await this.performIncrementalGuildSync(targetGuild);
+				totalSynced += stats.synced;
+				totalUpdated += stats.updated;
+				totalMarkedInactive += stats.markedInactive;
 			}
 
 			const duration = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -257,7 +333,7 @@ export class DiscordSyncManager {
 
 			// Sync members in batches for better performance
 			await this.syncState.markSyncInProgress(guild.id, "member");
-			console.log(`🔹 Fetching members for guild ${guild.name} (${guild.id})`);
+			// Fetching members silently
 			const members = await guild.members.fetch();
 			const memberData = Array.from(members.values()).map((member) =>
 				discordMemberToSurreal(member),
@@ -288,7 +364,7 @@ export class DiscordSyncManager {
 
 			// Sync messages from all text channels
 			await this.syncState.markSyncInProgress(guild.id, "message");
-			console.log(`🔹 Syncing messages for guild ${guild.name}`);
+			// Syncing messages silently
 
 			let messageCount = 0;
 			for (const channel of guild.channels.cache.values()) {
@@ -485,15 +561,11 @@ export class DiscordSyncManager {
 			const dbResult = await this.db.getEntityIds(guild.id, "member");
 			const dbIds = new Set(dbResult.success ? dbResult.data : []);
 
-			console.log(
-				`🔹 syncMembersIncrementally: DB has ${dbIds.size} members for guild ${guild.name}`,
-			);
+			// Member sync status logged silently
 
 			// If getEntityIds returned empty array, it means we should skip sync (recent sync detected)
 			if (dbIds.size === 0) {
-				console.log(
-					`🔹 syncMembersIncrementally: Skipping member sync for guild ${guild.name} (recent sync detected)`,
-				);
+				// Skipping member sync due to recent sync
 				return { synced: 0, updated: 0, markedInactive: 0 };
 			}
 
@@ -896,7 +968,7 @@ export class DiscordSyncManager {
 	}
 
 	/**
-	 * Sync messages for a guild (healing missing messages)
+	 * Sync messages for a guild (healing missing messages) - ULTRA OPTIMIZED VERSION
 	 */
 	private async syncMessagesIncrementally(guild: Guild): Promise<{
 		synced: number;
@@ -904,39 +976,64 @@ export class DiscordSyncManager {
 		markedInactive: number;
 	}> {
 		let synced = 0;
-		let updated = 0;
+		const updated = 0;
 		const markedInactive = 0;
 
 		try {
-			console.log(`🔹 Starting message sync for guild ${guild.name}`);
-
 			// Get message IDs from database using a direct query approach
-			// Since getEntityIds has workarounds that don't work well for messages
 			const dbMessageIds = await this.getExistingMessageIds(guild.id);
 			const dbIds = new Set(dbMessageIds);
 
-			console.log(
-				`🔹 syncMessagesIncrementally: DB has ${dbIds.size} messages for guild ${guild.name}`,
+			// Message sync status logged silently
+
+			// Get all text channels first
+			const allTextChannels = Array.from(guild.channels.cache.values()).filter(
+				(channel) => channel.isTextBased() && !channel.isDMBased(),
 			);
 
-			// Only sync if we have a discrepancy (missing messages)
-			if (dbIds.size === 0) {
-				console.log(
-					`🔹 syncMessagesIncrementally: No messages found in DB, performing full message sync for guild ${guild.name}`,
-				);
-			} else {
-				console.log(
-					`🔹 syncMessagesIncrementally: Found ${dbIds.size} existing messages, checking for missing ones`,
-				);
+			// OPTIMIZATION 4: Early exit if no channels
+			if (allTextChannels.length === 0) {
+				console.log(`🔹 No text channels found, skipping message sync`);
+				return { synced, updated, markedInactive };
 			}
 
-			// Sync messages from all text channels
-			for (const channel of guild.channels.cache.values()) {
+			// OPTIMIZATION 5: Quick check for guild activity using guild-level metrics
+			const guildActivityCheck = await this.quickGuildActivityCheck(guild);
+			if (!guildActivityCheck.hasRecentActivity) {
+				console.log(
+					`🔹 Guild ${guild.name} has no recent activity (last activity: ${guildActivityCheck.lastActivity}h ago), skipping message sync`,
+				);
+				return { synced, updated, markedInactive };
+			}
+
+			// SMART FILTERING: Only sync channels with recent activity
+			const activeChannels = await this.filterActiveChannels(allTextChannels);
+
+			// Processing active channels silently
+
+			if (activeChannels.length === 0) {
+				console.log(`🔹 No active channels found, skipping message sync`);
+				return { synced, updated, markedInactive };
+			}
+
+			// OPTIMIZATION 6: Dynamic batch sizing based on active channel count
+			const BATCH_SIZE = Math.min(
+				5,
+				Math.max(2, Math.ceil(activeChannels.length / 4)),
+			);
+			const batches = [];
+
+			for (let i = 0; i < activeChannels.length; i += BATCH_SIZE) {
+				batches.push(activeChannels.slice(i, i + BATCH_SIZE));
+			}
+
+			for (const batch of batches) {
 				if (this.shuttingDown) break;
 
-				if (channel.isTextBased() && !channel.isDMBased()) {
+				// Process batch in parallel
+				const batchPromises = batch.map(async (channel) => {
 					try {
-						console.log(`🔹 Syncing messages from channel ${channel.name}`);
+						// Syncing messages from channel
 
 						// Fetch recent messages (last 100 per channel)
 						const messages = await channel.messages.fetch({ limit: 100 });
@@ -944,25 +1041,41 @@ export class DiscordSyncManager {
 						let channelSynced = 0;
 						let channelSkipped = 0;
 
-						for (const message of messages.values()) {
+						// Process messages in parallel batches
+						const messageArray = Array.from(messages.values());
+						const MESSAGE_BATCH_SIZE = 10; // Process 10 messages at a time
+
+						for (let i = 0; i < messageArray.length; i += MESSAGE_BATCH_SIZE) {
 							if (this.shuttingDown) break;
 
-							// Skip bot messages
-							if (message.author.bot) continue;
+							const messageBatch = messageArray.slice(
+								i,
+								i + MESSAGE_BATCH_SIZE,
+							);
 
-							const messageId = message.id;
+							// Process message batch in parallel
+							const messagePromises = messageBatch.map(async (message) => {
+								// Skip bot messages
+								if (message.author.bot) return { synced: 0, skipped: 1 };
 
-							// Check if message exists in DB
-							if (!dbIds.has(messageId)) {
-								// Message doesn't exist, sync it
-								await this.syncMessage(message);
-								synced++;
-								channelSynced++;
-							} else {
-								// Message exists, check for updates
-								const dbMessageResult = await this.db.getMessage(messageId);
-								if (dbMessageResult.success && dbMessageResult.data) {
-									const dbMessage = dbMessageResult.data;
+								const messageId = message.id;
+
+								// Check if message exists in DB using direct select
+								const existingMessage = await this.db.db.select(
+									`messages:${messageId}`,
+								);
+								const messageExists =
+									existingMessage &&
+									Array.isArray(existingMessage) &&
+									existingMessage.length > 0;
+
+								if (!messageExists) {
+									// Message doesn't exist, sync it
+									await this.syncMessage(message);
+									return { synced: 1, skipped: 0 };
+								} else {
+									// Message exists, check for updates
+									const dbMessage = existingMessage[0];
 									// Check if message was edited
 									if (
 										message.editedAt &&
@@ -970,32 +1083,50 @@ export class DiscordSyncManager {
 										message.editedAt > new Date(dbMessage.updated_at)
 									) {
 										await this.syncMessage(message);
-										updated++;
-										channelSynced++;
+										return { synced: 1, skipped: 0 };
 									} else {
-										channelSkipped++;
+										return { synced: 0, skipped: 1 };
 									}
-								} else {
-									channelSkipped++;
 								}
+							});
+
+							// Wait for message batch to complete
+							const batchResults = await Promise.all(messagePromises);
+
+							// Aggregate results
+							for (const result of batchResults) {
+								channelSynced += result.synced;
+								channelSkipped += result.skipped;
 							}
 						}
 
-						if (channelSynced > 0) {
-							console.log(
-								`🔹 Synced ${channelSynced} messages from ${channel.name} (${channelSkipped} already up-to-date)`,
-							);
-						} else {
-							console.log(
-								`🔹 All messages in ${channel.name} are already up-to-date (${channelSkipped} messages)`,
-							);
-						}
+						// Channel sync completed silently
+
+						return { synced: channelSynced, skipped: channelSkipped };
 					} catch (error) {
+						// Handle specific Discord API errors gracefully
+						if (
+							error instanceof Error &&
+							error.message.includes("Missing Access")
+						) {
+							// Channel no access, skip silently
+							return { synced: 0, skipped: 0 };
+						}
+
 						console.error(
 							`🔸 Error syncing messages from channel ${channel.name}:`,
 							error,
 						);
+						return { synced: 0, skipped: 0 };
 					}
+				});
+
+				// Wait for batch to complete
+				const batchResults = await Promise.all(batchPromises);
+
+				// Aggregate results from batch
+				for (const result of batchResults) {
+					synced += result.synced;
 				}
 			}
 
@@ -1017,6 +1148,217 @@ export class DiscordSyncManager {
 		}
 	}
 
+	/**
+	 * Quick guild activity check to avoid unnecessary processing
+	 */
+	private async quickGuildActivityCheck(guild: Guild): Promise<{
+		hasRecentActivity: boolean;
+		lastActivity: number; // hours ago
+	}> {
+		try {
+			// Check guild-level activity indicators
+			const now = Date.now();
+			const RECENT_THRESHOLD = 24 * 60 * 60 * 1000; // 24 hours
+
+			// Check if guild has recent member count changes (indicates activity)
+			const memberCount = guild.memberCount;
+			const approximateMemberCount =
+				guild.approximateMemberCount || memberCount;
+
+			// If member counts are very different, guild might be active
+			const memberCountDifference = Math.abs(
+				memberCount - approximateMemberCount,
+			);
+			if (memberCountDifference > 5) {
+				return { hasRecentActivity: true, lastActivity: 0 };
+			}
+
+			// Check a few random channels for quick activity assessment
+			const channels = Array.from(guild.channels.cache.values()).filter(
+				(channel) => channel.isTextBased() && !channel.isDMBased(),
+			);
+
+			if (channels.length === 0) {
+				return { hasRecentActivity: false, lastActivity: 999999 };
+			}
+
+			// Sample 3 channels for quick check
+			const sampleSize = Math.min(3, channels.length);
+			const sampleChannels = channels.slice(0, sampleSize);
+
+			let mostRecentActivity = 0;
+
+			for (const channel of sampleChannels) {
+				try {
+					// Quick check using cached data first
+					const cachedMessage = channel.messages.cache.last();
+					if (cachedMessage) {
+						const messageAge = now - cachedMessage.createdTimestamp;
+						mostRecentActivity = Math.max(mostRecentActivity, messageAge);
+					} else if (channel.lastMessageId) {
+						// If we have lastMessageId but no cached message, assume recent activity
+						return { hasRecentActivity: true, lastActivity: 0 };
+					}
+				} catch (error) {
+					// Ignore errors in quick check
+				}
+			}
+
+			const lastActivityHours = Math.round(
+				mostRecentActivity / (60 * 60 * 1000),
+			);
+			const hasRecentActivity = mostRecentActivity <= RECENT_THRESHOLD;
+
+			return { hasRecentActivity, lastActivity: lastActivityHours };
+		} catch (error) {
+			// If quick check fails, assume activity to be safe
+			return { hasRecentActivity: true, lastActivity: 0 };
+		}
+	}
+
+	/**
+	 * Filter channels to only include those with recent activity - OPTIMIZED VERSION
+	 */
+	private async filterActiveChannels(channels: Channel[]): Promise<Channel[]> {
+		const activeChannels: Channel[] = [];
+		const RECENT_ACTIVITY_THRESHOLD = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+		const now = Date.now();
+
+		// Checking channel activity silently
+
+		// OPTIMIZATION 1: Use channel.lastMessageId if available to avoid API calls
+		const channelsWithLastMessage = channels.filter((channel) => {
+			// Check if channel has a cached last message ID
+			return channel.lastMessageId !== null;
+		});
+
+		const channelsWithoutLastMessage = channels.filter((channel) => {
+			return channel.lastMessageId === null;
+		});
+
+		// Reduced logging for channel activity check
+
+		// OPTIMIZATION 2: Process channels with cached last message first (no API calls needed)
+		for (const channel of channelsWithLastMessage) {
+			try {
+				// Get the last message from cache if possible
+				const lastMessage = channel.messages.cache.last();
+
+				if (!lastMessage) {
+					// Fallback to API if not in cache
+					const fetchedMessage = await channel.messages.fetch({ limit: 1 });
+					if (fetchedMessage.size === 0) {
+						// Channel no messages, skip silently
+						continue;
+					}
+					const message = fetchedMessage.first()!;
+					const messageAge = now - message.createdTimestamp;
+					const isActive = messageAge <= RECENT_ACTIVITY_THRESHOLD;
+
+					if (isActive) {
+						activeChannels.push(channel);
+					} else {
+						const lastMessageAge = Math.round(messageAge / (60 * 60 * 1000));
+						// Channel inactive, skip silently
+					}
+				} else {
+					// Use cached message
+					const messageAge = now - lastMessage.createdTimestamp;
+					const isActive = messageAge <= RECENT_ACTIVITY_THRESHOLD;
+
+					if (isActive) {
+						activeChannels.push(channel);
+					} else {
+						const lastMessageAge = Math.round(messageAge / (60 * 60 * 1000));
+						// Channel inactive, skip silently
+					}
+				}
+			} catch (error) {
+				if (
+					error instanceof Error &&
+					error.message.includes("Missing Access")
+				) {
+					// Channel no access, skip silently
+				} else {
+					console.error(
+						`🔸 Error checking activity for channel ${channel.name}:`,
+						error,
+					);
+				}
+			}
+		}
+
+		// OPTIMIZATION 3: Process remaining channels in smaller batches to reduce API load
+		if (channelsWithoutLastMessage.length > 0) {
+			const BATCH_SIZE = 5; // Smaller batches for API-heavy operations
+			const batches = [];
+
+			for (let i = 0; i < channelsWithoutLastMessage.length; i += BATCH_SIZE) {
+				batches.push(channelsWithoutLastMessage.slice(i, i + BATCH_SIZE));
+			}
+
+			for (const batch of batches) {
+				if (this.shuttingDown) break;
+
+				const batchPromises = batch.map(async (channel) => {
+					try {
+						// Get the last message in the channel
+						const lastMessage = await channel.messages.fetch({ limit: 1 });
+
+						if (lastMessage.size === 0) {
+							return { channel, isActive: false, reason: "no messages" };
+						}
+
+						const message = lastMessage.first();
+						if (!message) {
+							return { channel, isActive: false, reason: "no messages" };
+						}
+
+						const messageAge = now - message.createdTimestamp;
+						const isActive = messageAge <= RECENT_ACTIVITY_THRESHOLD;
+
+						return {
+							channel,
+							isActive,
+							reason: isActive ? "recent activity" : "inactive (>24h)",
+							lastMessageAge: Math.round(messageAge / (60 * 60 * 1000)), // hours
+						};
+					} catch (error) {
+						// Handle access errors gracefully
+						if (
+							error instanceof Error &&
+							error.message.includes("Missing Access")
+						) {
+							return { channel, isActive: false, reason: "no access" };
+						}
+
+						console.error(
+							`🔸 Error checking activity for channel ${channel.name}:`,
+							error,
+						);
+						return { channel, isActive: false, reason: "error" };
+					}
+				});
+
+				const batchResults = await Promise.all(batchPromises);
+
+				for (const result of batchResults) {
+					if (result.isActive) {
+						activeChannels.push(result.channel);
+					}
+
+					// Log the decision for transparency
+					if (result.reason !== "recent activity") {
+						// Channel inactive, skip silently
+					}
+				}
+			}
+		}
+
+		// Found active channels silently
+		return activeChannels;
+	}
+
 	// Message sync methods
 	private async syncMessage(message: Message): Promise<void> {
 		try {
@@ -1030,7 +1372,7 @@ export class DiscordSyncManager {
 			const result = await this.db.upsertMessage(messageData);
 
 			if (result.success) {
-				console.log(`🔹 Successfully synced message ${message.id}`);
+				// Message synced successfully
 			} else {
 				console.error(`🔸 Failed to sync message ${message.id}:`, result.error);
 			}

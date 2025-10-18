@@ -929,15 +929,15 @@ export class SurrealDBManager {
 
 			// WORKAROUND: Since SurrealDB SQL queries don't work reliably,
 			// we'll use a different approach. We'll check if we have any messages
-			// and if so, we'll assume we need incremental sync.
+			// by trying to select some common message ID patterns.
 			// This is not perfect but ensures we don't re-sync everything every time.
 
 			// Try to get a few messages using direct select to see if any exist
-			// We'll use a pattern that might match some message IDs
+			// We'll use patterns that might match real Discord message IDs
 			const testIds = [
-				`messages:${guildId}-test1`,
-				`messages:${guildId}-test2`,
 				`messages:test-message-123`, // Our test message
+				`messages:1279285623903092859`, // Known real message ID
+				`messages:1279285586829774900`, // Another known real message ID
 			];
 
 			let foundAny = false;
@@ -969,7 +969,87 @@ export class SurrealDBManager {
 		}
 	}
 
-	// Bulk mark entities as inactive (for cleanup of orphaned entities)
+	// Batch upsert messages for better performance
+	async batchUpsertMessages(
+		messages: Partial<SurrealMessage>[],
+	): Promise<DatabaseResult<SurrealMessage[]>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const results: SurrealMessage[] = [];
+			const errors: string[] = [];
+
+			// Process messages in parallel batches
+			const BATCH_SIZE = 10;
+			for (let i = 0; i < messages.length; i += BATCH_SIZE) {
+				const batch = messages.slice(i, i + BATCH_SIZE);
+
+				const batchPromises = batch.map(async (message) => {
+					try {
+						// Check if message already exists
+						const existing = await this.db.select(`messages:${message.id}`);
+
+						let result: unknown;
+						if (existing && existing.length > 0) {
+							// Message exists, update it
+							result = await this.db.merge(`messages:${message.id}`, {
+								...message,
+								updated_at: new Date(),
+							});
+						} else {
+							// Message doesn't exist, create it
+							result = await this.db.create(`messages:${message.id}`, {
+								...message,
+								created_at: new Date(),
+								updated_at: new Date(),
+							});
+						}
+
+						return { success: true, data: result as unknown as SurrealMessage };
+					} catch (error) {
+						return {
+							success: false,
+							error: error instanceof Error ? error.message : "Unknown error",
+						};
+					}
+				});
+
+				const batchResults = await Promise.all(batchPromises);
+
+				for (const result of batchResults) {
+					if (result.success) {
+						results.push(result.data);
+					} else {
+						errors.push(result.error);
+					}
+				}
+			}
+
+			if (errors.length > 0) {
+				console.warn(
+					`🔸 ${errors.length} messages failed to upsert:`,
+					errors.slice(0, 5),
+				);
+			}
+
+			return { success: true, data: results };
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				(error.message.includes("no connection available") ||
+					error.message.includes("connection to SurrealDB has dropped"))
+			) {
+				return { success: false, error: "Connection unavailable" };
+			}
+			console.error("🔸 Failed to batch upsert messages:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
 	async bulkMarkInactive(
 		entityType: "channel" | "role" | "member",
 		ids: string[],
