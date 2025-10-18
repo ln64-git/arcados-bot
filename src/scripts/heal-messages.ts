@@ -16,10 +16,7 @@ async function healMessages() {
 
 	try {
 		console.log("🔹 Connecting to Discord and SurrealDB...");
-		await Promise.all([
-			client.login(process.env.BOT_TOKEN),
-			db.connect(),
-		]);
+		await Promise.all([client.login(process.env.BOT_TOKEN), db.connect()]);
 
 		console.log("🔹 Connected successfully");
 
@@ -59,7 +56,7 @@ async function healMessages() {
 						const existing = await db.db.select(`messages:${message.id}`);
 						if (!existing || existing.length === 0) {
 							// Message doesn't exist, sync it
-							const messageData = discordMessageToSurreal(message);
+							const messageData = discordMessageToSurreal(message, guildId);
 							const result = await db.upsertMessage(messageData);
 
 							if (result.success) {

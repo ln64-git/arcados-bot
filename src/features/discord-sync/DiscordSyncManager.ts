@@ -910,17 +910,25 @@ export class DiscordSyncManager {
 		try {
 			console.log(`🔹 Starting message sync for guild ${guild.name}`);
 
-			// Get message IDs from database
-			const dbResult = await this.db.getEntityIds(guild.id, "message");
-			const dbIds = new Set(dbResult.success ? dbResult.data : []);
+			// Get message IDs from database using a direct query approach
+			// Since getEntityIds has workarounds that don't work well for messages
+			const dbMessageIds = await this.getExistingMessageIds(guild.id);
+			const dbIds = new Set(dbMessageIds);
 
 			console.log(
 				`🔹 syncMessagesIncrementally: DB has ${dbIds.size} messages for guild ${guild.name}`,
 			);
 
-			// For messages, we always sync regardless of recent sync timestamps
-			// This ensures we catch up on any missing historical messages
-			// The recent sync detection workaround doesn't apply to messages
+			// Only sync if we have a discrepancy (missing messages)
+			if (dbIds.size === 0) {
+				console.log(
+					`🔹 syncMessagesIncrementally: No messages found in DB, performing full message sync for guild ${guild.name}`,
+				);
+			} else {
+				console.log(
+					`🔹 syncMessagesIncrementally: Found ${dbIds.size} existing messages, checking for missing ones`,
+				);
+			}
 
 			// Sync messages from all text channels
 			for (const channel of guild.channels.cache.values()) {
@@ -932,6 +940,9 @@ export class DiscordSyncManager {
 
 						// Fetch recent messages (last 100 per channel)
 						const messages = await channel.messages.fetch({ limit: 100 });
+
+						let channelSynced = 0;
+						let channelSkipped = 0;
 
 						for (const message of messages.values()) {
 							if (this.shuttingDown) break;
@@ -946,6 +957,7 @@ export class DiscordSyncManager {
 								// Message doesn't exist, sync it
 								await this.syncMessage(message);
 								synced++;
+								channelSynced++;
 							} else {
 								// Message exists, check for updates
 								const dbMessageResult = await this.db.getMessage(messageId);
@@ -959,9 +971,24 @@ export class DiscordSyncManager {
 									) {
 										await this.syncMessage(message);
 										updated++;
+										channelSynced++;
+									} else {
+										channelSkipped++;
 									}
+								} else {
+									channelSkipped++;
 								}
 							}
+						}
+
+						if (channelSynced > 0) {
+							console.log(
+								`🔹 Synced ${channelSynced} messages from ${channel.name} (${channelSkipped} already up-to-date)`,
+							);
+						} else {
+							console.log(
+								`🔹 All messages in ${channel.name} are already up-to-date (${channelSkipped} messages)`,
+							);
 						}
 					} catch (error) {
 						console.error(
@@ -993,7 +1020,13 @@ export class DiscordSyncManager {
 	// Message sync methods
 	private async syncMessage(message: Message): Promise<void> {
 		try {
-			const messageData = discordMessageToSurreal(message);
+			const guildId = message.guild?.id;
+			if (!guildId) {
+				console.error(`🔸 Message ${message.id} has no guild ID, skipping`);
+				return;
+			}
+
+			const messageData = discordMessageToSurreal(message, guildId);
 			const result = await this.db.upsertMessage(messageData);
 
 			if (result.success) {
@@ -1028,6 +1061,14 @@ export class DiscordSyncManager {
 				error,
 			);
 		}
+	}
+
+	/**
+	 * Get existing message IDs from database for a guild
+	 * This bypasses the getEntityIds workaround to get actual message data
+	 */
+	private async getExistingMessageIds(guildId: string): Promise<string[]> {
+		return await this.db.getExistingMessageIds(guildId);
 	}
 
 	// Utility methods

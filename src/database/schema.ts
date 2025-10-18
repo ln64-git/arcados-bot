@@ -464,11 +464,12 @@ export function discordRoleToSurreal(role: Role): Partial<SurrealRole> {
 
 export function discordMessageToSurreal(
 	message: Message,
+	guildId?: string,
 ): Partial<SurrealMessage> {
 	return {
 		id: message.id,
 		channel_id: message.channelId,
-		guild_id: message.guildId || "",
+		guild_id: guildId || message.guildId || "",
 		author_id: message.author.id,
 		content: message.content,
 		timestamp: message.createdAt,
