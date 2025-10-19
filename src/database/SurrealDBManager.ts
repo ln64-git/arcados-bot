@@ -1298,50 +1298,107 @@ export class SurrealDBManager {
 				return { success: false, error: "Not connected to database" };
 			}
 
-			// Use proper SurrealDB record format - let SurrealDB auto-generate the ID
+			if (!state.id) {
+				return { success: false, error: "Voice state ID is required" };
+			}
+
 			console.log("🔍 Upserting voice state:", state.id);
 
-			try {
-				// Try CREATE first with auto-generated ID
-				const result = await this.db.create("voice_states", {
-					...state,
-					updated_at: new Date(),
-				});
-				console.log("🔍 Create result:", result);
-				return { success: true, data: result as unknown as SurrealVoiceState };
-			} catch (error) {
-				// If CREATE fails because record exists, try UPDATE using the specific ID
-				if (
-					error instanceof Error &&
-					error.message.includes("already exists")
-				) {
-					console.log("🔍 Record exists, updating instead...");
+			// Prepare data with timestamps
+			const now = new Date();
+			const upsertData = {
+				...state,
+				updated_at: now,
+			};
 
-					// For updates, we need to handle field clearing differently
-					// If channel_id is not provided, we need to explicitly clear it
-					const updateData = {
-						...state,
-						updated_at: new Date(),
-					};
+			// Determine if we need to clear channel_id
+			const clearChannelId = !("channel_id" in state);
 
-					// If channel_id is not in the update data, explicitly set it to NONE to clear it
-					if (!("channel_id" in state)) {
-						updateData.channel_id = null; // This will be converted to NONE by SurrealDB
-					}
+			// Use SurrealDB's native UPSERT statement via query
+			// This is more reliable than CREATE/UPDATE fallback
+			// Note: We need to handle NONE differently - can't pass it as a parameter
+			const query = clearChannelId
+				? `
+				UPSERT type::thing("voice_states", $id) CONTENT {
+					id: $id,
+					guild_id: $guild_id,
+					user_id: $user_id,
+					channel_id: NONE,
+					self_mute: $self_mute,
+					self_deaf: $self_deaf,
+					server_mute: $server_mute,
+					server_deaf: $server_deaf,
+					streaming: $streaming,
+					self_video: $self_video,
+					suppress: $suppress,
+					session_id: NONE,
+					joined_at: NONE,
+					created_at: $created_at,
+					updated_at: $updated_at
+				};
+			`
+				: `
+				UPSERT type::thing("voice_states", $id) CONTENT {
+					id: $id,
+					guild_id: $guild_id,
+					user_id: $user_id,
+					channel_id: $channel_id,
+					self_mute: $self_mute,
+					self_deaf: $self_deaf,
+					server_mute: $server_mute,
+					server_deaf: $server_deaf,
+					streaming: $streaming,
+					self_video: $self_video,
+					suppress: $suppress,
+					session_id: $session_id,
+					joined_at: $joined_at,
+					created_at: $created_at,
+					updated_at: $updated_at
+				};
+			`;
 
-					const updateResult = await this.db.update(
-						`voice_states:${state.id}`,
-						updateData,
-					);
-					console.log("🔍 Update result:", updateResult);
-					return {
-						success: true,
-						data: updateResult as unknown as SurrealVoiceState,
-					};
-				}
-				// Re-throw other errors
-				throw error;
+			const params = {
+				id: state.id,
+				guild_id: upsertData.guild_id,
+				user_id: upsertData.user_id,
+				channel_id: upsertData.channel_id,
+				self_mute: upsertData.self_mute ?? false,
+				self_deaf: upsertData.self_deaf ?? false,
+				server_mute: upsertData.server_mute ?? false,
+				server_deaf: upsertData.server_deaf ?? false,
+				streaming: upsertData.streaming ?? false,
+				self_video: upsertData.self_video ?? false,
+				suppress: upsertData.suppress ?? false,
+				session_id: upsertData.session_id,
+				joined_at: upsertData.joined_at,
+				created_at: upsertData.created_at ?? now,
+				updated_at: upsertData.updated_at,
+			};
+
+			const result = await this.db.query(query, params);
+
+			// Extract the result
+			const voiceState =
+				Array.isArray(result) && result.length > 0 ? result[0] : result;
+
+			if (
+				!voiceState ||
+				(Array.isArray(voiceState) && voiceState.length === 0)
+			) {
+				console.warn("🔸 UPSERT returned empty result for:", state.id);
+				return {
+					success: false,
+					error: "UPSERT returned empty result",
+				};
 			}
+
+			console.log("🔍 UPSERT successful:", state.id);
+			return {
+				success: true,
+				data: (Array.isArray(voiceState)
+					? voiceState[0]
+					: voiceState) as unknown as SurrealVoiceState,
+			};
 		} catch (error) {
 			if (
 				error instanceof Error &&

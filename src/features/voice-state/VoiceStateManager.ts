@@ -29,9 +29,15 @@ export class VoiceStateManager {
 	private async syncCurrentVoiceStates(): Promise<void> {
 		// On startup, sync all current voice states from Discord
 		for (const [_, guild] of this.client.guilds.cache) {
-			for (const [_, member] of guild.members.cache) {
-				if (member.voice.channelId) {
-					await this.handleVoiceJoin(member.voice, null);
+			console.log(`🔹 Syncing voice states for guild: ${guild.name}`);
+
+			// Use voiceStates.cache instead of members.cache for better accuracy
+			for (const [userId, voiceState] of guild.voiceStates.cache) {
+				if (voiceState.channelId) {
+					console.log(
+						`🔹 Syncing existing voice state: ${userId} in ${voiceState.channel?.name}`,
+					);
+					await this.handleVoiceJoin(voiceState, null);
 				}
 			}
 		}

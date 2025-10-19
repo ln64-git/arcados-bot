@@ -1,11 +1,22 @@
 import "dotenv/config";
+import { Client, GatewayIntentBits } from "discord.js";
 import { SurrealDBManager } from "../database/SurrealDBManager";
 
-async function checkVoiceStates() {
+async function checkVoiceStatesWithNames() {
 	const dbManager = new SurrealDBManager();
+	const client = new Client({
+		intents: [
+			GatewayIntentBits.Guilds,
+			GatewayIntentBits.GuildMembers,
+			GatewayIntentBits.GuildVoiceStates,
+		],
+	});
 
 	try {
-		console.log("🔹 Checking current voice states...");
+		console.log("🔹 Checking current voice states with Discord names...");
+
+		// Connect to Discord
+		await client.login(process.env.DISCORD_BOT_TOKEN);
 
 		// Connect to database
 		const connected = await dbManager.connect();
@@ -15,7 +26,10 @@ async function checkVoiceStates() {
 		}
 
 		// Get all voice states
-		const result = await dbManager.db.query("SELECT * FROM voice_states");
+		const result = await dbManager.db.query(
+			"SELECT * FROM voice_states WHERE guild_id = $guild_id",
+			{ guild_id: "1254694808228986912" },
+		);
 		const voiceStates = (result[0] as any[]) || [];
 
 		console.log(`\n📊 Current Voice States (${voiceStates.length}):`);
@@ -47,7 +61,7 @@ async function checkVoiceStates() {
 
 				for (const [channelId, channelStates] of channels) {
 					let channelName = channelId;
-					// Map known channel IDs to names based on the logs
+					// Map known channel IDs to names
 					if (channelId === "1427152903260344350") {
 						channelName = "🌿 - Cantina";
 					} else if (channelId === "1428282734173880440") {
@@ -63,44 +77,14 @@ async function checkVoiceStates() {
 					}
 
 					for (const state of channelStates) {
-						// Map known user IDs to names based on the logs
+						// Fetch user info from Discord
 						let userName = state.user_id;
-						const userMap: Record<string, string> = {
-							"1070403737547456532": "user_1070403737547456532",
-							"1103796698960109718": "user_1103796698960109718",
-							"1118381544411762789": "user_1118381544411762789",
-							"1135808419849310308": "marvinsdc",
-							"1230794756423028739": "user_1230794756423028739",
-							"1260890317453000778": "user_1260890317453000778",
-							"1301566367392075876": "user_1301566367392075876",
-							"133833763422601218": "omcswain",
-							"1384677464961192007": "binary_crash",
-							"1425975573364080731": "wink16218",
-							"176430138001457162": "user_176430138001457162",
-							"221379384890753024": "pachycephalosaurus.",
-							"303261092858298368": "slio333marmare",
-							"324175599356739584": "user_324175599356739584",
-							"354543127450615808": "itswinkithink",
-							"354823920010002432": "ln64.exe",
-							"399700403618316298": "user_399700403618316298",
-							"411916947773587456": "user_411916947773587456",
-							"443764130197798923": "nikkoontario",
-							"727327856786538606": "user_727327856786538606",
-							"762112646681722890": "user_762112646681722890",
-							"773561252907581481": "buffforagirl",
-							"778719049143025664": "user_778719049143025664",
-							"785381394775539732": "user_785381394775539732",
-							"794441487177089025": "user_794441487177089025",
-							"804569322970284032": "shinji_ikari5049",
-							"883034611393896478": "user_883034611393896478",
-							"886340655671046176": "user_886340655671046176",
-							"889682674594218045": "user_889682674594218045",
-							"957858331744161823": "kelsszz",
-							"99195129516007424": "user_99195129516007424",
-						};
-
-						if (userMap[state.user_id]) {
-							userName = userMap[state.user_id];
+						try {
+							const user = await client.users.fetch(state.user_id);
+							userName = user.displayName || user.username;
+						} catch (error) {
+							// If fetch fails, keep the user ID
+							userName = `user_${state.user_id}`;
 						}
 
 						const status = [];
@@ -120,7 +104,9 @@ async function checkVoiceStates() {
 						}
 						if (state.joined_at) {
 							console.log(
-								`         Joined: ${new Date(state.joined_at).toLocaleString()}`,
+								`         Joined: ${new Date(
+									state.joined_at,
+								).toLocaleString()}`,
 							);
 						}
 					}
@@ -131,15 +117,9 @@ async function checkVoiceStates() {
 		console.error("🔸 Error checking voice states:", error);
 	} finally {
 		await dbManager.disconnect();
+		await client.destroy();
+		console.log("\n🔹 Check complete");
 	}
 }
 
-checkVoiceStates()
-	.then(() => {
-		console.log("\n🔹 Check complete");
-		process.exit(0);
-	})
-	.catch((error) => {
-		console.error("🔸 Script failed:", error);
-		process.exit(1);
-	});
+checkVoiceStatesWithNames().catch(console.error);
