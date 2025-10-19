@@ -12,6 +12,7 @@ import type { SurrealAction } from "./database/schema";
 import { DiscordSyncManager } from "./features/discord-sync/DiscordSyncManager";
 import { DatabaseActions } from "./features/discord-sync/actions";
 import { speakVoiceCall } from "./features/speak-voice-call/speakVoiceCall";
+import { VoiceStateManager } from "./features/voice-state/VoiceStateManager";
 import type { Command } from "./types";
 import { loadCommands } from "./utils/loadCommands";
 
@@ -21,6 +22,7 @@ export class Bot {
 	public surrealManager: SurrealDBManager;
 	public syncManager?: DiscordSyncManager;
 	public actionsManager?: DatabaseActions;
+	public voiceStateManager?: VoiceStateManager;
 
 	constructor() {
 		this.client = new Client({
@@ -146,6 +148,13 @@ export class Bot {
 			// Start action processor
 			this.actionsManager.startActionProcessor(30000); // Check every 30 seconds
 
+			// Initialize voice state manager
+			this.voiceStateManager = new VoiceStateManager(
+				this.client,
+				this.surrealManager,
+			);
+			await this.voiceStateManager.initialize();
+
 			console.log("🔹 SurrealDB sync initialized successfully");
 		} catch (error) {
 			console.error("🔸 Failed to initialize SurrealDB sync:", error);
@@ -210,6 +219,11 @@ export class Bot {
 
 	async shutdown(): Promise<void> {
 		// Silent shutdown - no console output to prevent lingering logs
+
+		// End all active voice sessions on shutdown
+		if (this.voiceStateManager) {
+			await this.voiceStateManager.endAllActiveSessions();
+		}
 
 		// Shutdown sync manager first to stop all sync operations
 		if (this.syncManager) {

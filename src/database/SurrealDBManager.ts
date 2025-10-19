@@ -11,6 +11,9 @@ import type {
 	SurrealMember,
 	SurrealMessage,
 	SurrealRole,
+	SurrealVoiceHistory,
+	SurrealVoiceSession,
+	SurrealVoiceState,
 	SyncMetadata,
 } from "./schema";
 
@@ -101,6 +104,9 @@ export class SurrealDBManager {
 			"DEFINE TABLE messages SCHEMAFULL;",
 			"DEFINE TABLE actions SCHEMAFULL;",
 			"DEFINE TABLE sync_metadata SCHEMAFULL;",
+			"DEFINE TABLE voice_states SCHEMAFULL PERMISSIONS FULL;",
+			"DEFINE TABLE voice_history SCHEMAFULL PERMISSIONS FULL;",
+			"DEFINE TABLE voice_sessions SCHEMAFULL PERMISSIONS FULL;",
 
 			// Message fields
 			"DEFINE FIELD guild_id ON messages TYPE string;",
@@ -152,6 +158,56 @@ export class SurrealDBManager {
 			"DEFINE FIELD status ON sync_metadata TYPE string;",
 			"DEFINE FIELD created_at ON sync_metadata TYPE datetime;",
 			"DEFINE FIELD updated_at ON sync_metadata TYPE datetime;",
+
+			// Voice state fields
+			"DEFINE FIELD guild_id ON voice_states TYPE string;",
+			"DEFINE FIELD user_id ON voice_states TYPE string;",
+			"DEFINE FIELD channel_id ON voice_states TYPE option<string>;",
+			"DEFINE FIELD self_mute ON voice_states TYPE bool;",
+			"DEFINE FIELD self_deaf ON voice_states TYPE bool;",
+			"DEFINE FIELD server_mute ON voice_states TYPE bool;",
+			"DEFINE FIELD server_deaf ON voice_states TYPE bool;",
+			"DEFINE FIELD streaming ON voice_states TYPE bool;",
+			"DEFINE FIELD self_video ON voice_states TYPE bool;",
+			"DEFINE FIELD suppress ON voice_states TYPE bool;",
+			"DEFINE FIELD session_id ON voice_states TYPE option<string>;",
+			"DEFINE FIELD joined_at ON voice_states TYPE option<datetime>;",
+			"DEFINE FIELD created_at ON voice_states TYPE datetime;",
+			"DEFINE FIELD updated_at ON voice_states TYPE datetime;",
+
+			// Voice history fields
+			"DEFINE FIELD guild_id ON voice_history TYPE string;",
+			"DEFINE FIELD user_id ON voice_history TYPE string;",
+			"DEFINE FIELD channel_id ON voice_history TYPE option<string>;",
+			"DEFINE FIELD event_type ON voice_history TYPE string;",
+			"DEFINE FIELD from_channel_id ON voice_history TYPE option<string>;",
+			"DEFINE FIELD to_channel_id ON voice_history TYPE option<string>;",
+			"DEFINE FIELD self_mute ON voice_history TYPE bool;",
+			"DEFINE FIELD self_deaf ON voice_history TYPE bool;",
+			"DEFINE FIELD server_mute ON voice_history TYPE bool;",
+			"DEFINE FIELD server_deaf ON voice_history TYPE bool;",
+			"DEFINE FIELD streaming ON voice_history TYPE bool;",
+			"DEFINE FIELD self_video ON voice_history TYPE bool;",
+			"DEFINE FIELD session_id ON voice_history TYPE option<string>;",
+			"DEFINE FIELD session_duration ON voice_history TYPE option<int>;",
+			"DEFINE FIELD timestamp ON voice_history TYPE datetime;",
+			"DEFINE FIELD created_at ON voice_history TYPE datetime;",
+
+			// Voice session fields
+			"DEFINE FIELD guild_id ON voice_sessions TYPE string;",
+			"DEFINE FIELD user_id ON voice_sessions TYPE string;",
+			"DEFINE FIELD channel_id ON voice_sessions TYPE string;",
+			"DEFINE FIELD joined_at ON voice_sessions TYPE datetime;",
+			"DEFINE FIELD left_at ON voice_sessions TYPE datetime;",
+			"DEFINE FIELD duration ON voice_sessions TYPE int;",
+			"DEFINE FIELD channels_visited ON voice_sessions TYPE array<string>;",
+			"DEFINE FIELD switch_count ON voice_sessions TYPE int;",
+			"DEFINE FIELD time_muted ON voice_sessions TYPE int;",
+			"DEFINE FIELD time_deafened ON voice_sessions TYPE int;",
+			"DEFINE FIELD time_streaming ON voice_sessions TYPE int;",
+			"DEFINE FIELD active ON voice_sessions TYPE bool;",
+			"DEFINE FIELD created_at ON voice_sessions TYPE datetime;",
+			"DEFINE FIELD updated_at ON voice_sessions TYPE datetime;",
 		];
 
 		for (const query of schemaQueries) {
@@ -935,9 +991,9 @@ export class SurrealDBManager {
 			// Try to get a few messages using direct select to see if any exist
 			// We'll use patterns that might match real Discord message IDs
 			const testIds = [
-				`messages:test-message-123`, // Our test message
-				`messages:1279285623903092859`, // Known real message ID
-				`messages:1279285586829774900`, // Another known real message ID
+				"messages:test-message-123", // Our test message
+				"messages:1279285623903092859", // Known real message ID
+				"messages:1279285586829774900", // Another known real message ID
 			];
 
 			let foundAny = false;
@@ -1019,9 +1075,9 @@ export class SurrealDBManager {
 				const batchResults = await Promise.all(batchPromises);
 
 				for (const result of batchResults) {
-					if (result.success) {
+					if (result.success && result.data !== undefined) {
 						results.push(result.data);
-					} else {
+					} else if (!result.success && result.error !== undefined) {
 						errors.push(result.error);
 					}
 				}
@@ -1231,5 +1287,329 @@ export class SurrealDBManager {
 				await this.reconnect();
 			}
 		}, delay);
+	}
+
+	// Voice state operations
+	async upsertVoiceState(
+		state: Partial<SurrealVoiceState>,
+	): Promise<DatabaseResult<SurrealVoiceState>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			// Use proper SurrealDB record format - let SurrealDB auto-generate the ID
+			console.log("🔍 Upserting voice state:", state.id);
+
+			try {
+				// Try CREATE first with auto-generated ID
+				const result = await this.db.create("voice_states", {
+					...state,
+					updated_at: new Date(),
+				});
+				console.log("🔍 Create result:", result);
+				return { success: true, data: result as unknown as SurrealVoiceState };
+			} catch (error) {
+				// If CREATE fails because record exists, try UPDATE using the specific ID
+				if (
+					error instanceof Error &&
+					error.message.includes("already exists")
+				) {
+					console.log("🔍 Record exists, updating instead...");
+
+					// For updates, we need to handle field clearing differently
+					// If channel_id is not provided, we need to explicitly clear it
+					const updateData = {
+						...state,
+						updated_at: new Date(),
+					};
+
+					// If channel_id is not in the update data, explicitly set it to NONE to clear it
+					if (!("channel_id" in state)) {
+						updateData.channel_id = null; // This will be converted to NONE by SurrealDB
+					}
+
+					const updateResult = await this.db.update(
+						`voice_states:${state.id}`,
+						updateData,
+					);
+					console.log("🔍 Update result:", updateResult);
+					return {
+						success: true,
+						data: updateResult as unknown as SurrealVoiceState,
+					};
+				}
+				// Re-throw other errors
+				throw error;
+			}
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				(error.message.includes("no connection available") ||
+					error.message.includes("connection to SurrealDB has dropped"))
+			) {
+				return { success: false, error: "Connection unavailable" };
+			}
+			console.error("🔸 Failed to upsert voice state:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	async getVoiceState(
+		userId: string,
+		guildId: string,
+	): Promise<DatabaseResult<SurrealVoiceState>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const id = `voice_states:${guildId}:${userId}`;
+			const result = await this.db.select(id);
+
+			if (!result || (Array.isArray(result) && result.length === 0)) {
+				return { success: false, error: "Voice state not found" };
+			}
+
+			const voiceStateData = Array.isArray(result) ? result[0] : result;
+			return {
+				success: true,
+				data: voiceStateData as unknown as SurrealVoiceState,
+			};
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				(error.message.includes("no connection available") ||
+					error.message.includes("connection to SurrealDB has dropped"))
+			) {
+				return { success: false, error: "Connection unavailable" };
+			}
+			console.error("🔸 Failed to get voice state:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	async getVoiceStatesByChannel(
+		channelId: string,
+	): Promise<DatabaseResult<SurrealVoiceState[]>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const result = await this.db.query(
+				"SELECT * FROM voice_states WHERE channel_id = $channel_id",
+				{ channel_id: channelId },
+			);
+
+			// SurrealDB returns results in a different format
+			const voiceStates = (result[0] as SurrealVoiceState[]) || [];
+
+			return {
+				success: true,
+				data: voiceStates,
+			};
+		} catch (error) {
+			console.error("🔸 Failed to get voice states by channel:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	async getVoiceStatesByGuild(
+		guildId: string,
+	): Promise<DatabaseResult<SurrealVoiceState[]>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const result = await this.db.query(
+				"SELECT * FROM voice_states WHERE guild_id = $guild_id",
+				{ guild_id: guildId },
+			);
+
+			// SurrealDB returns results in a different format
+			const voiceStates = (result[0] as SurrealVoiceState[]) || [];
+
+			return {
+				success: true,
+				data: voiceStates,
+			};
+		} catch (error) {
+			console.error("🔸 Failed to get voice states by guild:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	async createVoiceHistory(
+		history: Partial<SurrealVoiceHistory>,
+	): Promise<DatabaseResult<SurrealVoiceHistory>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const result = await this.db.create("voice_history", {
+				...history,
+				created_at: new Date(),
+			});
+
+			return { success: true, data: result as unknown as SurrealVoiceHistory };
+		} catch (error) {
+			console.error("🔸 Failed to create voice history:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	async getVoiceHistoryByUser(
+		userId: string,
+		limit?: number,
+	): Promise<DatabaseResult<SurrealVoiceHistory[]>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const limitClause = limit ? `LIMIT ${limit}` : "";
+			const result = await this.db.query(
+				`SELECT * FROM voice_history WHERE user_id = $user_id ORDER BY timestamp DESC ${limitClause}`,
+				{ user_id: userId },
+			);
+			return {
+				success: true,
+				data:
+					((result[0] as Record<string, unknown>)
+						?.result as SurrealVoiceHistory[]) || [],
+			};
+		} catch (error) {
+			console.error("🔸 Failed to get voice history by user:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	async createVoiceSession(
+		session: Partial<SurrealVoiceSession>,
+	): Promise<DatabaseResult<SurrealVoiceSession>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const result = await this.db.create(`voice_sessions:${session.id}`, {
+				...session,
+				created_at: new Date(),
+				updated_at: new Date(),
+			});
+
+			return { success: true, data: result as unknown as SurrealVoiceSession };
+		} catch (error) {
+			console.error("🔸 Failed to create voice session:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	async updateVoiceSession(
+		sessionId: string,
+		updates: Partial<SurrealVoiceSession>,
+	): Promise<DatabaseResult<SurrealVoiceSession>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const result = await this.db.merge(`voice_sessions:${sessionId}`, {
+				...updates,
+				updated_at: new Date(),
+			});
+
+			return { success: true, data: result as unknown as SurrealVoiceSession };
+		} catch (error) {
+			console.error("🔸 Failed to update voice session:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	async getActiveVoiceSession(
+		userId: string,
+		guildId: string,
+	): Promise<DatabaseResult<SurrealVoiceSession>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const result = await this.db.query(
+				"SELECT * FROM voice_sessions WHERE user_id = $user_id AND guild_id = $guild_id AND active = true",
+				{ user_id: userId, guild_id: guildId },
+			);
+
+			const sessions =
+				((result[0] as Record<string, unknown>)
+					?.result as SurrealVoiceSession[]) || [];
+			if (sessions.length === 0) {
+				return { success: false, error: "No active session found" };
+			}
+
+			return { success: true, data: sessions[0] };
+		} catch (error) {
+			console.error("🔸 Failed to get active voice session:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	async getVoiceSessionsByUser(
+		userId: string,
+		limit?: number,
+	): Promise<DatabaseResult<SurrealVoiceSession[]>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const limitClause = limit ? `LIMIT ${limit}` : "";
+			const result = await this.db.query(
+				`SELECT * FROM voice_sessions WHERE user_id = $user_id ORDER BY joined_at DESC ${limitClause}`,
+				{ user_id: userId },
+			);
+			return {
+				success: true,
+				data:
+					((result[0] as Record<string, unknown>)
+						?.result as SurrealVoiceSession[]) || [],
+			};
+		} catch (error) {
+			console.error("🔸 Failed to get voice sessions by user:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
 	}
 }
