@@ -17,6 +17,9 @@ export class VoiceStateManager {
 	async initialize(): Promise<void> {
 		console.log("🔹 Initializing Voice State Manager...");
 
+		// Sync all voice channels (including empty ones)
+		await this.syncAllVoiceChannels();
+
 		// Sync current voice states from Discord
 		await this.syncCurrentVoiceStates();
 
@@ -24,6 +27,38 @@ export class VoiceStateManager {
 		this.setupVoiceStateHandlers();
 
 		console.log("🔹 Voice State Manager initialized");
+	}
+
+	private async syncAllVoiceChannels(): Promise<void> {
+		// Sync all voice channels (including empty ones) to the database
+		for (const [_, guild] of this.client.guilds.cache) {
+			console.log(`🔹 Syncing all voice channels for guild: ${guild.name}`);
+
+			for (const [channelId, channel] of guild.channels.cache) {
+				if (channel.isVoiceBased()) {
+					console.log(`🔹 Syncing channel: ${channel.name} (${channelId})`);
+
+					// Create or update channel record
+					const channelData = {
+						id: channelId,
+						guild_id: guild.id,
+						name: channel.name,
+						type: channel.type.toString(),
+						active: true,
+						created_at: new Date(),
+						updated_at: new Date(),
+					};
+
+					const result = await this.db.upsertChannel(channelData);
+					if (!result.success) {
+						console.error(
+							`🔸 Failed to sync channel ${channel.name}:`,
+							result.error,
+						);
+					}
+				}
+			}
+		}
 	}
 
 	private async syncCurrentVoiceStates(): Promise<void> {
@@ -421,7 +456,9 @@ export class VoiceStateManager {
 
 		for (const [key, _] of this.sessionStartTimes) {
 			const [userId, guildId] = key.split(":");
-			await this.endVoiceSession(userId, guildId);
+			if (userId && guildId) {
+				await this.endVoiceSession(userId, guildId);
+			}
 		}
 
 		// Clear all timers

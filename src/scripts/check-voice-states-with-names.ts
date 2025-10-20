@@ -25,56 +25,56 @@ async function checkVoiceStatesWithNames() {
 			return;
 		}
 
+		// Get all voice channels from database
+		const channelsResult = await dbManager.db.query(
+			"SELECT * FROM channels WHERE guildId = $guild_id AND type = 2",
+			{ guild_id: "1254694808228986912" },
+		);
+		const channels = (channelsResult[0] as any[]) || [];
+
 		// Get all voice states
-		const result = await dbManager.db.query(
+		const voiceStatesResult = await dbManager.db.query(
 			"SELECT * FROM voice_states WHERE guild_id = $guild_id",
 			{ guild_id: "1254694808228986912" },
 		);
-		const voiceStates = (result[0] as any[]) || [];
+		const voiceStates = (voiceStatesResult[0] as any[]) || [];
 
-		console.log(`\n📊 Current Voice States (${voiceStates.length}):`);
+		console.log(
+			`\n📊 Voice Channels & States (${channels.length} channels, ${voiceStates.length} users):`,
+		);
 
-		if (voiceStates.length === 0) {
-			console.log("   No users currently in voice channels");
+		if (channels.length === 0) {
+			console.log("   No voice channels found in database");
 		} else {
-			// Group by guild
-			const guilds = new Map<string, any[]>();
+			console.log(`\n🏰 Guild: Arcados (1254694808228986912)`);
+
+			// Group voice states by channel
+			const statesByChannel = new Map<string, any[]>();
+			const notInVoiceStates: any[] = [];
+
 			for (const state of voiceStates) {
-				if (!guilds.has(state.guild_id)) {
-					guilds.set(state.guild_id, []);
+				if (state.channel_id) {
+					if (!statesByChannel.has(state.channel_id)) {
+						statesByChannel.set(state.channel_id, []);
+					}
+					statesByChannel.get(state.channel_id)!.push(state);
+				} else {
+					notInVoiceStates.push(state);
 				}
-				guilds.get(state.guild_id)!.push(state);
 			}
 
-			for (const [guildId, states] of guilds) {
-				console.log(`\n🏰 Guild: Arcados (${guildId})`);
+			// Show all channels (including empty ones)
+			for (const channel of channels) {
+				const channelStates = statesByChannel.get(channel.discordId) || [];
 
-				// Group by channel
-				const channels = new Map<string, any[]>();
-				for (const state of states) {
-					const channelId = state.channel_id || "not-in-voice";
-					if (!channels.has(channelId)) {
-						channels.set(channelId, []);
-					}
-					channels.get(channelId)!.push(state);
-				}
-
-				for (const [channelId, channelStates] of channels) {
-					let channelName = channelId;
-					// Map known channel IDs to names
-					if (channelId === "1427152903260344350") {
-						channelName = "🌿 - Cantina";
-					} else if (channelId === "1428282734173880440") {
-						channelName = "➕ New Channel";
-					}
-
-					if (channelId === "not-in-voice") {
-						console.log(`   📢 Not in voice (${channelStates.length} users):`);
-					} else {
-						console.log(
-							`   📢 Channel: ${channelName} (${channelStates.length} users):`,
-						);
-					}
+				if (channelStates.length === 0) {
+					console.log(
+						`   📢 Channel: ${channel.channelName} (0 users) - EMPTY`,
+					);
+				} else {
+					console.log(
+						`   📢 Channel: ${channel.channelName} (${channelStates.length} users):`,
+					);
 
 					for (const state of channelStates) {
 						// Fetch user info from Discord
@@ -109,6 +109,44 @@ async function checkVoiceStatesWithNames() {
 								).toLocaleString()}`,
 							);
 						}
+					}
+				}
+			}
+
+			// Show users not in voice
+			if (notInVoiceStates.length > 0) {
+				console.log(`   📢 Not in voice (${notInVoiceStates.length} users):`);
+
+				for (const state of notInVoiceStates) {
+					// Fetch user info from Discord
+					let userName = state.user_id;
+					try {
+						const user = await client.users.fetch(state.user_id);
+						userName = user.displayName || user.username;
+					} catch (error) {
+						// If fetch fails, keep the user ID
+						userName = `user_${state.user_id}`;
+					}
+
+					const status = [];
+					if (state.self_mute) status.push("🔇 Muted");
+					if (state.self_deaf) status.push("🔇 Deafened");
+					if (state.server_mute) status.push("🔇 Server Muted");
+					if (state.server_deaf) status.push("🔇 Server Deafened");
+					if (state.streaming) status.push("📺 Streaming");
+					if (state.self_video) status.push("📹 Video");
+
+					const statusStr =
+						status.length > 0 ? ` (${status.join(", ")})` : " 🔊👂";
+					console.log(`      ${userName}${statusStr}`);
+
+					if (state.session_id) {
+						console.log(`         Session: ${state.session_id}`);
+					}
+					if (state.joined_at) {
+						console.log(
+							`         Joined: ${new Date(state.joined_at).toLocaleString()}`,
+						);
 					}
 				}
 			}
