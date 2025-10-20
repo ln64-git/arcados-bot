@@ -1669,4 +1669,46 @@ export class SurrealDBManager {
 			};
 		}
 	}
+
+	async deleteVoiceState(id: string): Promise<DatabaseResult<void>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			await this.db.query("DELETE type::thing('voice_states', $id)", { id });
+			console.log("🔹 Deleted voice state:", id);
+			return { success: true };
+		} catch (error) {
+			console.error("🔸 Failed to delete voice state:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	async getActiveVoiceStates(
+		guildId: string,
+	): Promise<DatabaseResult<SurrealVoiceState[]>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const result = await this.db.query(
+				"SELECT * FROM voice_states WHERE guild_id = $guild_id AND channel_id IS NOT NONE",
+				{ guild_id: guildId },
+			);
+
+			const voiceStates = (result[0] as any[]) || [];
+			return { success: true, data: voiceStates as SurrealVoiceState[] };
+		} catch (error) {
+			console.error("🔸 Failed to get active voice states:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
 }

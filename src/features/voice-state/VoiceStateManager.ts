@@ -1,6 +1,7 @@
 import type { Client, VoiceState } from "discord.js";
 import { v4 as uuidv4 } from "uuid";
 import type { SurrealDBManager } from "../../database/SurrealDBManager";
+import type { DatabaseResult } from "../../database/schema";
 import { discordVoiceStateToSurreal } from "../../database/schema";
 
 export class VoiceStateManager {
@@ -25,6 +26,12 @@ export class VoiceStateManager {
 
 		// Setup event handlers
 		this.setupVoiceStateHandlers();
+
+		// Run initial reconciliation to fix any existing discrepancies
+		await this.reconcileVoiceStates();
+
+		// Start periodic reconciliation (every 5 minutes)
+		setInterval(() => this.reconcileVoiceStates(), 5 * 60 * 1000);
 
 		console.log("🔹 Voice State Manager initialized");
 	}
@@ -151,7 +158,9 @@ export class VoiceStateManager {
 		voiceStateData.id = `${guildId}_${userId}`; // Use underscore instead of colon
 		voiceStateData.session_id = sessionId;
 		voiceStateData.joined_at = new Date();
-		const result = await this.db.upsertVoiceState(voiceStateData);
+		const result = await this.retryDatabaseOperation(() =>
+			this.db.upsertVoiceState(voiceStateData),
+		);
 		if (!result.success) {
 			console.error("🔸 Failed to upsert voice state (join):", result.error);
 		}
@@ -196,15 +205,11 @@ export class VoiceStateManager {
 		// End current session
 		await this.endVoiceSession(userId, guildId);
 
-		// Update voice state (set channel_id to null)
-		const voiceStateData = discordVoiceStateToSurreal(newState);
-		voiceStateData.id = `${guildId}_${userId}`; // Use underscore instead of colon
-		const { session_id, joined_at, channel_id, ...cleanVoiceStateData } =
-			voiceStateData;
-		// channel_id is omitted to clear it when user leaves voice
-		const result = await this.db.upsertVoiceState(cleanVoiceStateData);
+		// Delete voice state record entirely (no longer tracking users not in voice)
+		const voiceStateId = `${guildId}_${userId}`;
+		const result = await this.db.deleteVoiceState(voiceStateId);
 		if (!result.success) {
-			console.error("🔸 Failed to upsert voice state (leave):", result.error);
+			console.error("🔸 Failed to delete voice state (leave):", result.error);
 		}
 
 		// Record history
@@ -267,7 +272,9 @@ export class VoiceStateManager {
 		// Update voice state
 		const voiceStateData = discordVoiceStateToSurreal(newState);
 		voiceStateData.id = `${guildId}_${userId}`; // Use underscore instead of colon
-		const result = await this.db.upsertVoiceState(voiceStateData);
+		const result = await this.retryDatabaseOperation(() =>
+			this.db.upsertVoiceState(voiceStateData),
+		);
 		if (!result.success) {
 			console.error("🔸 Failed to upsert voice state (switch):", result.error);
 		}
@@ -320,7 +327,9 @@ export class VoiceStateManager {
 		// Update voice state
 		const voiceStateData = discordVoiceStateToSurreal(newState);
 		voiceStateData.id = `${guildId}_${userId}`; // Use underscore instead of colon
-		const result = await this.db.upsertVoiceState(voiceStateData);
+		const result = await this.retryDatabaseOperation(() =>
+			this.db.upsertVoiceState(voiceStateData),
+		);
 		if (!result.success) {
 			console.error(
 				"🔸 Failed to upsert voice state (state_change):",
@@ -467,5 +476,87 @@ export class VoiceStateManager {
 		}
 		this.stateChangeTimers.clear();
 		this.sessionStartTimes.clear();
+	}
+
+	private async retryDatabaseOperation<T>(
+		operation: () => Promise<DatabaseResult<T>>,
+		maxRetries = 3,
+	): Promise<DatabaseResult<T>> {
+		for (let i = 0; i < maxRetries; i++) {
+			const result = await operation();
+			if (result.success) return result;
+
+			if (i < maxRetries - 1) {
+				await new Promise((resolve) => setTimeout(resolve, 1000 * (i + 1)));
+			}
+		}
+		return { success: false, error: "Max retries exceeded" };
+	}
+
+	private async reconcileVoiceStates(): Promise<void> {
+		console.log("🔹 Starting voice state reconciliation...");
+
+		for (const guild of this.client.guilds.cache.values()) {
+			try {
+				// Get Discord truth
+				const discordStates = new Map<string, string>(); // userId -> channelId
+				for (const [userId, voiceState] of guild.voiceStates.cache) {
+					if (voiceState.channelId) {
+						discordStates.set(userId, voiceState.channelId);
+					}
+				}
+
+				// Get DB states
+				const dbResult = await this.db.getActiveVoiceStates(guild.id);
+				if (!dbResult.success) {
+					console.error(
+						`🔸 Failed to get DB states for ${guild.name}:`,
+						dbResult.error,
+					);
+					continue;
+				}
+
+				const dbStates = new Map<string, string>();
+				for (const state of dbResult.data || []) {
+					if (state.channel_id) {
+						dbStates.set(state.user_id, state.channel_id);
+					}
+				}
+
+				// Find and fix discrepancies
+				let fixedCount = 0;
+
+				// 1. Users in Discord but missing/wrong in DB
+				for (const [userId, channelId] of discordStates) {
+					if (!dbStates.has(userId) || dbStates.get(userId) !== channelId) {
+						console.log(
+							`🔹 Fixing missing/wrong state: ${userId} should be in ${channelId}`,
+						);
+						const voiceState = guild.voiceStates.cache.get(userId);
+						if (voiceState) {
+							await this.handleVoiceJoin(voiceState, null);
+							fixedCount++;
+						}
+					}
+				}
+
+				// 2. Users in DB but not in Discord (stale data)
+				for (const [userId, _] of dbStates) {
+					if (!discordStates.has(userId)) {
+						console.log(`🔹 Removing stale state: ${userId} not in Discord`);
+						await this.db.deleteVoiceState(`${guild.id}_${userId}`);
+						fixedCount++;
+					}
+				}
+
+				if (fixedCount > 0) {
+					console.log(
+						`🔹 Reconciliation complete for ${guild.name}: ${fixedCount} fixes applied`,
+					);
+				}
+			} catch (error) {
+				console.error(`🔸 Reconciliation error for ${guild.name}:`, error);
+			}
+		}
 	}
 }
