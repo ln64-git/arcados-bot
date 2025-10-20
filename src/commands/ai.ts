@@ -7,8 +7,8 @@ import {
 import { config } from "../config";
 import {
 	type AIResponse,
-	OpenAIManager,
-} from "../features/ai-assistant/OpenAIManager";
+	GrokManager,
+} from "../features/ai-assistant/GrokManager";
 import type { Command } from "../types";
 
 interface DiscordField {
@@ -110,20 +110,20 @@ function parseContentForDiscord(content: string): StructuredContent {
 	return result;
 }
 
-let openaiManager: OpenAIManager | null = null;
+let grokManager: GrokManager | null = null;
 
-// Initialize OpenAIManager lazily
-function getOpenAIManager(): OpenAIManager {
-	if (!openaiManager) {
+// Initialize GrokManager lazily
+function getGrokManager(): GrokManager {
+	if (!grokManager) {
 		try {
-			openaiManager = new OpenAIManager();
+			grokManager = new GrokManager();
 		} catch (error) {
 			throw new Error(
-				"🔸 AI service is not configured. Please add your OpenAI API key to the .env file:\n`OPENAI_API_KEY=your_api_key_here`\n\nGet your API key from: https://platform.openai.com/api-keys",
+				"🔸 AI service is not configured. Please add your Grok API key to the .env file:\n`GROK_API_KEY=your_api_key_here`\n\nGet your API key from: https://console.x.ai/",
 			);
 		}
 	}
-	return openaiManager;
+	return grokManager;
 }
 
 export const aiCommand: Command = {
@@ -162,11 +162,11 @@ export const aiCommand: Command = {
 			return;
 		}
 
-		// Check if OpenAI API key is configured
-		if (!config.openaiApiKey) {
+		// Check if Grok API key is configured
+		if (!config.grokApiKey) {
 			await interaction.reply({
 				content:
-					"🔸 AI service is not configured. Please add your OpenAI API key to the .env file:\n`OPENAI_API_KEY=your_api_key_here`\n\nGet your API key from: https://platform.openai.com/api-keys",
+					"🔸 AI service is not configured. Please add your Grok API key to the .env file:\n`GROK_API_KEY=your_api_key_here`\n\nGet your API key from: https://console.x.ai/",
 				ephemeral: true,
 			});
 			return;
@@ -179,7 +179,7 @@ export const aiCommand: Command = {
 		await interaction.deferReply();
 
 		try {
-			const manager = getOpenAIManager();
+			const manager = getGrokManager();
 			const userId = interaction.user.id;
 
 			let response: AIResponse;
@@ -189,37 +189,37 @@ export const aiCommand: Command = {
 			switch (mode) {
 				case "ask": {
 					response = await manager.askQuestion(prompt, userId);
-					title = `Ask gpt-4o-mini\n*${prompt}*`;
+					title = `Ask: *${prompt}*`;
 					color = 0x3c3d7d; // Same as starboard
 					break;
 				}
 				case "imagine": {
 					response = await manager.generateCreative(prompt, userId);
-					title = `*${prompt}*`;
+					title = `Imagine: *${prompt}*`;
 					color = 0x3c3d7d; // Same as starboard
 					break;
 				}
 				case "fact-check": {
 					response = await manager.factCheck(prompt, userId);
-					title = `Fact Check gpt-4o-mini\n*${prompt}*`;
+					title = `Fact Check: *${prompt}*`;
 					color = 0x3c3d7d; // Same as starboard
 					break;
 				}
 				case "source": {
 					response = await manager.citeSources(prompt, userId);
-					title = `Source gpt-4o-mini\n*${prompt}*`;
+					title = `Source: *${prompt}*`;
 					color = 0x3c3d7d; // Same as starboard
 					break;
 				}
 				case "define": {
 					response = await manager.defineTerm(prompt, userId);
-					title = `Define gpt-4o-mini\n*${prompt}*`;
+					title = `Define: *${prompt}*`;
 					color = 0x3c3d7d; // Same as starboard
 					break;
 				}
 				case "context": {
 					response = await manager.provideContext(prompt, userId);
-					title = `Context gpt-4o-mini\n*${prompt}*`;
+					title = `Context: *${prompt}*`;
 					color = 0x3c3d7d; // Same as starboard
 					break;
 				}
@@ -245,11 +245,17 @@ export const aiCommand: Command = {
 					? new Date(rateLimitInfo.resetTime).toLocaleTimeString()
 					: "Now";
 
+			// Determine model name for footer
+			let modelName = "Grok-3";
+			if (mode === "imagine") {
+				modelName = "Grok-2-Image";
+			}
+
 			const embed = new EmbedBuilder()
 				.setTitle(title)
 				.setColor(color)
 				.setFooter({
-					text: `Rate limit: ${rateLimitInfo.remaining} remaining | Resets at: ${resetTime}\nToday at ${new Date().toLocaleTimeString()}`,
+					text: `Generated with ${modelName}\nRate limit: ${rateLimitInfo.remaining} remaining | Resets at: ${resetTime}\nToday at ${new Date().toLocaleTimeString()}`,
 				})
 				.setTimestamp();
 

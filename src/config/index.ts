@@ -37,6 +37,7 @@ export interface BotConfig {
 	// Optional integrations
 	webhookUrl?: string;
 	openaiApiKey?: string;
+	grokApiKey?: string;
 	youtubeApiKey?: string;
 }
 
@@ -92,6 +93,7 @@ function validateConfig(): BotConfig {
 		// Optional integrations
 		webhookUrl: process.env.WEBHOOK_URL || undefined,
 		openaiApiKey: process.env.OPENAI_API_KEY || undefined,
+		grokApiKey: process.env.GROK_API_KEY || undefined,
 		youtubeApiKey: process.env.YOUTUBE_API_KEY || undefined,
 	};
 
