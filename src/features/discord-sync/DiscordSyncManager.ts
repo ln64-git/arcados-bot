@@ -38,6 +38,29 @@ export class DiscordSyncManager {
 		this.userHistory = new UserHistoryTracker();
 	}
 
+	// Helper methods
+	private async isUserManagedChannel(channelId: string): Promise<boolean> {
+		try {
+			const result = await this.db.query(
+				"SELECT is_user_channel FROM channels WHERE id = $channel_id AND active = true",
+				{ channel_id: channelId },
+			);
+
+			if (result[0] && Array.isArray(result[0]) && result[0].length > 0) {
+				const channel = result[0][0] as { is_user_channel?: boolean };
+				return channel.is_user_channel === true;
+			}
+
+			return false;
+		} catch (error) {
+			console.error(
+				`🔸 Error checking if channel ${channelId} is user-managed:`,
+				error,
+			);
+			return false;
+		}
+	}
+
 	async initialize(): Promise<void> {
 		if (!this.db.isConnected()) {
 			console.log("🔸 Database not connected, skipping sync initialization");
@@ -83,6 +106,17 @@ export class DiscordSyncManager {
 				channel.guild &&
 				channel.guild.id === targetGuildId
 			) {
+				const channelName = "name" in channel ? channel.name : channel.id;
+				console.log(`🔹 Channel created: ${channelName} (${channel.id})`);
+
+				// Skip ALL user-managed voice channels - VoiceChannelManager owns them completely
+				if (channel.isVoiceBased() && channelName.includes("'s Channel")) {
+					console.log(
+						`🔹 Skipping sync for user-managed voice channel: ${channelName}`,
+					);
+					return;
+				}
+
 				await this.syncChannel(channel, channel.guild.id);
 			}
 		});
@@ -94,6 +128,17 @@ export class DiscordSyncManager {
 				newChannel.guild &&
 				newChannel.guild.id === targetGuildId
 			) {
+				// Skip ALL user-managed voice channels - VoiceChannelManager owns them completely
+				if (
+					newChannel.isVoiceBased() &&
+					newChannel.name?.includes("'s Channel")
+				) {
+					console.log(
+						`🔹 Skipping sync for user-managed voice channel update: ${newChannel.name}`,
+					);
+					return;
+				}
+
 				await this.syncChannel(newChannel, newChannel.guild.id);
 			}
 		});
@@ -105,6 +150,15 @@ export class DiscordSyncManager {
 				channel.guild &&
 				channel.guild.id === targetGuildId
 			) {
+				// Skip ALL user-managed voice channels - VoiceChannelManager owns them completely
+				const channelName = "name" in channel ? channel.name : channel.id;
+				if (channel.isVoiceBased() && channelName.includes("'s Channel")) {
+					console.log(
+						`🔹 Skipping sync for user-managed voice channel deletion: ${channelName}`,
+					);
+					return;
+				}
+
 				await this.markChannelInactive(channel.id);
 			}
 		});
@@ -815,6 +869,7 @@ export class DiscordSyncManager {
 
 			if (result.success) {
 				const channelName = "name" in channel ? channel.name : channel.id;
+				console.log(`🔹 Synced channel: ${channelName} (${channel.id})`);
 			} else {
 				const channelName = "name" in channel ? channel.name : channel.id;
 				console.error(

@@ -33,8 +33,16 @@ export const SURREAL_SCHEMA = {
 			parent_id: string?,
 			topic: string?,
 			nsfw: bool DEFAULT false,
-			created_at: datetime,
-			updated_at: datetime,
+			
+			-- Voice channel ownership
+			is_user_channel: bool DEFAULT false,
+			spawn_channel_id: string?,
+			current_owner_id: string?,
+			ownership_changed_at: datetime?,
+			activeUserIds: array<string> DEFAULT [],
+			
+			createdAt: datetime,
+			updatedAt: datetime,
 			active: bool DEFAULT true
 		};
 	`,
@@ -65,6 +73,9 @@ export const SURREAL_SCHEMA = {
 			-- Change tracking
 			profile_hash: string,
 			profile_history: array<object> DEFAULT [],
+			
+			-- Voice channel preferences
+			channel_preferences: object DEFAULT {},
 			
 			created_at: datetime,
 			updated_at: datetime,
@@ -202,14 +213,17 @@ export const SURREAL_SCHEMA = {
 			left_at: datetime?,
 			duration: int DEFAULT 0,
 			
-			-- Activity tracking
-			channels_visited: array<string> DEFAULT [],
-			switch_count: int DEFAULT 0,
-			
 			-- State tracking
 			time_muted: int DEFAULT 0,
 			time_deafened: int DEFAULT 0,
 			time_streaming: int DEFAULT 0,
+			
+			-- Ownership context
+			owner_at_join: string?,
+			is_grandfathered: bool DEFAULT false,
+			
+			-- Active moderation
+			applied_moderation: object DEFAULT {},
 			
 			active: bool DEFAULT true,
 			created_at: datetime,
@@ -243,6 +257,13 @@ export interface SurrealChannel {
 	parent_id?: string;
 	topic?: string;
 	nsfw: boolean;
+
+	// Voice channel ownership
+	is_user_channel?: boolean;
+	spawn_channel_id?: string;
+	current_owner_id?: string;
+	ownership_changed_at?: Date;
+
 	created_at: Date;
 	updated_at: Date;
 	active: boolean;
@@ -280,6 +301,9 @@ export interface SurrealMember {
 	// Change tracking
 	profile_hash: string;
 	profile_history: ProfileHistoryEntry[];
+
+	// Voice channel preferences
+	channel_preferences?: ChannelPreferences;
 
 	created_at: Date;
 	updated_at: Date;
@@ -403,14 +427,37 @@ export interface SurrealVoiceSession {
 	joined_at: Date;
 	left_at: Date | null;
 	duration: number;
-	channels_visited: string[];
-	switch_count: number;
 	time_muted: number;
 	time_deafened: number;
 	time_streaming: number;
+
+	// Ownership context
+	owner_at_join?: string;
+	is_grandfathered: boolean;
+
+	// Active moderation
+	applied_moderation?: AppliedModeration;
+
 	active: boolean;
 	created_at: Date;
 	updated_at: Date;
+}
+
+export interface ChannelPreferences {
+	channel_name?: string;
+	default_user_limit?: number;
+	banned_users?: string[];
+	muted_users?: string[];
+	deafened_users?: string[];
+	privacy_mode?: string;
+}
+
+export interface AppliedModeration {
+	is_muted?: boolean;
+	is_deafened?: boolean;
+	muted_by?: string;
+	deafened_by?: string;
+	applied_at?: Date;
 }
 
 // Live Query callback types
@@ -434,6 +481,16 @@ export type ActionType =
 	| "member_count_milestone"
 	| "user_xp_threshold"
 	| "global_ban_update"
+	| "voice_channel_update"
+	| "voice_channel_create"
+	| "voice_channel_rename"
+	| "voice_channel_delete"
+	| "voice_user_join"
+	| "voice_user_leave"
+	| "voice_moderation_mute"
+	| "voice_moderation_deafen"
+	| "voice_moderation_unmute"
+	| "voice_moderation_undeafen"
 	| "custom_action";
 
 export interface ActionPayload {
@@ -467,6 +524,67 @@ export interface ActionPayload {
 		user_id: string;
 		guild_ids: string[];
 		reason?: string;
+	};
+	voice_channel_update?: {
+		channel_id: string;
+		guild_id: string;
+		update_type: "mark_user_channel" | "transfer_ownership" | "delete_channel";
+		owner_id?: string;
+		spawn_channel_id?: string;
+		ownership_changed_at?: Date;
+	};
+	voice_channel_create?: {
+		guild_id: string;
+		user_id: string;
+		spawn_channel_id: string;
+		channel_name: string;
+		user_limit?: number;
+		parent_id?: string;
+		position?: number;
+	};
+	voice_channel_rename?: {
+		channel_id: string;
+		guild_id: string;
+		new_name: string;
+	};
+	voice_channel_delete?: {
+		channel_id: string;
+		guild_id: string;
+		reason?: string;
+	};
+	voice_user_join?: {
+		user_id: string;
+		guild_id: string;
+		channel_id: string;
+		channel_owner_id?: string;
+	};
+	voice_user_leave?: {
+		user_id: string;
+		guild_id: string;
+		channel_id: string;
+		was_owner: boolean;
+	};
+	voice_moderation_mute?: {
+		user_id: string;
+		guild_id: string;
+		channel_id: string;
+		owner_id: string;
+	};
+	voice_moderation_deafen?: {
+		user_id: string;
+		guild_id: string;
+		channel_id: string;
+		owner_id: string;
+	};
+	voice_moderation_unmute?: {
+		user_id: string;
+		guild_id: string;
+		channel_id: string;
+	};
+	voice_moderation_undeafen?: {
+		user_id: string;
+		guild_id: string;
+		channel_id: string;
 	};
 	custom_action?: Record<string, unknown>;
 }

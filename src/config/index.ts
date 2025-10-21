@@ -11,6 +11,7 @@ export interface BotConfig {
 	botPrefix: string;
 	botOwnerId?: string;
 	spawnChannelIds?: string[];
+	spawnChannelId?: string; // Single spawn channel for voice channel manager
 	excludedChannelIds?: string[];
 	permanentChannelIds?: string[];
 	starboardChannelId?: string;
@@ -61,6 +62,7 @@ function validateConfig(): BotConfig {
 		spawnChannelIds: process.env.SPAWN_CHANNEL_IDS
 			? process.env.SPAWN_CHANNEL_IDS.split(",").map((id) => id.trim())
 			: undefined,
+		spawnChannelId: process.env.SPAWN_CHANNEL_ID || undefined,
 		excludedChannelIds: process.env.EXCLUDED_CHANNEL_IDS
 			? process.env.EXCLUDED_CHANNEL_IDS.split(",").map((id) => id.trim())
 			: undefined,

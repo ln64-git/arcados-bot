@@ -19,17 +19,60 @@ export async function loadCommands(
 	commandsCollection: Collection<string, unknown>,
 ) {
 	const commands: unknown[] = [];
-	const commandsPath = path.join(__dirname, "../commands");
 
+	// Load legacy commands from src/commands/
+	await loadCommandsFromDirectory(
+		path.join(__dirname, "../commands"),
+		commandsCollection,
+		commands,
+		"legacy",
+	);
+
+	// Load feature commands from src/features/*/commands/
+	const featuresPath = path.join(__dirname, "../features");
+	if (fs.existsSync(featuresPath)) {
+		const features = fs
+			.readdirSync(featuresPath, { withFileTypes: true })
+			.filter((dirent) => dirent.isDirectory())
+			.map((dirent) => dirent.name);
+
+		for (const feature of features) {
+			const featureCommandsPath = path.join(featuresPath, feature, "commands");
+			if (fs.existsSync(featureCommandsPath)) {
+				await loadCommandsFromDirectory(
+					featureCommandsPath,
+					commandsCollection,
+					commands,
+					feature,
+				);
+			}
+		}
+	}
+
+	return commands;
+}
+
+async function loadCommandsFromDirectory(
+	commandsPath: string,
+	commandsCollection: Collection<string, unknown>,
+	commands: unknown[],
+	source: string,
+): Promise<void> {
 	// Check if commands directory exists
 	if (!fs.existsSync(commandsPath)) {
-		console.warn("🔸 Commands directory not found");
-		return commands;
+		console.warn(`🔸 Commands directory not found: ${commandsPath}`);
+		return;
 	}
 
 	const commandFiles = fs
 		.readdirSync(commandsPath)
 		.filter((file) => file.endsWith(".ts") || file.endsWith(".js"));
+
+	if (commandFiles.length === 0) {
+		return;
+	}
+
+	console.log(`🔹 Loading ${commandFiles.length} commands from ${source}`);
 
 	// Load commands in parallel for better performance
 	const loadPromises = commandFiles.map(async (file) => {
@@ -47,7 +90,10 @@ export async function loadCommands(
 			commandCache.set(cacheKey, commandModule);
 			return commandModule;
 		} catch (error) {
-			console.error(`🔸 Error loading command file ${file}:`, error);
+			console.error(
+				`🔸 Error loading command file ${file} from ${source}:`,
+				error,
+			);
 			return null;
 		}
 	});
@@ -75,15 +121,23 @@ export async function loadCommands(
 
 		if (commandExports.length > 0) {
 			for (const command of commandExports) {
+				// Check for duplicate command names
+				if (commandsCollection.has(command.data.name)) {
+					console.warn(
+						`🔸 Duplicate command name '${command.data.name}' from ${source}/${file}, skipping`,
+					);
+					continue;
+				}
+
 				commandsCollection.set(command.data.name, command);
 				commands.push(command.data.toJSON());
 			}
 		} else {
-			console.warn(`🔸 Skipping ${file}: missing 'data' or 'execute'`);
+			console.warn(
+				`🔸 Skipping ${source}/${file}: missing 'data' or 'execute'`,
+			);
 		}
 	}
-
-	return commands; // Important for later registration
 }
 
 // Hot reload for development

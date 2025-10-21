@@ -1,10 +1,10 @@
 import type { Client, VoiceState } from "discord.js";
 import { v4 as uuidv4 } from "uuid";
 import type { SurrealDBManager } from "../../database/SurrealDBManager";
-import type { DatabaseResult } from "../../database/schema";
+import type { DatabaseResult, SurrealChannel } from "../../database/schema";
 import { discordVoiceStateToSurreal } from "../../database/schema";
 
-export class VoiceStateManager {
+export class VoiceSessionTracker {
 	private client: Client;
 	private db: SurrealDBManager;
 	private sessionStartTimes = new Map<string, Date>(); // user_id:guild_id -> Date
@@ -16,7 +16,7 @@ export class VoiceStateManager {
 	}
 
 	async initialize(): Promise<void> {
-		console.log("🔹 Initializing Voice State Manager...");
+		console.log("🔹 Initializing Voice Session Tracker...");
 
 		// Sync all voice channels (including empty ones)
 		await this.syncAllVoiceChannels();
@@ -33,8 +33,10 @@ export class VoiceStateManager {
 		// Start periodic reconciliation (every 5 minutes)
 		setInterval(() => this.reconcileVoiceStates(), 5 * 60 * 1000);
 
-		console.log("🔹 Voice State Manager initialized");
+		console.log("🔹 Voice Session Tracker initialized");
 	}
+
+	// Voice session tracking methods
 
 	private async syncAllVoiceChannels(): Promise<void> {
 		// Sync all voice channels (including empty ones) to the database
@@ -86,16 +88,18 @@ export class VoiceStateManager {
 	}
 
 	private setupVoiceStateHandlers(): void {
-		this.client.on("voiceStateUpdate", async (oldState, newState) => {
-			await this.handleVoiceStateUpdate(oldState, newState);
-		});
+		// Voice state handling is now managed by VoiceChannelManager
+		// to prevent duplicate action creation
+		// this.client.on("voiceStateUpdate", async (oldState, newState) => {
+		// 	await this.handleVoiceStateUpdate(oldState, newState);
+		// });
 	}
 
 	private async handleVoiceStateUpdate(
 		oldState: VoiceState,
 		newState: VoiceState,
 	): Promise<void> {
-		const user = newState.member?.user;
+		const user = oldState.member?.user || newState.member?.user;
 		if (!user) return;
 
 		const guildId = newState.guild.id;
@@ -131,11 +135,12 @@ export class VoiceStateManager {
 		const userId = user.id;
 		const channelId = newState.channelId;
 		if (!channelId) return;
-		const sessionId = uuidv4();
 
 		console.log(
-			`🔹 ${user.username} joined voice channel ${newState.channel?.name}`,
+			`🔹 [VOICE_STATE] User ${user.username} joined voice channel ${channelId}`,
 		);
+
+		const sessionId = uuidv4();
 
 		// Create new voice session
 		await this.createVoiceSession({
@@ -145,17 +150,18 @@ export class VoiceStateManager {
 			channel_id: channelId,
 			joined_at: new Date(),
 			duration: 0,
-			channels_visited: [channelId],
-			switch_count: 0,
 			time_muted: 0,
 			time_deafened: 0,
 			time_streaming: 0,
+			owner_at_join: undefined,
+			is_grandfathered: false,
+			applied_moderation: {},
 			active: true,
 		});
 
 		// Update voice state
 		const voiceStateData = discordVoiceStateToSurreal(newState);
-		voiceStateData.id = `${guildId}_${userId}`; // Use underscore instead of colon
+		voiceStateData.id = `${guildId}_${userId}`;
 		voiceStateData.session_id = sessionId;
 		voiceStateData.joined_at = new Date();
 		const result = await this.retryDatabaseOperation(() =>
@@ -171,7 +177,6 @@ export class VoiceStateManager {
 			user_id: userId,
 			channel_id: channelId,
 			event_type: "join",
-			// Omit from_channel_id, to_channel_id, session_id, session_duration for join events
 			self_mute: newState.selfMute || false,
 			self_deaf: newState.selfDeaf || false,
 			server_mute: newState.mute || false,
@@ -199,7 +204,7 @@ export class VoiceStateManager {
 		const key = `${userId}:${guildId}`;
 
 		console.log(
-			`🔹 ${user.username} left voice channel ${oldState.channel?.name}`,
+			`🔹 [VOICE_STATE] User ${user.username} left voice channel ${channelId}`,
 		);
 
 		// End current session
@@ -216,7 +221,6 @@ export class VoiceStateManager {
 		await this.recordVoiceHistory({
 			guild_id: guildId,
 			user_id: userId,
-			// Omit channel_id, to_channel_id, session_id, session_duration for leave events
 			event_type: "leave",
 			from_channel_id: channelId,
 			self_mute: oldState.selfMute || false,
@@ -247,7 +251,7 @@ export class VoiceStateManager {
 		if (!fromChannelId || !toChannelId) return;
 
 		console.log(
-			`🔹 ${user.username} switched from ${oldState.channel?.name} to ${newState.channel?.name}`,
+			`🔹 [VOICE_STATE] User ${user.username} switched from ${fromChannelId} to ${toChannelId}`,
 		);
 
 		// Update current session
@@ -257,21 +261,15 @@ export class VoiceStateManager {
 		);
 		if (activeSessionResult.success && activeSessionResult.data) {
 			const session = activeSessionResult.data;
-			const channelsVisited = [...session.channels_visited];
-			if (!channelsVisited.includes(toChannelId)) {
-				channelsVisited.push(toChannelId);
-			}
 
 			await this.db.updateVoiceSession(session.id, {
 				channel_id: toChannelId,
-				channels_visited: channelsVisited,
-				switch_count: session.switch_count + 1,
 			});
 		}
 
 		// Update voice state
 		const voiceStateData = discordVoiceStateToSurreal(newState);
-		voiceStateData.id = `${guildId}_${userId}`; // Use underscore instead of colon
+		voiceStateData.id = `${guildId}_${userId}`;
 		const result = await this.retryDatabaseOperation(() =>
 			this.db.upsertVoiceState(voiceStateData),
 		);
@@ -321,7 +319,7 @@ export class VoiceStateManager {
 		if (!stateChanged) return;
 
 		console.log(
-			`🔹 ${user.username} changed voice state in ${newState.channel?.name}`,
+			`🔹 ${user.username} changed voice state in ${newState.channel?.name} (channel: ${newState.channelId})`,
 		);
 
 		// Update voice state

@@ -1,8 +1,11 @@
 import { Surreal } from "surrealdb";
+import type { RecordId } from "surrealdb";
 import { config } from "../config";
 import type {
 	ActionPayload,
 	ActionType,
+	AppliedModeration,
+	ChannelPreferences,
 	DatabaseResult,
 	LiveQueryCallback,
 	SurrealAction,
@@ -129,15 +132,38 @@ export class SurrealDBManager {
 			"DEFINE FIELD guild_id ON channels TYPE string;",
 			"DEFINE FIELD name ON channels TYPE string;",
 			"DEFINE FIELD type ON channels TYPE int;",
+			"DEFINE FIELD position ON channels TYPE int;",
+			"DEFINE FIELD parent_id ON channels TYPE option<string>;",
+			"DEFINE FIELD topic ON channels TYPE option<string>;",
+			"DEFINE FIELD nsfw ON channels TYPE bool;",
+			"DEFINE FIELD is_user_channel ON channels TYPE bool;",
+			"DEFINE FIELD spawn_channel_id ON channels TYPE option<string>;",
+			"DEFINE FIELD current_owner_id ON channels TYPE option<string>;",
+			"DEFINE FIELD ownership_changed_at ON channels TYPE option<datetime>;",
 			"DEFINE FIELD active ON channels TYPE bool;",
-			"DEFINE FIELD created_at ON channels TYPE datetime;",
-			"DEFINE FIELD updated_at ON channels TYPE datetime;",
+			"DEFINE FIELD createdAt ON channels TYPE datetime;",
+			"DEFINE FIELD updatedAt ON channels TYPE datetime;",
 
 			// Member fields
 			"DEFINE FIELD guild_id ON members TYPE string;",
 			"DEFINE FIELD user_id ON members TYPE string;",
 			"DEFINE FIELD username ON members TYPE string;",
 			"DEFINE FIELD display_name ON members TYPE string;",
+			"DEFINE FIELD global_name ON members TYPE option<string>;",
+			"DEFINE FIELD avatar ON members TYPE option<string>;",
+			"DEFINE FIELD avatar_decoration ON members TYPE option<string>;",
+			"DEFINE FIELD banner ON members TYPE option<string>;",
+			"DEFINE FIELD accent_color ON members TYPE option<int>;",
+			"DEFINE FIELD discriminator ON members TYPE string;",
+			"DEFINE FIELD flags ON members TYPE option<int>;",
+			"DEFINE FIELD premium_type ON members TYPE option<int>;",
+			"DEFINE FIELD public_flags ON members TYPE option<int>;",
+			"DEFINE FIELD nickname ON members TYPE option<string>;",
+			"DEFINE FIELD joined_at ON members TYPE datetime;",
+			"DEFINE FIELD roles ON members TYPE array<string>;",
+			"DEFINE FIELD profile_hash ON members TYPE string;",
+			"DEFINE FIELD profile_history ON members TYPE array<object>;",
+			"DEFINE FIELD channel_preferences ON members TYPE object;",
 			"DEFINE FIELD active ON members TYPE bool;",
 			"DEFINE FIELD created_at ON members TYPE datetime;",
 			"DEFINE FIELD updated_at ON members TYPE datetime;",
@@ -198,16 +224,27 @@ export class SurrealDBManager {
 			"DEFINE FIELD user_id ON voice_sessions TYPE string;",
 			"DEFINE FIELD channel_id ON voice_sessions TYPE string;",
 			"DEFINE FIELD joined_at ON voice_sessions TYPE datetime;",
-			"DEFINE FIELD left_at ON voice_sessions TYPE datetime;",
+			"DEFINE FIELD left_at ON voice_sessions TYPE option<datetime>;",
 			"DEFINE FIELD duration ON voice_sessions TYPE int;",
-			"DEFINE FIELD channels_visited ON voice_sessions TYPE array<string>;",
-			"DEFINE FIELD switch_count ON voice_sessions TYPE int;",
 			"DEFINE FIELD time_muted ON voice_sessions TYPE int;",
 			"DEFINE FIELD time_deafened ON voice_sessions TYPE int;",
 			"DEFINE FIELD time_streaming ON voice_sessions TYPE int;",
+			"DEFINE FIELD owner_at_join ON voice_sessions TYPE option<string>;",
+			"DEFINE FIELD is_grandfathered ON voice_sessions TYPE bool;",
+			"DEFINE FIELD applied_moderation ON voice_sessions TYPE object;",
 			"DEFINE FIELD active ON voice_sessions TYPE bool;",
 			"DEFINE FIELD created_at ON voice_sessions TYPE datetime;",
 			"DEFINE FIELD updated_at ON voice_sessions TYPE datetime;",
+
+			// Action fields
+			"DEFINE FIELD guild_id ON actions TYPE string;",
+			"DEFINE FIELD type ON actions TYPE string;",
+			"DEFINE FIELD payload ON actions TYPE string;", // Store as JSON string
+			"DEFINE FIELD execute_at ON actions TYPE option<datetime>;",
+			"DEFINE FIELD executed ON actions TYPE bool;",
+			"DEFINE FIELD active ON actions TYPE bool;",
+			"DEFINE FIELD created_at ON actions TYPE datetime;",
+			"DEFINE FIELD updated_at ON actions TYPE datetime;",
 		];
 
 		for (const query of schemaQueries) {
@@ -575,13 +612,35 @@ export class SurrealDBManager {
 				return { success: false, error: "Not connected to database" };
 			}
 
-			const result = await this.db.create("actions", {
-				...action,
-				created_at: new Date(),
-				updated_at: new Date(),
-			});
+			// Use INSERT instead of CREATE to ensure all fields are stored
+			const result = await this.db.query(
+				"INSERT INTO actions (guild_id, type, payload, execute_at, executed, created_at, updated_at, active) VALUES ($guild_id, $type, $payload, $execute_at, $executed, $created_at, $updated_at, $active)",
+				{
+					guild_id: action.guild_id,
+					type: action.type,
+					payload: JSON.stringify(action.payload || {}), // Store as JSON string
+					execute_at: action.execute_at || undefined, // Use undefined instead of null for option<datetime>
+					executed: action.executed || false,
+					created_at: new Date(),
+					updated_at: new Date(),
+					active: action.active !== false, // Default to true
+				},
+			);
 
-			return { success: true, data: result as unknown as SurrealAction };
+			// Handle both single object and array results from SurrealDB
+			const rawData = (result[0] as Record<string, unknown>)?.[0];
+			let actions: unknown[];
+
+			if (Array.isArray(rawData)) {
+				actions = rawData;
+			} else if (rawData && typeof rawData === "object") {
+				// Single result returned as object, wrap in array
+				actions = [rawData];
+			} else {
+				actions = [];
+			}
+
+			return { success: true, data: actions[0] as SurrealAction };
 		} catch (error) {
 			console.error("🔸 Failed to create action:", error);
 			return {
@@ -600,12 +659,21 @@ export class SurrealDBManager {
 			const result = await this.db.query(
 				"SELECT * FROM actions WHERE executed = false AND active = true",
 			);
-			return {
-				success: true,
-				data:
-					((result[0] as Record<string, unknown>)?.result as SurrealAction[]) ||
-					[],
-			};
+
+			// Handle both single object and array results from SurrealDB
+			const rawData = result[0];
+			let actions: unknown[];
+
+			if (Array.isArray(rawData)) {
+				actions = rawData;
+			} else if (rawData && typeof rawData === "object") {
+				// Single result returned as object, wrap in array
+				actions = [rawData];
+			} else {
+				actions = [];
+			}
+
+			return { success: true, data: actions as SurrealAction[] };
 		} catch (error) {
 			console.error("🔸 Failed to get pending actions:", error);
 			return {
@@ -616,21 +684,47 @@ export class SurrealDBManager {
 	}
 
 	async markActionExecuted(
-		actionId: string,
+		actionId: string | RecordId,
 	): Promise<DatabaseResult<SurrealAction>> {
 		try {
 			if (!this.connected || this.shuttingDown) {
 				return { success: false, error: "Not connected to database" };
 			}
 
-			const result = await this.db.merge(`actions:${actionId}`, {
-				executed: true,
-				updated_at: new Date(),
-			});
+			// Use UPDATE query instead of merge to avoid ID format issues
+			const result = await this.db.query(
+				"UPDATE actions SET executed = true, updated_at = $now WHERE id = $action_id",
+				{ action_id: actionId, now: new Date() },
+			);
 
+			console.log(`🔹 Marked action ${actionId} as executed`);
 			return { success: true, data: result as unknown as SurrealAction };
 		} catch (error) {
 			console.error("🔸 Failed to mark action as executed:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	async clearAllActions(): Promise<DatabaseResult<number>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const result = await this.db.query(
+				"DELETE FROM actions WHERE active = true",
+			);
+
+			// Get the count of deleted records
+			const deletedCount = result[0] as number;
+			console.log(`🔹 Cleared ${deletedCount} actions from database`);
+
+			return { success: true, data: deletedCount };
+		} catch (error) {
+			console.error("🔸 Failed to clear all actions:", error);
 			return {
 				success: false,
 				error: error instanceof Error ? error.message : "Unknown error",
@@ -1302,7 +1396,11 @@ export class SurrealDBManager {
 				return { success: false, error: "Voice state ID is required" };
 			}
 
-			console.log("🔍 Upserting voice state:", state.id);
+			console.log(
+				"🔍 Upserting voice state:",
+				state.id,
+				state.channel_id ? `in channel ${state.channel_id}` : "(no channel)",
+			);
 
 			// Prepare data with timestamps
 			const now = new Date();
@@ -1392,7 +1490,11 @@ export class SurrealDBManager {
 				};
 			}
 
-			console.log("🔍 UPSERT successful:", state.id);
+			console.log(
+				"🔍 UPSERT successful:",
+				state.id,
+				state.channel_id ? `in channel ${state.channel_id}` : "(no channel)",
+			);
 			return {
 				success: true,
 				data: (Array.isArray(voiceState)
@@ -1465,12 +1567,22 @@ export class SurrealDBManager {
 				{ channel_id: channelId },
 			);
 
-			// SurrealDB returns results in a different format
-			const voiceStates = (result[0] as SurrealVoiceState[]) || [];
+			// Handle both single object and array results from SurrealDB
+			const rawData = (result[0] as Record<string, unknown>)?.[0];
+			let voiceStates: unknown[];
+
+			if (Array.isArray(rawData)) {
+				voiceStates = rawData;
+			} else if (rawData && typeof rawData === "object") {
+				// Single result returned as object, wrap in array
+				voiceStates = [rawData];
+			} else {
+				voiceStates = [];
+			}
 
 			return {
 				success: true,
-				data: voiceStates,
+				data: voiceStates as SurrealVoiceState[],
 			};
 		} catch (error) {
 			console.error("🔸 Failed to get voice states by channel:", error);
@@ -1494,12 +1606,22 @@ export class SurrealDBManager {
 				{ guild_id: guildId },
 			);
 
-			// SurrealDB returns results in a different format
-			const voiceStates = (result[0] as SurrealVoiceState[]) || [];
+			// Handle both single object and array results from SurrealDB
+			const rawData = (result[0] as Record<string, unknown>)?.[0];
+			let voiceStates: unknown[];
+
+			if (Array.isArray(rawData)) {
+				voiceStates = rawData;
+			} else if (rawData && typeof rawData === "object") {
+				// Single result returned as object, wrap in array
+				voiceStates = [rawData];
+			} else {
+				voiceStates = [];
+			}
 
 			return {
 				success: true,
-				data: voiceStates,
+				data: voiceStates as SurrealVoiceState[],
 			};
 		} catch (error) {
 			console.error("🔸 Failed to get voice states by guild:", error);
@@ -1701,7 +1823,19 @@ export class SurrealDBManager {
 				{ guild_id: guildId },
 			);
 
-			const voiceStates = (result[0] as any[]) || [];
+			// Handle both single object and array results from SurrealDB
+			const rawData = (result[0] as Record<string, unknown>)?.[0];
+			let voiceStates: unknown[];
+
+			if (Array.isArray(rawData)) {
+				voiceStates = rawData;
+			} else if (rawData && typeof rawData === "object") {
+				// Single result returned as object, wrap in array
+				voiceStates = [rawData];
+			} else {
+				voiceStates = [];
+			}
+
 			return { success: true, data: voiceStates as SurrealVoiceState[] };
 		} catch (error) {
 			console.error("🔸 Failed to get active voice states:", error);
@@ -1709,6 +1843,162 @@ export class SurrealDBManager {
 				success: false,
 				error: error instanceof Error ? error.message : "Unknown error",
 			};
+		}
+	}
+
+	// Voice Channel Manager methods
+	async getUserChannelPreferences(
+		userId: string,
+		guildId: string,
+	): Promise<DatabaseResult<ChannelPreferences>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const result = await this.db.query(
+				"SELECT channel_preferences FROM members WHERE user_id = $user_id AND guild_id = $guild_id",
+				{ user_id: userId, guild_id: guildId },
+			);
+
+			const member = (result[0] as Record<string, unknown>)?.[0] as Record<
+				string,
+				unknown
+			>;
+			if (!member) {
+				return { success: true, data: {} };
+			}
+
+			return {
+				success: true,
+				data: (member.channel_preferences || {}) as ChannelPreferences,
+			};
+		} catch (error) {
+			console.error("🔸 Failed to get user channel preferences:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	async updateUserChannelPreferences(
+		userId: string,
+		guildId: string,
+		preferences: Partial<ChannelPreferences>,
+	): Promise<DatabaseResult<ChannelPreferences>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const result = await this.db.query(
+				"UPDATE members SET channel_preferences = $preferences, updated_at = $updated_at WHERE user_id = $user_id AND guild_id = $guild_id RETURN channel_preferences",
+				{
+					user_id: userId,
+					guild_id: guildId,
+					preferences,
+					updated_at: new Date(),
+				},
+			);
+
+			const updated = (result[0] as Record<string, unknown>)?.[0] as Record<
+				string,
+				unknown
+			>;
+			return {
+				success: true,
+				data: (updated.channel_preferences || {}) as ChannelPreferences,
+			};
+		} catch (error) {
+			console.error("🔸 Failed to update user channel preferences:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	async getUserChannelsByOwner(
+		ownerId: string,
+		guildId: string,
+	): Promise<DatabaseResult<SurrealChannel[]>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const result = await this.db.query(
+				"SELECT * FROM channels WHERE current_owner_id = $owner_id AND guild_id = $guild_id AND is_user_channel = true AND active = true",
+				{ owner_id: ownerId, guild_id: guildId },
+			);
+
+			const channels =
+				((result[0] as Record<string, unknown>)?.[0] as unknown[]) || [];
+			return { success: true, data: channels as SurrealChannel[] };
+		} catch (error) {
+			console.error("🔸 Failed to get user channels by owner:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	async getActiveVoiceSessionsByChannel(
+		channelId: string,
+	): Promise<DatabaseResult<SurrealVoiceSession[]>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const result = await this.db.query(
+				"SELECT * FROM voice_sessions WHERE channel_id = $channel_id AND active = true AND left_at = NONE ORDER BY joined_at ASC",
+				{ channel_id: channelId },
+			);
+
+			// Handle both single object and array results from SurrealDB
+			const rawData = (result[0] as Record<string, unknown>)?.[0];
+			let sessions: unknown[];
+
+			if (Array.isArray(rawData)) {
+				sessions = rawData;
+			} else if (rawData && typeof rawData === "object") {
+				// Single result returned as object, wrap in array
+				sessions = [rawData];
+			} else {
+				sessions = [];
+			}
+
+			return { success: true, data: sessions as SurrealVoiceSession[] };
+		} catch (error) {
+			console.error(
+				"🔸 Failed to get active voice sessions by channel:",
+				error,
+			);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	// Public query method for custom queries
+	async query(
+		query: string,
+		params?: Record<string, unknown>,
+	): Promise<unknown[]> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				throw new Error("Not connected to database");
+			}
+
+			const result = await this.db.query(query, params);
+			return result;
+		} catch (error) {
+			console.error("🔸 Failed to execute query:", error);
+			throw error;
 		}
 	}
 }

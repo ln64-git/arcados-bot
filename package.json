@@ -18,6 +18,9 @@
 		"start:prod": "NODE_ENV=production node dist/main.js",
 		"start:debug": "NODE_ENV=development npx tsx --inspect src/main.ts",
 		"stats": "NODE_ENV=development npx tsx -e \"import { getCommandStats } from './src/utils/loadCommands.js'; console.log('Command Stats:', getCommandStats());\"",
+		"test:minimal": "npx tsx src/scripts/minimal-bot-test.ts",
+		"test:actions": "npx tsx src/scripts/test-action-creation-only.ts",
+		"test:voice": "npx tsx src/scripts/test-voice-channel-action.ts",
 		"watch-users": "npx tsx src/scripts/watch-user-changes.ts",
 		"watch-db": "npx tsx src/scripts/watch-database-changes.ts"
 	},

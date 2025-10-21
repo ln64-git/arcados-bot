@@ -110,7 +110,7 @@ class VoiceStateDiagnostic {
 		// Check database state before and after
 		await this.checkDatabaseState(userId, guildId, "BEFORE");
 
-		// Simulate what the VoiceStateManager would do
+		// Simulate what the VoiceSessionTracker would do
 		try {
 			if (eventType === "JOIN") {
 				await this.simulateVoiceJoin(newState);

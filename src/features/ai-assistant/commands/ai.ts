@@ -4,12 +4,12 @@ import {
 	EmbedBuilder,
 	SlashCommandBuilder,
 } from "discord.js";
-import { config } from "../config";
+import { config } from "../../../config";
 import {
 	type AIResponse,
 	GrokManager,
-} from "../features/ai-assistant/GrokManager";
-import type { Command } from "../types";
+} from "../GrokManager";
+import type { Command } from "../../../types";
 
 interface DiscordField {
 	name: string;

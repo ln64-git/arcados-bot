@@ -14,6 +14,7 @@ A comprehensive Discord bot with real-time SurrealDB integration, built with Typ
 - 🔹 **Database-triggered Discord actions**
 - 🔹 **Full Discord data sync (guilds, channels, members, roles, messages)**
 - 🔹 **Graceful degradation when database unavailable**
+- 🔹 **Voice Channel Manager** - Self-organizing voice channels with owner-based moderation
 
 ## Setup
 
@@ -42,6 +43,7 @@ A comprehensive Discord bot with real-time SurrealDB integration, built with Typ
    # Optional Discord settings
    BOT_PREFIX=!
    BOT_OWNER_ID=your_user_id
+   SPAWN_CHANNEL_ID=your_spawn_channel_id  # Required for Voice Channel Manager
    ```
 
 3. **Get your Discord bot token:**
@@ -180,6 +182,42 @@ src/
 - `SURREAL_USERNAME`: Database username (default: "root")
 - `SURREAL_PASSWORD`: Database password (default: "root")
 - `SURREAL_TOKEN`: OAuth2 token (alternative to username/password)
+
+## Voice Channel Manager
+
+The Voice Channel Manager is a powerful feature that creates a self-organizing voice channel ecosystem. Users can spawn personal voice channels by joining a designated spawn channel, with full ownership and moderation capabilities.
+
+### How It Works
+
+1. **Channel Spawning**: When a user joins the spawn channel, a new voice channel is automatically created for them
+2. **Ownership**: The first user in a channel becomes the owner and can moderate other users
+3. **Ownership Transfer**: When the owner leaves, ownership passes to the longest resident
+4. **Auto-Deletion**: Channels are automatically deleted when empty
+5. **Grandfather Protection**: Users present during ownership changes are protected from immediate disruption
+
+### Commands
+
+- `/claim` - Reclaim a voice channel you previously owned
+- `/renounce` - Drop ownership of your current voice channel
+- `/mute @user` - Mute a user in your channel (owner only)
+- `/unmute @user` - Remove mute from a user (owner only)
+- `/deafen @user` - Deafen a user in your channel (owner only)
+- `/undeafen @user` - Remove deafen from a user (owner only)
+- `/ban @user` - Ban a user from your channels (owner only)
+- `/unban @user` - Remove a user from your ban list (owner only)
+- `/channel-prefs` - Configure your voice channel preferences
+
+### Configuration
+
+Set the `SPAWN_CHANNEL_ID` environment variable to the ID of the voice channel where users should join to spawn new channels.
+
+### Features
+
+- **Scoped Moderation**: All moderation is limited to your owned channels
+- **User Preferences**: Customize channel names, user limits, and privacy settings
+- **Ban Lists**: Maintain personal ban lists that apply to all your channels
+- **Grandfather Protection**: Prevents disruption during ownership changes
+- **Real-time Updates**: Changes apply instantly via SurrealDB Live Queries
 
 ## License
 

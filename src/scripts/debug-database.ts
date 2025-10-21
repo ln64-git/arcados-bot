@@ -1,6 +1,3 @@
-#!/usr/bin/env tsx
-
-import "dotenv/config";
 import { SurrealDBManager } from "../database/SurrealDBManager";
 
 async function debugDatabase() {
@@ -8,50 +5,46 @@ async function debugDatabase() {
 
 	try {
 		await db.connect();
-		console.log("🔹 Connected to SurrealDB");
+		console.log("🔹 Connected to database");
 
-		// Check if we can query the database at all
-		console.log("🔹 Testing basic database query...");
-		const testQuery = `SELECT count() FROM members GROUP ALL`;
-		const countResult = await db.db.query(testQuery);
-		console.log(`🔹 Member count query result:`, countResult);
+		// Check all channels in the guild
+		console.log("🔹 Checking all channels in guild...");
+		const allChannels = await db.query(
+			"SELECT * FROM channels WHERE guild_id = '1254694808228986912'",
+		);
+		console.log("🔹 All channels:", JSON.stringify(allChannels, null, 2));
 
-		// Try to get all members
-		console.log("\n🔹 Getting all members...");
-		const allMembers = await db.db.select("members");
-		console.log(`🔹 All members result:`, allMembers);
-		console.log(`🔹 Number of members:`, allMembers?.length || 0);
+		// Check specifically for user channels
+		console.log("\n🔹 Checking user channels...");
+		const userChannels = await db.query(
+			"SELECT * FROM channels WHERE guild_id = '1254694808228986912' AND is_user_channel = true",
+		);
+		console.log("🔹 User channels:", JSON.stringify(userChannels, null, 2));
 
-		if (allMembers && allMembers.length > 0) {
-			console.log("\n🔹 First few members:");
-			allMembers.slice(0, 3).forEach((member: any, index: number) => {
-				console.log(`🔹 Member ${index + 1}:`);
-				console.log(`  - ID: ${member.id}`);
-				console.log(`  - User ID: ${member.user_id}`);
-				console.log(`  - Username: ${member.username}`);
-				console.log(`  - Guild ID: ${member.guild_id}`);
-			});
+		// Check the specific channel ID from logs
+		console.log("\n🔹 Checking specific channel 1430057804311302305...");
+		const specificChannel = await db.query(
+			"SELECT * FROM channels WHERE id = '1430057804311302305'",
+		);
+		console.log(
+			"🔹 Specific channel:",
+			JSON.stringify(specificChannel, null, 2),
+		);
 
-			// Check specifically for our user
-			const ourUser = allMembers.find(
-				(m: any) => m.user_id === "354823920010002432",
-			);
-			if (ourUser) {
-				console.log("\n🔹 ✅ Found our user!");
-				console.log(`🔹 User ID: ${ourUser.user_id}`);
-				console.log(`🔹 Username: ${ourUser.username}`);
-				console.log(`🔹 Display Name: ${ourUser.display_name}`);
-				console.log(`🔹 Guild ID: ${ourUser.guild_id}`);
-			} else {
-				console.log("\n🔸 ❌ Our user not found in the members list");
-			}
-		}
+		// Check if there are any channels with is_user_channel field
+		console.log("\n🔹 Checking channels with is_user_channel field...");
+		const channelsWithField = await db.query(
+			"SELECT * FROM channels WHERE guild_id = '1254694808228986912' AND is_user_channel IS NOT NONE",
+		);
+		console.log(
+			"🔹 Channels with is_user_channel field:",
+			JSON.stringify(channelsWithField, null, 2),
+		);
 	} catch (error) {
-		console.error("🔸 Error:", error);
+		console.error("Error:", error);
 	} finally {
 		await db.disconnect();
-		console.log("🔹 Disconnected from SurrealDB");
 	}
 }
 
-debugDatabase().catch(console.error);
+debugDatabase();

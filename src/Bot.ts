@@ -2,17 +2,16 @@ import {
 	Client,
 	Collection,
 	GatewayIntentBits,
-	type Interaction,
 	REST,
 	Routes,
 } from "discord.js";
+import type { Interaction } from "discord.js";
 import { config } from "./config";
 import { SurrealDBManager } from "./database/SurrealDBManager";
-import type { SurrealAction } from "./database/schema";
 import { DiscordSyncManager } from "./features/discord-sync/DiscordSyncManager";
-import { DatabaseActions } from "./features/discord-sync/actions";
 import { speakVoiceCall } from "./features/speak-voice-call/speakVoiceCall";
-import { VoiceStateManager } from "./features/voice-state/VoiceStateManager";
+import { VoiceChannelManager } from "./features/voice-channel-manager/VoiceChannelManager";
+import { VoiceSessionTracker } from "./features/voice-session-tracker/VoiceSessionTracker";
 import type { Command } from "./types";
 import { loadCommands } from "./utils/loadCommands";
 
@@ -21,8 +20,8 @@ export class Bot {
 	public commands = new Collection<string, Command>();
 	public surrealManager: SurrealDBManager;
 	public syncManager?: DiscordSyncManager;
-	public actionsManager?: DatabaseActions;
-	public voiceStateManager?: VoiceStateManager;
+	public voiceChannelManager?: VoiceChannelManager;
+	public voiceSessionTracker?: VoiceSessionTracker;
 
 	constructor() {
 		this.client = new Client({
@@ -61,12 +60,48 @@ export class Bot {
 		this.client.once("ready", async () => {
 			console.log("🔹 Bot is ready");
 
-			// Initialize features after bot is ready
-			speakVoiceCall(this.client);
-
-			// Initialize SurrealDB sync if connected
+			// Initialize voice session tracker first
 			if (this.surrealManager.isConnected()) {
-				await this.initializeSurrealSync();
+				console.log("🔹 Initializing Voice Session Tracker...");
+				this.voiceSessionTracker = new VoiceSessionTracker(
+					this.client,
+					this.surrealManager,
+				);
+				await this.voiceSessionTracker.initialize();
+				console.log("🔹 Voice Session Tracker initialized");
+
+				// Initialize voice channel manager with session tracker reference
+				console.log("🔹 Initializing Voice Channel Manager...");
+
+				// Get spawn channel ID from config
+				const spawnChannelId = config.spawnChannelId;
+				if (!spawnChannelId) {
+					console.error(
+						"🔸 No spawn channel ID configured - voice channel manager disabled",
+					);
+				} else {
+					this.voiceChannelManager = new VoiceChannelManager(
+						this.client,
+						this.surrealManager,
+						spawnChannelId,
+						this.voiceSessionTracker,
+					);
+					await this.voiceChannelManager.initialize();
+					console.log(
+						"🔹 Voice Channel Manager ready - voice channels are now functional!",
+					);
+				}
+			}
+
+			// Initialize features after bot is ready
+			// speakVoiceCall(this.client);
+
+			// Initialize SurrealDB sync in background if connected
+			if (this.surrealManager.isConnected()) {
+				console.log("🔹 Starting SurrealDB sync in background...");
+				this.initializeSurrealSync().catch((error) => {
+					console.error("🔸 Background SurrealDB sync failed:", error);
+				});
 			}
 		});
 
@@ -127,7 +162,7 @@ export class Bot {
 
 	private async initializeSurrealSync(): Promise<void> {
 		try {
-			console.log("🔹 Initializing SurrealDB sync...");
+			console.log("🔹 [BACKGROUND] Initializing SurrealDB sync...");
 
 			// Initialize sync manager
 			this.syncManager = new DiscordSyncManager(
@@ -136,94 +171,21 @@ export class Bot {
 			);
 			await this.syncManager.initialize();
 
-			// Initialize actions manager
-			this.actionsManager = new DatabaseActions(
-				this.client,
-				this.surrealManager,
+			console.log(
+				"🔹 DiscordSyncManager ready - syncing Discord data to database",
 			);
 
-			// Set up live query subscriptions
-			await this.setupLiveQueries();
-
-			// Start action processor
-			this.actionsManager.startActionProcessor(30000); // Check every 30 seconds
-
-			// Initialize voice state manager
-			this.voiceStateManager = new VoiceStateManager(
-				this.client,
-				this.surrealManager,
+			console.log("🔹 [BACKGROUND] SurrealDB sync initialized successfully");
+		} catch (error) {
+			console.error(
+				"🔸 [BACKGROUND] Failed to initialize SurrealDB sync:",
+				error,
 			);
-			await this.voiceStateManager.initialize();
-
-			console.log("🔹 SurrealDB sync initialized successfully");
-		} catch (error) {
-			console.error("🔸 Failed to initialize SurrealDB sync:", error);
 		}
-	}
-
-	private async setupLiveQueries(): Promise<void> {
-		try {
-			// Subscribe to guild changes
-			await this.surrealManager.subscribeToGuilds((action, data) => {
-				console.log(`🔹 Guild ${action}:`, data);
-				this.handleGuildChangeFromDB(
-					action,
-					data as unknown as Record<string, unknown>,
-				);
-			});
-
-			// Subscribe to member changes
-			await this.surrealManager.subscribeToMembers((action, data) => {
-				console.log(`🔹 Member ${action}:`, data);
-				this.handleMemberChangeFromDB(
-					action,
-					data as unknown as Record<string, unknown>,
-				);
-			});
-
-			// Subscribe to action changes
-			await this.surrealManager.subscribeToActions((action, data) => {
-				console.log(`🔹 Action ${action}:`, data);
-				if (action === "CREATE" && this.actionsManager) {
-					this.actionsManager.executeAction(data as unknown as SurrealAction);
-				}
-			});
-
-			console.log("🔹 Live query subscriptions established");
-		} catch (error) {
-			console.error("🔸 Failed to setup live queries:", error);
-		}
-	}
-
-	private handleGuildChangeFromDB(
-		action: string,
-		data: Record<string, unknown>,
-	): void {
-		// Handle real-time guild updates from SurrealDB
-		console.log(`🔹 Processing guild ${action} from database:`, data);
-
-		// You can add specific logic here for guild changes
-		// For example, updating Discord cache, sending notifications, etc.
-	}
-
-	private handleMemberChangeFromDB(
-		action: string,
-		data: Record<string, unknown>,
-	): void {
-		// Handle real-time member updates from SurrealDB
-		console.log(`🔹 Processing member ${action} from database:`, data);
-
-		// You can add specific logic here for member changes
-		// For example, checking for milestone achievements, role updates, etc.
 	}
 
 	async shutdown(): Promise<void> {
 		// Silent shutdown - no console output to prevent lingering logs
-
-		// End all active voice sessions on shutdown
-		if (this.voiceStateManager) {
-			await this.voiceStateManager.endAllActiveSessions();
-		}
 
 		// Shutdown sync manager first to stop all sync operations
 		if (this.syncManager) {
