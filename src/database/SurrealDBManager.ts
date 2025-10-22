@@ -1,6 +1,7 @@
 import { Surreal } from "surrealdb";
 import type { RecordId } from "surrealdb";
 import { config } from "../config";
+import type { MessageInteraction } from "../features/relationship-network/types";
 import type {
 	ActionPayload,
 	ActionType,
@@ -8,15 +9,13 @@ import type {
 	ChannelPreferences,
 	DatabaseResult,
 	LiveQueryCallback,
+	RelationshipEntry,
 	SurrealAction,
 	SurrealChannel,
 	SurrealGuild,
 	SurrealMember,
 	SurrealMessage,
 	SurrealRole,
-	SurrealVoiceHistory,
-	SurrealVoiceSession,
-	SurrealVoiceState,
 	SyncMetadata,
 } from "./schema";
 
@@ -107,9 +106,6 @@ export class SurrealDBManager {
 			"DEFINE TABLE messages SCHEMAFULL;",
 			"DEFINE TABLE actions SCHEMAFULL;",
 			"DEFINE TABLE sync_metadata SCHEMAFULL;",
-			"DEFINE TABLE voice_states SCHEMAFULL PERMISSIONS FULL;",
-			"DEFINE TABLE voice_history SCHEMAFULL PERMISSIONS FULL;",
-			"DEFINE TABLE voice_sessions SCHEMAFULL PERMISSIONS FULL;",
 
 			// Message fields
 			"DEFINE FIELD guild_id ON messages TYPE string;",
@@ -185,57 +181,6 @@ export class SurrealDBManager {
 			"DEFINE FIELD created_at ON sync_metadata TYPE datetime;",
 			"DEFINE FIELD updated_at ON sync_metadata TYPE datetime;",
 
-			// Voice state fields
-			"DEFINE FIELD guild_id ON voice_states TYPE string;",
-			"DEFINE FIELD user_id ON voice_states TYPE string;",
-			"DEFINE FIELD channel_id ON voice_states TYPE option<string>;",
-			"DEFINE FIELD self_mute ON voice_states TYPE bool;",
-			"DEFINE FIELD self_deaf ON voice_states TYPE bool;",
-			"DEFINE FIELD server_mute ON voice_states TYPE bool;",
-			"DEFINE FIELD server_deaf ON voice_states TYPE bool;",
-			"DEFINE FIELD streaming ON voice_states TYPE bool;",
-			"DEFINE FIELD self_video ON voice_states TYPE bool;",
-			"DEFINE FIELD suppress ON voice_states TYPE bool;",
-			"DEFINE FIELD session_id ON voice_states TYPE option<string>;",
-			"DEFINE FIELD joined_at ON voice_states TYPE option<datetime>;",
-			"DEFINE FIELD created_at ON voice_states TYPE datetime;",
-			"DEFINE FIELD updated_at ON voice_states TYPE datetime;",
-
-			// Voice history fields
-			"DEFINE FIELD guild_id ON voice_history TYPE string;",
-			"DEFINE FIELD user_id ON voice_history TYPE string;",
-			"DEFINE FIELD channel_id ON voice_history TYPE option<string>;",
-			"DEFINE FIELD event_type ON voice_history TYPE string;",
-			"DEFINE FIELD from_channel_id ON voice_history TYPE option<string>;",
-			"DEFINE FIELD to_channel_id ON voice_history TYPE option<string>;",
-			"DEFINE FIELD self_mute ON voice_history TYPE bool;",
-			"DEFINE FIELD self_deaf ON voice_history TYPE bool;",
-			"DEFINE FIELD server_mute ON voice_history TYPE bool;",
-			"DEFINE FIELD server_deaf ON voice_history TYPE bool;",
-			"DEFINE FIELD streaming ON voice_history TYPE bool;",
-			"DEFINE FIELD self_video ON voice_history TYPE bool;",
-			"DEFINE FIELD session_id ON voice_history TYPE option<string>;",
-			"DEFINE FIELD session_duration ON voice_history TYPE option<int>;",
-			"DEFINE FIELD timestamp ON voice_history TYPE datetime;",
-			"DEFINE FIELD created_at ON voice_history TYPE datetime;",
-
-			// Voice session fields
-			"DEFINE FIELD guild_id ON voice_sessions TYPE string;",
-			"DEFINE FIELD user_id ON voice_sessions TYPE string;",
-			"DEFINE FIELD channel_id ON voice_sessions TYPE string;",
-			"DEFINE FIELD joined_at ON voice_sessions TYPE datetime;",
-			"DEFINE FIELD left_at ON voice_sessions TYPE option<datetime>;",
-			"DEFINE FIELD duration ON voice_sessions TYPE int;",
-			"DEFINE FIELD time_muted ON voice_sessions TYPE int;",
-			"DEFINE FIELD time_deafened ON voice_sessions TYPE int;",
-			"DEFINE FIELD time_streaming ON voice_sessions TYPE int;",
-			"DEFINE FIELD owner_at_join ON voice_sessions TYPE option<string>;",
-			"DEFINE FIELD is_grandfathered ON voice_sessions TYPE bool;",
-			"DEFINE FIELD applied_moderation ON voice_sessions TYPE object;",
-			"DEFINE FIELD active ON voice_sessions TYPE bool;",
-			"DEFINE FIELD created_at ON voice_sessions TYPE datetime;",
-			"DEFINE FIELD updated_at ON voice_sessions TYPE datetime;",
-
 			// Action fields
 			"DEFINE FIELD guild_id ON actions TYPE string;",
 			"DEFINE FIELD type ON actions TYPE string;",
@@ -276,12 +221,34 @@ export class SurrealDBManager {
 				return { success: false, error: "Not connected to database" };
 			}
 
-			const result = await this.db.merge(`guilds:${guild.id}`, {
-				...guild,
-				updated_at: new Date(),
-			});
+			const result = await this.db.query(
+				`CREATE guilds:${guild.id} SET
+					id = $id,
+					name = $name,
+					member_count = $member_count,
+					owner_id = $owner_id,
+					icon = $icon,
+					features = $features,
+					created_at = $created_at,
+					updated_at = $updated_at,
+					active = $active,
+					settings = $settings
+				`,
+				{
+					id: guild.id,
+					name: guild.name,
+					member_count: guild.member_count,
+					owner_id: guild.owner_id,
+					icon: guild.icon,
+					features: guild.features,
+					created_at: guild.created_at || new Date(),
+					updated_at: new Date(),
+					active: guild.active !== undefined ? guild.active : true,
+					settings: guild.settings || {},
+				}
+			);
 
-			return { success: true, data: result as unknown as SurrealGuild };
+			return { success: true, data: result[0] as unknown as SurrealGuild };
 		} catch (error) {
 			// Suppress connection errors during shutdown
 			if (
@@ -347,26 +314,46 @@ export class SurrealDBManager {
 				return { success: false, error: "Not connected to database" };
 			}
 
-			// Try to get existing record first
-			const existing = await this.db.select(`channels:${channel.id}`);
+			const result = await this.db.query(
+				`CREATE channels:${channel.id} SET
+					id = $id,
+					guild_id = $guild_id,
+					name = $name,
+					type = $type,
+					position = $position,
+					parent_id = $parent_id,
+					topic = $topic,
+					nsfw = $nsfw,
+					is_user_channel = $is_user_channel,
+					spawn_channel_id = $spawn_channel_id,
+					current_owner_id = $current_owner_id,
+					ownership_changed_at = $ownership_changed_at,
+					activeUserIds = $activeUserIds,
+					createdAt = $createdAt,
+					updatedAt = $updatedAt,
+					active = $active
+				`,
+				{
+					id: channel.id,
+					guild_id: channel.guild_id,
+					name: channel.name,
+					type: channel.type,
+					position: channel.position,
+					parent_id: channel.parent_id,
+					topic: channel.topic,
+					nsfw: channel.nsfw || false,
+					is_user_channel: channel.is_user_channel || false,
+					spawn_channel_id: channel.spawn_channel_id,
+					current_owner_id: channel.current_owner_id,
+					ownership_changed_at: channel.ownership_changed_at,
+					activeUserIds: channel.activeUserIds || [],
+					createdAt: channel.createdAt || new Date(),
+					updatedAt: new Date(),
+					active: channel.active !== undefined ? channel.active : true,
+				}
+			);
 
-			let result: unknown;
-			if (existing && existing.length > 0) {
-				// Update existing record
-				result = await this.db.merge(`channels:${channel.id}`, {
-					...channel,
-					updated_at: new Date(),
-				});
-			} else {
-				// Create new record
-				result = await this.db.create(`channels:${channel.id}`, {
-					...channel,
-					created_at: new Date(),
-					updated_at: new Date(),
-				});
-			}
-
-			return { success: true, data: result as unknown as SurrealChannel };
+			return { success: true, data: result[0] as unknown as SurrealChannel };
 		} catch (error) {
 			// Suppress connection errors during shutdown
 			if (
@@ -415,46 +402,94 @@ export class SurrealDBManager {
 	async upsertMember(
 		member: Partial<SurrealMember>,
 	): Promise<DatabaseResult<SurrealMember>> {
-		try {
-			if (!this.connected || this.shuttingDown) {
-				return { success: false, error: "Not connected to database" };
-			}
+		const maxRetries = 3;
+		let lastError: Error | null = null;
 
-			// Check if member already exists
-			const existing = await this.db.select(`members:${member.id}`);
+		for (let attempt = 1; attempt <= maxRetries; attempt++) {
+			try {
+				if (!this.connected || this.shuttingDown) {
+					return { success: false, error: "Not connected to database" };
+				}
 
-			let result: unknown;
-			if (existing && existing.length > 0) {
-				// Member exists, update it
-				result = await this.db.merge(`members:${member.id}`, {
-					...member,
-					updated_at: new Date(),
-				});
-			} else {
-				// Member doesn't exist, create it
-				result = await this.db.create(`members:${member.id}`, {
-					...member,
-					created_at: new Date(),
-					updated_at: new Date(),
-				});
-			}
+				const result = await this.db.query(
+					`CREATE members:${member.id} SET
+						id = $id,
+						guild_id = $guild_id,
+						user_id = $user_id,
+						username = $username,
+						display_name = $display_name,
+						nickname = $nickname,
+						avatar = $avatar,
+						roles = $roles,
+						joined_at = $joined_at,
+						premium_since = $premium_since,
+						pending = $pending,
+						permissions = $permissions,
+						communication_disabled_until = $communication_disabled_until,
+						flags = $flags,
+						created_at = $created_at,
+						updated_at = $updated_at,
+						active = $active
+					`,
+					{
+						id: member.id,
+						guild_id: member.guild_id,
+						user_id: member.user_id,
+						username: member.username,
+						display_name: member.display_name,
+						nickname: member.nickname,
+						avatar: member.avatar,
+						roles: member.roles || [],
+						joined_at: member.joined_at,
+						premium_since: member.premium_since,
+						pending: member.pending || false,
+						permissions: member.permissions,
+						communication_disabled_until: member.communication_disabled_until,
+						flags: member.flags,
+						created_at: member.created_at || new Date(),
+						updated_at: new Date(),
+						active: member.active !== undefined ? member.active : true,
+					}
+				);
 
-			return { success: true, data: result as unknown as SurrealMember };
-		} catch (error) {
-			// Suppress connection errors during shutdown
-			if (
-				error instanceof Error &&
-				(error.message.includes("no connection available") ||
-					error.message.includes("connection to SurrealDB has dropped"))
-			) {
-				return { success: false, error: "Connection unavailable" };
+				return { success: true, data: result[0] as unknown as SurrealMember };
+			} catch (error) {
+				lastError = error as Error;
+
+				// Suppress connection errors during shutdown
+				if (
+					error instanceof Error &&
+					(error.message.includes("no connection available") ||
+						error.message.includes("connection to SurrealDB has dropped"))
+				) {
+					return { success: false, error: "Connection unavailable" };
+				}
+
+				// Check if this is a transaction conflict that can be retried
+				if (
+					error instanceof Error &&
+					error.message.includes("read or write conflict") &&
+					attempt < maxRetries
+				) {
+					console.log(
+						`🔸 Transaction conflict for member ${member.display_name}, retrying (attempt ${attempt}/${maxRetries})...`,
+					);
+					// Wait a bit before retrying
+					await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+					continue;
+				}
+
+				// If not a retryable error or max retries reached, log and return error
+				if (attempt === maxRetries) {
+					console.error("🔸 Failed to upsert member after retries:", error);
+				}
 			}
-			console.error("🔸 Failed to upsert member:", error);
-			return {
-				success: false,
-				error: error instanceof Error ? error.message : "Unknown error",
-			};
 		}
+
+		return {
+			success: false,
+			error: lastError?.message || "Unknown error",
+		};
 	}
 
 	async getMembersByGuild(
@@ -493,26 +528,46 @@ export class SurrealDBManager {
 				return { success: false, error: "Not connected to database" };
 			}
 
-			// Try to get existing record first
-			const existing = await this.db.select(`roles:${role.id}`);
-
-			let result: unknown;
-			if (existing && existing.length > 0) {
-				// Update existing record
-				result = await this.db.merge(`roles:${role.id}`, {
-					...role,
+			const result = await this.db.query(
+				`CREATE roles:${role.id} SET
+					id = $id,
+					guild_id = $guild_id,
+					name = $name,
+					color = $color,
+					hoist = $hoist,
+					icon = $icon,
+					unicode_emoji = $unicode_emoji,
+					position = $position,
+					permissions = $permissions,
+					managed = $managed,
+					mentionable = $mentionable,
+					tags = $tags,
+					flags = $flags,
+					created_at = $created_at,
+					updated_at = $updated_at,
+					active = $active
+				`,
+				{
+					id: role.id,
+					guild_id: role.guild_id,
+					name: role.name,
+					color: role.color,
+					hoist: role.hoist || false,
+					icon: role.icon,
+					unicode_emoji: role.unicode_emoji,
+					position: role.position,
+					permissions: role.permissions,
+					managed: role.managed || false,
+					mentionable: role.mentionable || false,
+					tags: role.tags,
+					flags: role.flags,
+					created_at: role.created_at || new Date(),
 					updated_at: new Date(),
-				});
-			} else {
-				// Create new record
-				result = await this.db.create(`roles:${role.id}`, {
-					...role,
-					created_at: new Date(),
-					updated_at: new Date(),
-				});
-			}
+					active: role.active !== undefined ? role.active : true,
+				}
+			);
 
-			return { success: true, data: result as unknown as SurrealRole };
+			return { success: true, data: result[0] as unknown as SurrealRole };
 		} catch (error) {
 			// Suppress connection errors during shutdown
 			if (
@@ -558,49 +613,128 @@ export class SurrealDBManager {
 	}
 
 	// Message operations
+	async getMessages(
+		guildId?: string,
+		channelId?: string,
+		limit = 100,
+	): Promise<SurrealMessage[]> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return [];
+			}
+
+			// Use select method which works correctly
+			const allMessages = await this.db.select("messages");
+
+			// Filter messages based on criteria
+			let filteredMessages = allMessages as unknown as SurrealMessage[];
+
+			if (guildId) {
+				filteredMessages = filteredMessages.filter(
+					(msg) => msg.guild_id === guildId,
+				);
+			}
+
+			if (channelId) {
+				filteredMessages = filteredMessages.filter(
+					(msg) => msg.channel_id === channelId,
+				);
+			}
+
+			// Sort by timestamp descending and limit
+			filteredMessages = filteredMessages
+				.sort(
+					(a, b) =>
+						new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+				)
+				.slice(0, limit);
+
+			return filteredMessages;
+		} catch (error) {
+			console.error("Error getting messages:", error);
+			return [];
+		}
+	}
+
 	async upsertMessage(
 		message: Partial<SurrealMessage>,
 	): Promise<DatabaseResult<SurrealMessage>> {
-		try {
-			if (!this.connected || this.shuttingDown) {
-				return { success: false, error: "Not connected to database" };
-			}
+		const maxRetries = 3;
+		let lastError: Error | null = null;
 
-			// Check if message already exists
-			const existing = await this.db.select(`messages:${message.id}`);
+		for (let attempt = 1; attempt <= maxRetries; attempt++) {
+			try {
+				if (!this.connected || this.shuttingDown) {
+					return { success: false, error: "Not connected to database" };
+				}
 
-			let result: unknown;
-			if (existing && existing.length > 0) {
-				// Message exists, update it
-				result = await this.db.merge(`messages:${message.id}`, {
-					...message,
-					updated_at: new Date(),
-				});
-			} else {
-				// Message doesn't exist, create it
-				result = await this.db.create(`messages:${message.id}`, {
-					...message,
-					created_at: new Date(),
-					updated_at: new Date(),
-				});
-			}
+				// Use CREATE to insert or UPDATE to modify existing records
+				const result = await this.db.query(
+					`
+					CREATE messages:${message.id || Date.now()} SET
+						channel_id = $channel_id,
+						guild_id = $guild_id,
+						author_id = $author_id,
+						content = $content,
+						timestamp = $timestamp,
+						attachments = $attachments,
+						embeds = $embeds,
+						created_at = $created_at,
+						updated_at = $updated_at,
+						active = $active
+				`,
+					{
+						channel_id: message.channel_id,
+						guild_id: message.guild_id,
+						author_id: message.author_id,
+						content: message.content,
+						timestamp: message.timestamp || message.created_at || new Date(),
+						attachments: message.attachments || [],
+						embeds: message.embeds || [],
+						created_at: message.created_at || new Date(),
+						updated_at: new Date(),
+						active: message.active !== undefined ? message.active : true,
+					},
+				);
 
-			return { success: true, data: result as unknown as SurrealMessage };
-		} catch (error) {
-			// Suppress connection errors during shutdown
-			if (
-				error instanceof Error &&
-				(error.message.includes("no connection available") ||
-					error.message.includes("connection to SurrealDB has dropped"))
-			) {
-				return { success: false, error: "Connection unavailable" };
+				return { success: true, data: result[0] as unknown as SurrealMessage };
+			} catch (error) {
+				lastError = error as Error;
+
+				// Suppress connection errors during shutdown
+				if (
+					error instanceof Error &&
+					(error.message.includes("no connection available") ||
+						error.message.includes("connection to SurrealDB has dropped"))
+				) {
+					return { success: false, error: "Connection unavailable" };
+				}
+
+				// Check if this is a transaction conflict that can be retried
+				if (
+					error instanceof Error &&
+					error.message.includes("read or write conflict") &&
+					attempt < maxRetries
+				) {
+					console.log(
+						`🔸 Transaction conflict for message ${message.id}, retrying (attempt ${attempt}/${maxRetries})...`,
+					);
+					// Wait a bit before retrying
+					await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+					continue;
+				}
+
+				// If not a retryable error or max retries reached, log and return error
+				if (attempt === maxRetries) {
+					console.error("🔸 Failed to upsert message after retries:", error);
+				}
 			}
-			console.error("🔸 Failed to upsert message:", error);
-			return {
-				success: false,
-				error: error instanceof Error ? error.message : "Unknown error",
-			};
 		}
+
+		return {
+			success: false,
+			error: lastError?.message || "Unknown error",
+		};
 	}
 
 	// Action operations
@@ -1982,6 +2116,182 @@ export class SurrealDBManager {
 				error: error instanceof Error ? error.message : "Unknown error",
 			};
 		}
+	}
+
+	// Relationship Network Methods
+
+	/**
+	 * Get message interactions between two users in a guild
+	 */
+	async getMessageInteractions(
+		userId: string,
+		otherUserId: string,
+		guildId: string,
+		timeWindowMinutes = 5,
+	): Promise<DatabaseResult<MessageInteraction[]>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			// Query messages from both users in the same guild
+			const result = await this.db.query(
+				`SELECT * FROM messages 
+				 WHERE guild_id = $guild_id 
+				 AND author_id IN [$user1, $user2] 
+				 AND active = true 
+				 ORDER BY timestamp ASC`,
+				{
+					guild_id: guildId,
+					user1: userId,
+					user2: otherUserId,
+				},
+			);
+
+			const rawData = (result[0] as Record<string, unknown>)?.[0];
+			const messages = Array.isArray(rawData) ? rawData : [];
+
+			// Process messages to find interactions
+			const interactions: MessageInteraction[] = [];
+			const timeWindowMs = timeWindowMinutes * 60 * 1000;
+
+			// Group messages by channel and find temporal proximity
+			const channelMessages = new Map<string, SurrealMessage[]>();
+			for (const msg of messages) {
+				const message = msg as SurrealMessage;
+				if (!channelMessages.has(message.channel_id)) {
+					channelMessages.set(message.channel_id, []);
+				}
+				const channelMsgs = channelMessages.get(message.channel_id);
+				if (channelMsgs) {
+					channelMsgs.push(message);
+				}
+			}
+
+			// Find interactions within time windows
+			for (const [channelId, msgs] of channelMessages) {
+				// Sort messages by timestamp
+				msgs.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+				for (let i = 0; i < msgs.length; i++) {
+					const currentMsg = msgs[i];
+					if (!currentMsg) continue;
+
+					const currentTime = currentMsg.timestamp.getTime();
+
+					// Look for messages from the other user within time window
+					for (let j = i + 1; j < msgs.length; j++) {
+						const nextMsg = msgs[j];
+						if (!nextMsg) continue;
+
+						const timeDiff = nextMsg.timestamp.getTime() - currentTime;
+
+						if (timeDiff > timeWindowMs) break; // Outside time window
+
+						// Check if messages are from different users
+						if (currentMsg.author_id !== nextMsg.author_id) {
+							// Found an interaction
+							const otherUser =
+								currentMsg.author_id === userId ? otherUserId : userId;
+
+							// Check for mentions
+							const hasMention = this.checkForMention(
+								currentMsg.content,
+								otherUser,
+							);
+
+							interactions.push({
+								interaction_type: hasMention ? "mention" : "same_channel",
+								timestamp: currentMsg.timestamp,
+								channel_id: channelId,
+								message_id: currentMsg.id,
+								other_user_id: otherUser,
+								points: hasMention
+									? 2 // Mention weight
+									: 1, // Same channel weight
+							});
+						}
+					}
+				}
+			}
+
+			return { success: true, data: interactions };
+		} catch (error) {
+			console.error("🔸 Failed to get message interactions:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	/**
+	 * Update member's relationship network
+	 */
+	async updateMemberRelationshipNetwork(
+		memberId: string,
+		relationships: RelationshipEntry[],
+	): Promise<DatabaseResult<void>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			await this.db.merge(memberId, {
+				relationship_network: relationships,
+				updated_at: new Date(),
+			});
+
+			return { success: true };
+		} catch (error) {
+			console.error("🔸 Failed to update member relationship network:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	/**
+	 * Get member's relationship network
+	 */
+	async getMemberRelationshipNetwork(
+		userId: string,
+		guildId: string,
+	): Promise<DatabaseResult<RelationshipEntry[]>> {
+		try {
+			if (!this.connected || this.shuttingDown) {
+				return { success: false, error: "Not connected to database" };
+			}
+
+			const memberId = `${guildId}:${userId}`;
+			const result = await this.db.select(memberId);
+
+			if (!result || result.length === 0) {
+				return { success: true, data: [] };
+			}
+
+			const member = result[0] as unknown as SurrealMember;
+			return {
+				success: true,
+				data: member.relationship_network || [],
+			};
+		} catch (error) {
+			console.error("🔸 Failed to get member relationship network:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
+		}
+	}
+
+	/**
+	 * Check if message content contains a mention of a user
+	 */
+	private checkForMention(content: string, userId: string): boolean {
+		// Simple mention detection - look for <@userId> pattern
+		const mentionPattern = new RegExp(`<@${userId}>`, "g");
+		return mentionPattern.test(content);
 	}
 
 	// Public query method for custom queries

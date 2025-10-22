@@ -1,0 +1,17 @@
+# Discord Bot Configuration
+BOT_TOKEN=your_discord_bot_token_here
+GUILD_ID=your_guild_id_here
+
+# SurrealDB Cloud Configuration
+SURREAL_URL=wss://your-project.surrealdb.com/rpc
+SURREAL_NAMESPACE=your_namespace
+SURREAL_DATABASE=your_database
+SURREAL_USERNAME=your_username
+SURREAL_PASSWORD=your_password
+# OR use token authentication instead of username/password:
+# SURREAL_TOKEN=your_auth_token_here
+
+# Optional Settings
+BOT_PREFIX=!
+NODE_ENV=development
+PORT=3000

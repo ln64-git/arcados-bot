@@ -4,7 +4,6 @@ import type {
 	GuildMember,
 	Message,
 	Role,
-	VoiceState,
 } from "discord.js";
 
 // SurrealDB Table Definitions
@@ -77,6 +76,10 @@ export const SURREAL_SCHEMA = {
 			-- Voice channel preferences
 			channel_preferences: object DEFAULT {},
 			
+			-- Relationship network (sorted by affinity score descending)
+			relationship_network: array<object> DEFAULT [],
+			user_synapse: object DEFAULT {},
+			
 			created_at: datetime,
 			updated_at: datetime,
 			active: bool DEFAULT true
@@ -113,6 +116,9 @@ export const SURREAL_SCHEMA = {
 			updated_at: datetime,
 			active: bool DEFAULT true
 		};
+		DEFINE INDEX idx_messages_guild_author ON messages FIELDS guild_id, author_id;
+		DEFINE INDEX idx_messages_guild_timestamp ON messages FIELDS guild_id, timestamp;
+		DEFINE INDEX idx_messages_channel_timestamp ON messages FIELDS channel_id, timestamp;
 	`,
 	// Actions table for scheduled/deferred Discord actions
 	actions: `
@@ -144,94 +150,6 @@ export const SURREAL_SCHEMA = {
 		DEFINE INDEX idx_sync_guild_type ON sync_metadata FIELDS guild_id, entity_type;
 	`,
 	// Voice state tracking tables
-	voice_states: `
-		DEFINE TABLE voice_states SCHEMAFULL {
-			id: string,
-			guild_id: string,
-			user_id: string,
-			channel_id: string?,
-			
-			-- Voice state flags
-			self_mute: bool DEFAULT false,
-			self_deaf: bool DEFAULT false,
-			server_mute: bool DEFAULT false,
-			server_deaf: bool DEFAULT false,
-			streaming: bool DEFAULT false,
-			self_video: bool DEFAULT false,
-			suppress: bool DEFAULT false,
-			
-			-- Session tracking
-			session_id: string?,
-			joined_at: datetime?,
-			
-			created_at: datetime,
-			updated_at: datetime
-		};
-		DEFINE INDEX idx_voice_guild ON voice_states FIELDS guild_id;
-		DEFINE INDEX idx_voice_channel ON voice_states FIELDS channel_id;
-	`,
-	voice_history: `
-		DEFINE TABLE voice_history SCHEMAFULL {
-			id: string,
-			guild_id: string,
-			user_id: string,
-			channel_id: string?,
-			
-			-- Event details
-			event_type: string,
-			from_channel_id: string?,
-			to_channel_id: string?,
-			
-			-- State snapshot at time of event
-			self_mute: bool,
-			self_deaf: bool,
-			server_mute: bool,
-			server_deaf: bool,
-			streaming: bool,
-			self_video: bool,
-			
-			-- Session tracking
-			session_id: string?,
-			session_duration: int?,
-			
-			timestamp: datetime,
-			created_at: datetime
-		};
-		DEFINE INDEX idx_voice_history_user ON voice_history FIELDS user_id, timestamp;
-		DEFINE INDEX idx_voice_history_guild ON voice_history FIELDS guild_id, timestamp;
-		DEFINE INDEX idx_voice_history_session ON voice_history FIELDS session_id;
-	`,
-	voice_sessions: `
-		DEFINE TABLE voice_sessions SCHEMAFULL {
-			id: string,
-			guild_id: string,
-			user_id: string,
-			channel_id: string,
-			
-			-- Session metadata
-			joined_at: datetime,
-			left_at: datetime?,
-			duration: int DEFAULT 0,
-			
-			-- State tracking
-			time_muted: int DEFAULT 0,
-			time_deafened: int DEFAULT 0,
-			time_streaming: int DEFAULT 0,
-			
-			-- Ownership context
-			owner_at_join: string?,
-			is_grandfathered: bool DEFAULT false,
-			
-			-- Active moderation
-			applied_moderation: object DEFAULT {},
-			
-			active: bool DEFAULT true,
-			created_at: datetime,
-			updated_at: datetime
-		};
-		DEFINE INDEX idx_voice_sessions_user ON voice_sessions FIELDS user_id, joined_at;
-		DEFINE INDEX idx_voice_sessions_guild ON voice_sessions FIELDS guild_id, joined_at;
-	`,
 };
 
 // TypeScript Interfaces
@@ -304,6 +222,10 @@ export interface SurrealMember {
 
 	// Voice channel preferences
 	channel_preferences?: ChannelPreferences;
+
+	// Relationship network
+	relationship_network?: RelationshipEntry[];
+	user_synapse?: UserSynapse;
 
 	created_at: Date;
 	updated_at: Date;
@@ -381,67 +303,6 @@ export interface SyncMetadata {
 	[key: string]: unknown;
 }
 
-export interface SurrealVoiceState {
-	id: string;
-	guild_id: string;
-	user_id: string;
-	channel_id: string | null;
-	self_mute: boolean;
-	self_deaf: boolean;
-	server_mute: boolean;
-	server_deaf: boolean;
-	streaming: boolean;
-	self_video: boolean;
-	suppress: boolean;
-	session_id: string | null;
-	joined_at: Date | null;
-	created_at: Date;
-	updated_at: Date;
-}
-
-export interface SurrealVoiceHistory {
-	id: string;
-	guild_id: string;
-	user_id: string;
-	channel_id: string | null;
-	event_type: "join" | "leave" | "switch" | "state_change";
-	from_channel_id: string | null;
-	to_channel_id: string | null;
-	self_mute: boolean;
-	self_deaf: boolean;
-	server_mute: boolean;
-	server_deaf: boolean;
-	streaming: boolean;
-	self_video: boolean;
-	session_id: string | null;
-	session_duration: number | null;
-	timestamp: Date;
-	created_at: Date;
-}
-
-export interface SurrealVoiceSession {
-	id: string;
-	guild_id: string;
-	user_id: string;
-	channel_id: string;
-	joined_at: Date;
-	left_at: Date | null;
-	duration: number;
-	time_muted: number;
-	time_deafened: number;
-	time_streaming: number;
-
-	// Ownership context
-	owner_at_join?: string;
-	is_grandfathered: boolean;
-
-	// Active moderation
-	applied_moderation?: AppliedModeration;
-
-	active: boolean;
-	created_at: Date;
-	updated_at: Date;
-}
 
 export interface ChannelPreferences {
 	channel_name?: string;
@@ -458,6 +319,25 @@ export interface AppliedModeration {
 	muted_by?: string;
 	deafened_by?: string;
 	applied_at?: Date;
+}
+
+export interface RelationshipEntry {
+	user_id: string;
+	affinity_score: number;
+	summary?: string;
+	keywords?: string[];
+	emojis?: string[];
+	notes?: string;
+	last_interaction?: Date;
+	interaction_count?: number;
+}
+
+export interface UserSynapse {
+	user_id: string;
+	summary?: string;
+	keywords?: string[];
+	emojis?: string[];
+	notes?: string;
 }
 
 // Live Query callback types
@@ -662,7 +542,7 @@ export function discordMemberToSurreal(
 	const profile_hash = generateProfileHash(profileData);
 
 	return {
-		id: `${member.guild.id}:${member.id}`,
+		id: `${member.guild.id}_${member.id}`,
 		guild_id: member.guild.id,
 		user_id: member.id,
 
@@ -693,6 +573,13 @@ export function discordMemberToSurreal(
 		// Change tracking
 		profile_hash,
 		profile_history: [], // Will be populated when comparing with existing data
+
+		// Voice channel preferences
+		channel_preferences: {},
+
+		// Relationship network
+		relationship_network: [],
+		user_synapse: {},
 
 		created_at: new Date(),
 		updated_at: new Date(),
@@ -763,24 +650,3 @@ export function discordMessageToSurreal(
 	};
 }
 
-export function discordVoiceStateToSurreal(
-	voiceState: VoiceState,
-): Partial<SurrealVoiceState> {
-	return {
-		id: `${voiceState.guild.id}_${voiceState.member?.id}`, // Use underscore instead of colon
-		guild_id: voiceState.guild.id,
-		user_id: voiceState.member?.id || "",
-		channel_id: voiceState.channelId,
-		self_mute: voiceState.selfMute || false,
-		self_deaf: voiceState.selfDeaf || false,
-		server_mute: voiceState.mute || false,
-		server_deaf: voiceState.deaf || false,
-		streaming: voiceState.streaming || false,
-		self_video: voiceState.selfVideo || false,
-		suppress: voiceState.suppress || false,
-		session_id: voiceState.sessionId,
-		joined_at: voiceState.channelId ? new Date() : null,
-		created_at: new Date(),
-		updated_at: new Date(),
-	};
-}

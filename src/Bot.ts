@@ -11,7 +11,6 @@ import { SurrealDBManager } from "./database/SurrealDBManager";
 import { DiscordSyncManager } from "./features/discord-sync/DiscordSyncManager";
 import { speakVoiceCall } from "./features/speak-voice-call/speakVoiceCall";
 import { VoiceChannelManager } from "./features/voice-channel-manager/VoiceChannelManager";
-import { VoiceSessionTracker } from "./features/voice-session-tracker/VoiceSessionTracker";
 import type { Command } from "./types";
 import { loadCommands } from "./utils/loadCommands";
 
@@ -21,7 +20,6 @@ export class Bot {
 	public surrealManager: SurrealDBManager;
 	public syncManager?: DiscordSyncManager;
 	public voiceChannelManager?: VoiceChannelManager;
-	public voiceSessionTracker?: VoiceSessionTracker;
 
 	constructor() {
 		this.client = new Client({
@@ -60,17 +58,8 @@ export class Bot {
 		this.client.once("ready", async () => {
 			console.log("🔹 Bot is ready");
 
-			// Initialize voice session tracker first
+			// Initialize voice channel manager
 			if (this.surrealManager.isConnected()) {
-				console.log("🔹 Initializing Voice Session Tracker...");
-				this.voiceSessionTracker = new VoiceSessionTracker(
-					this.client,
-					this.surrealManager,
-				);
-				await this.voiceSessionTracker.initialize();
-				console.log("🔹 Voice Session Tracker initialized");
-
-				// Initialize voice channel manager with session tracker reference
 				console.log("🔹 Initializing Voice Channel Manager...");
 
 				// Get spawn channel ID from config
@@ -84,7 +73,6 @@ export class Bot {
 						this.client,
 						this.surrealManager,
 						spawnChannelId,
-						this.voiceSessionTracker,
 					);
 					await this.voiceChannelManager.initialize();
 					console.log(

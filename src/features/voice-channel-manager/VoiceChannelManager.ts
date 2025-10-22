@@ -6,7 +6,6 @@ import {
 	VoiceChannel,
 } from "discord.js";
 import type { SurrealDBManager } from "../../database/SurrealDBManager.js";
-import type { VoiceSessionTracker } from "../voice-session-tracker/VoiceSessionTracker.js";
 
 export class VoiceChannelManager {
 	private static processWideLock = false; // Process-wide lock shared across ALL instances
@@ -20,7 +19,6 @@ export class VoiceChannelManager {
 		client: Client,
 		db: SurrealDBManager,
 		spawnChannelId: string,
-		voiceSessionTracker?: VoiceSessionTracker,
 	) {
 		this.client = client;
 		this.db = db;
