@@ -27,6 +27,9 @@
 		"drop:all": "npx tsx src/scripts/drop-all-postgres-data.ts",
 		"recreate:schema": "npx tsx src/scripts/recreate-postgres-schema.ts",
 		"debug:discord": "npx tsx src/scripts/debug-discord-connection.ts",
+		"clear:member-metadata": "npx tsx src/scripts/clear-member-metadata.ts",
+		"regenerate:relationships": "npx tsx src/scripts/regenerate-relationship-network.ts",
+		"user:summary": "npx tsx src/scripts/get-user-summary.ts",
 		"watch-users": "npx tsx src/scripts/watch-user-changes.ts",
 		"watch-db": "npx tsx src/scripts/watch-database-changes.ts"
 	},
