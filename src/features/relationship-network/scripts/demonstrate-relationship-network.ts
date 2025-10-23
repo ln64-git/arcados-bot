@@ -1,6 +1,6 @@
 import { Client } from "discord.js";
-import { SurrealDBManager } from "../../../database/SurrealDBManager";
-import { RelationshipNetworkManager } from "../RelationshipNetworkManager";
+import { PostgreSQLManager } from "../../../database/PostgreSQLManager";
+import { PostgreSQLRelationshipNetworkManager } from "../PostgreSQLRelationshipNetworkManager";
 
 /**
  * Example script demonstrating the Relationship Network system
@@ -16,13 +16,13 @@ async function demonstrateRelationshipNetwork() {
 
 	// Initialize database and client (you would normally do this in your main bot)
 	const client = new Client({ intents: [] });
-	const db = new SurrealDBManager();
+	const db = new PostgreSQLManager();
 
 	// Connect to database
 	await db.connect();
 
 	// Initialize relationship network manager
-	const relationshipManager = new RelationshipNetworkManager(db);
+	const relationshipManager = new PostgreSQLRelationshipNetworkManager(db);
 
 	// Example guild and user IDs (replace with real values for testing)
 	const guildId = "your-guild-id";
@@ -96,8 +96,9 @@ async function demonstrateRelationshipNetwork() {
 
 		// 4. Show current configuration
 		console.log("🔹 Current configuration:");
-		console.log(`   - Weights:`, relationshipManager.getWeights());
-		console.log(`   - Options:`, relationshipManager.getOptions());
+		console.log(`   - Time window: 5 minutes`);
+		console.log(`   - Max relationships: 50`);
+		console.log(`   - Affinity scoring: logarithmic scaling`);
 	} catch (error) {
 		console.error("🔸 Error in demonstration:", error);
 	} finally {

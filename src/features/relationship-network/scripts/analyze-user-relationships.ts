@@ -1,10 +1,10 @@
-import { SurrealDBManager } from "../../../database/SurrealDBManager";
+import { PostgreSQLManager } from "../../../database/PostgreSQLManager";
 import type {
 	DatabaseResult,
 	RelationshipEntry,
-	SurrealMember,
-} from "../../../database/schema";
-import { RelationshipNetworkManager } from "../RelationshipNetworkManager";
+	MemberData,
+} from "../../../database/PostgreSQLManager";
+import { PostgreSQLRelationshipNetworkManager } from "../PostgreSQLRelationshipNetworkManager";
 
 /**
  * Script to analyze a single user's relationship network
@@ -46,8 +46,8 @@ async function analyzeUserRelationships(
 		`🔹 Analyzing relationship network for user ${userId} in guild ${guildId}...`,
 	);
 
-	const db = new SurrealDBManager();
-	const relationshipManager = new RelationshipNetworkManager(db);
+	const db = new PostgreSQLManager();
+	const relationshipManager = new PostgreSQLRelationshipNetworkManager(db);
 
 	try {
 		await db.connect();
@@ -279,7 +279,7 @@ async function compareUserRelationships(
 async function getGuildNetworkStats(guildId: string): Promise<void> {
 	console.log(`🔹 Getting network statistics for guild ${guildId}...`);
 
-	const db = new SurrealDBManager();
+	const db = new PostgreSQLManager();
 
 	try {
 		await db.connect();

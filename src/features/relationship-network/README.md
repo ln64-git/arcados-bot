@@ -9,17 +9,16 @@ The Relationship Network system analyzes message interactions between users to b
 ## Features
 
 - **Affinity Scoring**: Calculate relationship strength based on message interactions
-- **On-demand Computation**: Lazy evaluation of relationships when needed
+- **Simple Computation**: On-demand evaluation of relationships when needed
 - **Efficient Queries**: Optimized database queries with proper indexing
-- **Extensible Design**: Easy to add new interaction types (voice, reactions, etc.)
-- **Caching**: Built-in caching with configurable TTL
+- **PostgreSQL Integration**: Native JSONB storage for relationship data
 
 ## Architecture
 
 ### Core Components
 
-1. **RelationshipNetworkManager**: Main service for calculating and managing relationships
-2. **SurrealDBManager**: Database operations for relationship data
+1. **PostgreSQLRelationshipNetworkManager**: Main service for calculating and managing relationships
+2. **PostgreSQLManager**: Database operations for relationship data
 3. **Schema**: Type definitions and database schema for relationship storage
 
 ### Data Flow
@@ -33,13 +32,13 @@ Message Interactions → Affinity Calculation → Relationship Network → Datab
 ### Basic Setup
 
 ```typescript
-import { RelationshipNetworkManager } from "./features/relationship-network/RelationshipNetworkManager";
-import { SurrealDBManager } from "./database/SurrealDBManager";
+import { PostgreSQLRelationshipNetworkManager } from "./features/relationship-network/PostgreSQLRelationshipNetworkManager";
+import { PostgreSQLManager } from "./database/PostgreSQLManager";
 
-const db = new SurrealDBManager();
+const db = new PostgreSQLManager();
 await db.connect();
 
-const relationshipManager = new RelationshipNetworkManager(db);
+const relationshipManager = new PostgreSQLRelationshipNetworkManager(db);
 ```
 
 ### Get Top Relationships
@@ -118,62 +117,73 @@ This ensures:
 
 ```sql
 -- Relationship network (sorted by affinity score descending)
-relationship_network: array<object> DEFAULT [],
-user_synapse: object DEFAULT {},
+relationship_network JSONB DEFAULT '[]',
+summary TEXT,
+keywords TEXT[],
+emojis TEXT[],
+notes TEXT[],
 ```
 
 ### Message Table Indexes
 
 ```sql
-DEFINE INDEX idx_messages_guild_author ON messages FIELDS guild_id, author_id;
-DEFINE INDEX idx_messages_guild_timestamp ON messages FIELDS guild_id, timestamp;
-DEFINE INDEX idx_messages_channel_timestamp ON messages FIELDS channel_id, timestamp;
+CREATE INDEX IF NOT EXISTS idx_messages_guild_author ON messages(guild_id, author_id);
+CREATE INDEX IF NOT EXISTS idx_messages_guild_timestamp ON messages(guild_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_channel_timestamp ON messages(channel_id, created_at);
 ```
 
 ## Configuration
 
-### Affinity Weights
+### Affinity Weights (Fixed)
 
-```typescript
-const weights = {
-  sameChannelMessages: 1, // Base interaction points
-  mentions: 2, // Stronger signal
-  replies: 3, // Strongest signal
-};
-```
+- Same channel messages: 1 point
+- Mentions: 2 points
+- Replies: 3 points
 
-### Computation Options
+### Computation Settings (Fixed)
 
-```typescript
-const options = {
-  timeWindowMinutes: 5, // Time window for same-channel interactions
-  cacheTTLMinutes: 60, // Cache duration for computed relationships
-  minAffinityScore: 1, // Minimum score to include in network
-  maxRelationships: 50, // Maximum relationships per user
-};
-```
+- Time window: 5 minutes for same-channel interactions
+- Maximum relationships: 50 per user
+- Minimum affinity score: 0 (only positive scores included)
 
 ## Performance Considerations
 
 - **On-demand Computation**: Relationships are computed only when requested
-- **Caching**: Results are cached for 60 minutes by default
+- **Database Storage**: Results are stored in PostgreSQL for persistence
 - **Efficient Queries**: Database indexes optimize message interaction queries
-- **Batch Processing**: Multiple relationships computed in single operation
+- **Simple Algorithm**: Fixed weights and settings for predictable performance
 
 ## Future Enhancements
 
 - **Voice Interactions**: Add voice channel co-presence scoring
 - **Reaction Patterns**: Include emoji reactions in affinity calculation
-- **Temporal Decay**: Apply time-based decay to older interactions
 - **AI Integration**: Populate summary, keywords, and emoji fields
 - **Real-time Updates**: Incremental relationship updates on new messages
 
 ## Testing
 
+### PostgreSQL Integration Test
+
+Test the PostgreSQL relationship network integration:
+
+```bash
+npm run ts-node src/scripts/test-postgres-relationship-network.ts
+```
+
+### Schema Migration
+
+If you have an existing PostgreSQL database, run the migration script to add relationship network fields:
+
+```bash
+npm run ts-node src/scripts/migrate-postgres-relationship-schema.ts
+```
+
+### Demonstration Script
+
 Use the demonstration script to test the system:
 
 ```bash
-npm run ts-node src/scripts/demonstrate-relationship-network.ts
+npm run ts-node src/features/relationship-network/scripts/demonstrate-relationship-network.ts
 ```
 
 Replace the example guild and user IDs with real values for testing.

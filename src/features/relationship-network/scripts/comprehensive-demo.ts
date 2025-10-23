@@ -1,5 +1,5 @@
-import { SurrealDBManager } from "../../../database/SurrealDBManager";
-import { RelationshipNetworkManager } from "../RelationshipNetworkManager";
+import { PostgreSQLManager } from "../../../database/PostgreSQLManager";
+import { PostgreSQLRelationshipNetworkManager } from "../PostgreSQLRelationshipNetworkManager";
 import {
 	analyzeUserRelationships,
 	compareUserRelationships,
@@ -40,8 +40,8 @@ async function runComprehensiveDemo(config: DemoConfig): Promise<void> {
 	);
 	console.log("=".repeat(60));
 
-	const db = new SurrealDBManager();
-	const relationshipManager = new RelationshipNetworkManager(db);
+	const db = new PostgreSQLManager();
+	const relationshipManager = new PostgreSQLRelationshipNetworkManager(db);
 
 	try {
 		// Step 1: Database Connection
@@ -185,8 +185,9 @@ async function runComprehensiveDemo(config: DemoConfig): Promise<void> {
 		console.log("-".repeat(30));
 
 		console.log("🔹 Current Relationship Network Configuration:");
-		console.log(`   - Weights:`, relationshipManager.getWeights());
-		console.log(`   - Options:`, relationshipManager.getOptions());
+		console.log(`   - Time window: 5 minutes`);
+		console.log(`   - Max relationships: 50`);
+		console.log(`   - Affinity scoring: logarithmic scaling`);
 
 		console.log("\n🔹 Demo Complete!");
 		console.log("=".repeat(60));

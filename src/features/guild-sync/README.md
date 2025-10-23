@@ -1,76 +1,220 @@
-# Guild Sync Scripts
+# PostgreSQL Guild Sync
 
-This folder contains scripts for syncing Discord guild data to SurrealDB Cloud.
+This feature allows you to sync your Discord guild data to a PostgreSQL database instead of SurrealDB.
 
-## Scripts
+## Setup
 
-### `sync-guild-data.ts`
+### 1. Environment Variables
 
-Comprehensive guild sync script that syncs:
+Add the following to your `.env` file:
 
-- Guild basic information (name, owner, member count, features)
-- All roles with permissions and properties
-- All channels (text, voice, categories)
-- All members with their roles and profile data
-- Sync metadata for tracking
+```env
+# PostgreSQL Database
+POSTGRES_URL=postgresql://username:password@localhost:5432/database_name
 
-### `sync-channel-messages.ts`
+# Discord Bot (required)
+BOT_TOKEN=your_discord_bot_token
+GUILD_ID=your_guild_id
+```
 
-Channel-specific message sync script that syncs:
+### 2. Database Schema
 
-- Messages from a specific channel
-- Message content, attachments, and embeds
-- Author information and timestamps
-- Handles pagination and rate limiting
-- Skips bot messages and empty messages
+The PostgreSQL manager will automatically create the following tables:
+
+- **guilds** - Guild information (name, description, icon, owner, member count)
+- **channels** - Channel information (name, type, position, topic, NSFW status)
+- **roles** - Role information (name, color, position, permissions)
+- **members** - Member information (nickname, join date, roles)
+- **messages** - Message information (content, attachments, embeds)
 
 ## Usage
 
-1. Ensure your environment variables are set:
+### Test PostgreSQL Connection
 
-   ```bash
-   export GUILD_ID="your_guild_id"
-   export BOT_TOKEN="your_bot_token"
-   export SURREAL_URL="wss://your-project.surrealdb.com/rpc"
-   export SURREAL_NAMESPACE="your_namespace"
-   export SURREAL_DATABASE="your_database"
-   export SURREAL_USERNAME="your_username"
-   export SURREAL_PASSWORD="your_password"
-   ```
+```bash
+npm run test:postgres
+```
 
-2. Run the sync script:
+This will:
 
-   ```bash
-   # Full guild sync
-   bun run src/features/guild-sync/sync-guild-data.ts
+- Test the PostgreSQL connection
+- Initialize the database schema
+- Verify the connection is working
 
-   # Sync messages from a specific channel
-   bun run src/features/guild-sync/sync-channel-messages.ts [channel_name_or_id]
-   ```
+### Sync Guild Data
+
+```bash
+npm run sync:guild
+```
+
+This will:
+
+- Connect to Discord and PostgreSQL
+- Sync all guild data (guild info, channels, roles, members, messages)
+- Display progress and statistics
+- Show final guild statistics
 
 ## Features
 
-- **Comprehensive Sync**: Syncs all guild data in one run
-- **Progress Tracking**: Shows detailed progress for each step
-- **Error Handling**: Continues on errors and reports failures
-- **Rate Limiting**: Includes delays to avoid Discord API limits
-- **Database Verification**: Checks final database state
-- **Graceful Shutdown**: Handles SIGINT/SIGTERM signals
+### Automatic Schema Creation
 
-## Database Schema
+The PostgreSQL manager automatically creates all necessary tables and indexes:
 
-The script syncs data to these SurrealDB tables:
+```sql
+-- Tables created automatically:
+CREATE TABLE guilds (...);
+CREATE TABLE channels (...);
+CREATE TABLE roles (...);
+CREATE TABLE members (...);
+CREATE TABLE messages (...);
 
-- `guilds` - Guild information
-- `roles` - Guild roles with permissions
-- `channels` - All channel types
-- `members` - Member profiles and roles
-- `messages` - Channel messages with content and metadata
-- `sync_metadata` - Sync tracking data
+-- Indexes for performance:
+CREATE INDEX idx_channels_guild_id ON channels(guild_id);
+CREATE INDEX idx_messages_guild_id ON messages(guild_id);
+-- ... and more
+```
 
-## Notes
+### Data Synchronization
 
-- Bot members are skipped during member sync
-- The @everyone role is skipped during role sync
-- Forum and stage channels are excluded
-- Includes comprehensive error reporting and statistics
+The sync process includes:
+
+1. **Guild Information** - Name, description, icon, owner, member count
+2. **Channels** - All text and voice channels with metadata
+3. **Roles** - All roles with permissions and properties
+4. **Members** - All guild members with roles and join dates
+5. **Messages** - All messages from text channels (with rate limiting)
+
+### Error Handling
+
+- Graceful degradation if PostgreSQL is unavailable
+- Comprehensive error logging
+- Automatic retry for failed operations
+- Rate limiting to respect Discord API limits
+
+## Database Schema Details
+
+### Guilds Table
+
+```sql
+CREATE TABLE guilds (
+    id VARCHAR(20) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    icon VARCHAR(100),
+    owner_id VARCHAR(20) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    member_count INTEGER DEFAULT 0,
+    active BOOLEAN DEFAULT true,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+```
+
+### Channels Table
+
+```sql
+CREATE TABLE channels (
+    id VARCHAR(20) PRIMARY KEY,
+    guild_id VARCHAR(20) NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    name VARCHAR(100) NOT NULL,
+    type INTEGER NOT NULL,
+    position INTEGER,
+    topic TEXT,
+    nsfw BOOLEAN DEFAULT false,
+    parent_id VARCHAR(20),
+    active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+```
+
+### Messages Table
+
+```sql
+CREATE TABLE messages (
+    id VARCHAR(20) PRIMARY KEY,
+    guild_id VARCHAR(20) NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    channel_id VARCHAR(20) NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    author_id VARCHAR(20) NOT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    edited_at TIMESTAMP WITH TIME ZONE,
+    attachments TEXT[],
+    embeds TEXT[],
+    active BOOLEAN DEFAULT true
+);
+```
+
+## Troubleshooting
+
+### Connection Issues
+
+1. **Check your POSTGRES_URL format:**
+
+   ```
+   postgresql://username:password@host:port/database
+   ```
+
+2. **Verify database exists:**
+
+   ```sql
+   CREATE DATABASE your_database_name;
+   ```
+
+3. **Check permissions:**
+   ```sql
+   GRANT ALL PRIVILEGES ON DATABASE your_database_name TO your_username;
+   ```
+
+### Sync Issues
+
+1. **Check Discord bot permissions:**
+
+   - Bot needs to be in the guild
+   - Bot needs appropriate permissions to read channels, members, messages
+
+2. **Rate limiting:**
+
+   - The sync process includes rate limiting
+   - Large guilds may take time to sync completely
+
+3. **Memory usage:**
+   - For very large guilds, consider running sync during off-peak hours
+
+## API Reference
+
+### PostgreSQLManager
+
+```typescript
+const db = new PostgreSQLManager();
+
+// Connect to database
+await db.connect();
+
+// Upsert operations
+await db.upsertGuild(guildData);
+await db.upsertChannel(channelData);
+await db.upsertRole(roleData);
+await db.upsertMember(memberData);
+await db.upsertMessage(messageData);
+
+// Query operations
+const result = await db.query("SELECT * FROM guilds WHERE active = true");
+
+// Get guild statistics
+const stats = await db.getGuildStats(guildId);
+
+// Disconnect
+await db.disconnect();
+```
+
+### GuildSyncManager
+
+```typescript
+const syncManager = new GuildSyncManager();
+
+// Start full sync
+await syncManager.start();
+
+// Get guild statistics
+await syncManager.getGuildStats();
+```

@@ -1,10 +1,10 @@
-import { SurrealDBManager } from "../../../database/SurrealDBManager";
+import { PostgreSQLManager } from "../../../database/PostgreSQLManager";
 import type {
 	DatabaseResult,
 	RelationshipEntry,
-	SurrealMember,
-} from "../../../database/schema";
-import { RelationshipNetworkManager } from "../RelationshipNetworkManager";
+	MemberData,
+} from "../../../database/PostgreSQLManager";
+import { PostgreSQLRelationshipNetworkManager } from "../PostgreSQLRelationshipNetworkManager";
 
 /**
  * Script to export relationship network data in various formats
@@ -46,8 +46,8 @@ async function exportGuildNetworks(
 ): Promise<string> {
 	console.log(`🔹 Exporting relationship networks for guild ${guildId}...`);
 
-	const db = new SurrealDBManager();
-	const relationshipManager = new RelationshipNetworkManager(db);
+	const db = new PostgreSQLManager();
+	const relationshipManager = new PostgreSQLRelationshipNetworkManager(db);
 
 	try {
 		await db.connect();
@@ -200,8 +200,8 @@ async function exportUserNetwork(
 ): Promise<string> {
 	console.log(`🔹 Exporting relationship network for user ${userId}...`);
 
-	const db = new SurrealDBManager();
-	const relationshipManager = new RelationshipNetworkManager(db);
+	const db = new PostgreSQLManager();
+	const relationshipManager = new PostgreSQLRelationshipNetworkManager(db);
 
 	try {
 		await db.connect();

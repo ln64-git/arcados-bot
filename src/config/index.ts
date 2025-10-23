@@ -20,17 +20,6 @@ export interface BotConfig {
 	postgresUrl?: string;
 	dbName: string;
 
-	// SurrealDB settings
-	surrealUrl?: string;
-	surrealNamespace?: string;
-	surrealDatabase?: string;
-	surrealUsername?: string;
-	surrealPassword?: string;
-	surrealToken?: string; // For OAuth2 authentication
-
-	// Cache settings
-	redisUrl?: string;
-
 	// Development
 	nodeEnv: "development" | "production" | "test";
 	port: number;

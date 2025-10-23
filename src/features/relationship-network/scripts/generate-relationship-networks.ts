@@ -1,6 +1,6 @@
-import { SurrealDBManager } from "../../../database/SurrealDBManager";
-import type { DatabaseResult, SurrealMember } from "../../../database/schema";
-import { RelationshipNetworkManager } from "../RelationshipNetworkManager";
+import { PostgreSQLManager } from "../../../database/PostgreSQLManager";
+import type { DatabaseResult, MemberData } from "../../../database/PostgreSQLManager";
+import { PostgreSQLRelationshipNetworkManager } from "../PostgreSQLRelationshipNetworkManager";
 
 /**
  * Script to generate relationship networks for all members in a guild
@@ -39,8 +39,8 @@ async function generateRelationshipNetworks(
 	};
 
 	const startTime = Date.now();
-	const db = new SurrealDBManager();
-	const relationshipManager = new RelationshipNetworkManager(db);
+	const db = new PostgreSQLManager();
+	const relationshipManager = new PostgreSQLRelationshipNetworkManager(db);
 
 	try {
 		// Connect to database

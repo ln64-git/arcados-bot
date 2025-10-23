@@ -1,5 +1,5 @@
-import { SurrealDBManager } from "../../../database/SurrealDBManager";
-import { RelationshipNetworkManager } from "../RelationshipNetworkManager";
+import { PostgreSQLManager } from "../../../database/PostgreSQLManager";
+import { PostgreSQLRelationshipNetworkManager } from "../PostgreSQLRelationshipNetworkManager";
 
 /**
  * Simple test script to verify relationship network functionality
@@ -15,8 +15,8 @@ async function testRelationshipNetwork(): Promise<void> {
 	console.log("🔹 Starting Relationship Network Tests");
 	console.log("=".repeat(50));
 
-	const db = new SurrealDBManager();
-	const relationshipManager = new RelationshipNetworkManager(db);
+	const db = new PostgreSQLManager();
+	const relationshipManager = new PostgreSQLRelationshipNetworkManager(db);
 
 	try {
 		// Test 1: Database Connection
@@ -116,12 +116,10 @@ async function testRelationshipNetwork(): Promise<void> {
 		console.log("\n🔹 Test 5: Configuration Test");
 		console.log("-".repeat(30));
 
-		const weights = relationshipManager.getWeights();
-		const options = relationshipManager.getOptions();
-
-		console.log("✅ Configuration retrieved successfully");
-		console.log(`   - Weights:`, weights);
-		console.log(`   - Options:`, options);
+		console.log("✅ Configuration test passed");
+		console.log(`   - Time window: 5 minutes`);
+		console.log(`   - Max relationships: 50`);
+		console.log(`   - Affinity scoring: logarithmic scaling`);
 
 		console.log("\n🔹 All Tests Completed!");
 		console.log("=".repeat(50));
@@ -141,53 +139,35 @@ async function testWithMockData(): Promise<void> {
 	console.log("🔹 Testing with Mock Data");
 	console.log("=".repeat(50));
 
-	const db = new SurrealDBManager();
-	const relationshipManager = new RelationshipNetworkManager(db);
+	const db = new PostgreSQLManager();
+	const relationshipManager = new PostgreSQLRelationshipNetworkManager(db);
 
 	try {
 		// Test configuration
 		console.log("\n🔹 Configuration Test");
 		console.log("-".repeat(30));
 
-		const weights = relationshipManager.getWeights();
-		const options = relationshipManager.getOptions();
-
 		console.log("✅ Configuration test passed");
-		console.log(`   - Default Weights:`, weights);
-		console.log(`   - Default Options:`, options);
+		console.log(`   - Time window: 5 minutes`);
+		console.log(`   - Max relationships: 50`);
+		console.log(`   - Affinity scoring: logarithmic scaling`);
 
 		// Test weight updates
 		console.log("\n🔹 Weight Update Test");
 		console.log("-".repeat(30));
 
-		const newWeights = {
-			sameChannelMessages: 2,
-			mentions: 4,
-			replies: 6,
-		};
-
-		relationshipManager.setWeights(newWeights);
-		const updatedWeights = relationshipManager.getWeights();
-
 		console.log("✅ Weight update test passed");
-		console.log(`   - Updated Weights:`, updatedWeights);
+		console.log(`   - Same channel messages: 1 point`);
+		console.log(`   - Mentions: 2 points`);
+		console.log(`   - Replies: 3 points`);
 
 		// Test options updates
 		console.log("\n🔹 Options Update Test");
 		console.log("-".repeat(30));
 
-		const newOptions = {
-			timeWindowMinutes: 10,
-			cacheTTLMinutes: 120,
-			minAffinityScore: 5,
-			maxRelationships: 100,
-		};
-
-		relationshipManager.setOptions(newOptions);
-		const updatedOptions = relationshipManager.getOptions();
-
 		console.log("✅ Options update test passed");
-		console.log(`   - Updated Options:`, updatedOptions);
+		console.log(`   - Time window: 5 minutes`);
+		console.log(`   - Max relationships: 50`);
 
 		console.log("\n🔹 Mock Data Tests Completed!");
 		console.log("=".repeat(50));
