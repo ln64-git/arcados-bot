@@ -1,6 +1,6 @@
 import { Client } from "discord.js";
-import { PostgreSQLManager } from "../../../database/PostgreSQLManager";
-import { PostgreSQLRelationshipNetworkManager } from "../PostgreSQLRelationshipNetworkManager";
+import { SurrealDBManager } from "../../../database/SurrealDBManager";
+import { RelationshipNetworkManager } from "../RelationshipNetworkManager";
 
 /**
  * Example script demonstrating the Relationship Network system
@@ -16,13 +16,13 @@ async function demonstrateRelationshipNetwork() {
 
 	// Initialize database and client (you would normally do this in your main bot)
 	const client = new Client({ intents: [] });
-	const db = new PostgreSQLManager();
+	const db = new SurrealDBManager();
 
 	// Connect to database
 	await db.connect();
 
 	// Initialize relationship network manager
-	const relationshipManager = new PostgreSQLRelationshipNetworkManager(db);
+	const relationshipManager = new RelationshipNetworkManager(db);
 
 	// Example guild and user IDs (replace with real values for testing)
 	const guildId = "your-guild-id";
@@ -96,9 +96,8 @@ async function demonstrateRelationshipNetwork() {
 
 		// 4. Show current configuration
 		console.log("🔹 Current configuration:");
-		console.log(`   - Time window: 5 minutes`);
-		console.log(`   - Max relationships: 50`);
-		console.log(`   - Affinity scoring: logarithmic scaling`);
+		console.log(`   - Weights:`, relationshipManager.getWeights());
+		console.log(`   - Options:`, relationshipManager.getOptions());
 	} catch (error) {
 		console.error("🔸 Error in demonstration:", error);
 	} finally {
@@ -113,6 +112,6 @@ async function demonstrateRelationshipNetwork() {
 export { demonstrateRelationshipNetwork };
 
 // Run if this file is executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (require.main === module) {
 	demonstrateRelationshipNetwork().catch(console.error);
 }

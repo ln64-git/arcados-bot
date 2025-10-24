@@ -1,125 +1,125 @@
 import {
-	Client,
-	Collection,
-	GatewayIntentBits,
-	REST,
-	Routes,
+  Client,
+  Collection,
+  GatewayIntentBits,
+  REST,
+  Routes,
 } from "discord.js";
 import type { Interaction } from "discord.js";
 import { config } from "./config";
-import { PostgreSQLManager } from "./database/PostgreSQLManager";
+import { PostgreSQLManager } from "./features/database/PostgreSQLManager";
 import type { Command } from "./types";
 import { loadCommands } from "./utils/loadCommands";
 
 export class Bot {
-	public client: Client;
-	public commands = new Collection<string, Command>();
-	public postgresManager: PostgreSQLManager;
+  public client: Client;
+  public commands = new Collection<string, Command>();
+  public postgresManager: PostgreSQLManager;
 
-	constructor() {
-		this.client = new Client({
-			intents: [
-				GatewayIntentBits.Guilds,
-				GatewayIntentBits.GuildMessages,
-				GatewayIntentBits.MessageContent,
-				GatewayIntentBits.GuildVoiceStates,
-				GatewayIntentBits.GuildMembers,
-			],
-		});
+  constructor() {
+    this.client = new Client({
+      intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildVoiceStates,
+        GatewayIntentBits.GuildMembers,
+      ],
+    });
 
-		// Initialize PostgreSQL manager
-		this.postgresManager = new PostgreSQLManager();
-	}
+    // Initialize PostgreSQL manager
+    this.postgresManager = new PostgreSQLManager();
+  }
 
-	async init() {
-		// Initialize PostgreSQL connection for commands that need it
-		const dbConnected = await this.postgresManager.connect();
+  async init() {
+    // Initialize PostgreSQL connection for commands that need it
+    const dbConnected = await this.postgresManager.connect();
 
-		if (dbConnected) {
-			console.log("🔹 PostgreSQL connected successfully");
-		} else {
-			console.log(
-				"🔸 PostgreSQL connection failed, some commands may not work",
-			);
-		}
+    if (dbConnected) {
+      console.log("🔹 PostgreSQL connected successfully");
+    } else {
+      console.log(
+        "🔸 PostgreSQL connection failed, some commands may not work"
+      );
+    }
 
-		this.setupEventHandlers();
-		await this.client.login(config.botToken);
-		await this.deployCommands();
-	}
+    this.setupEventHandlers();
+    await this.client.login(config.botToken);
+    await this.deployCommands();
+  }
 
-	private setupEventHandlers() {
-		// Ready event
-		this.client.once("ready", async () => {
-			console.log("🔹 Bot is ready");
-			console.log(`🔹 Logged in as ${this.client.user?.tag}`);
-			console.log(`🔹 Serving ${this.client.guilds.cache.size} guilds`);
-		});
+  private setupEventHandlers() {
+    // Ready event
+    this.client.once("ready", async () => {
+      console.log("🔹 Bot is ready");
+      console.log(`🔹 Logged in as ${this.client.user?.tag}`);
+      console.log(`🔹 Serving ${this.client.guilds.cache.size} guilds`);
+    });
 
-		// Interaction event for slash commands
-		this.client.on("interactionCreate", async (interaction: Interaction) => {
-			if (!interaction.isChatInputCommand()) return;
+    // Interaction event for slash commands
+    this.client.on("interactionCreate", async (interaction: Interaction) => {
+      if (!interaction.isChatInputCommand()) return;
 
-			const command = this.commands.get(interaction.commandName);
-			if (!command) {
-				return;
-			}
+      const command = this.commands.get(interaction.commandName);
+      if (!command) {
+        return;
+      }
 
-			try {
-				await command.execute(interaction);
-			} catch (error) {
-				console.error(
-					`🔸 Error executing command ${interaction.commandName}:`,
-					error,
-				);
-				const errorMessage = "There was an error while executing this command!";
-				try {
-					if (interaction.replied || interaction.deferred) {
-						await interaction.followUp({
-							content: errorMessage,
-							ephemeral: true,
-						});
-					} else {
-						await interaction.reply({ content: errorMessage, ephemeral: true });
-					}
-				} catch (err) {
-					// If sending the error message fails, just log it - don't try again
-					console.error("🔸 Failed to send error message to interaction:", err);
-				}
-			}
-		});
-	}
+      try {
+        await command.execute(interaction);
+      } catch (error) {
+        console.error(
+          `🔸 Error executing command ${interaction.commandName}:`,
+          error
+        );
+        const errorMessage = "There was an error while executing this command!";
+        try {
+          if (interaction.replied || interaction.deferred) {
+            await interaction.followUp({
+              content: errorMessage,
+              ephemeral: true,
+            });
+          } else {
+            await interaction.reply({ content: errorMessage, ephemeral: true });
+          }
+        } catch (err) {
+          // If sending the error message fails, just log it - don't try again
+          console.error("🔸 Failed to send error message to interaction:", err);
+        }
+      }
+    });
+  }
 
-	private async deployCommands() {
-		const rest = new REST({ version: "10" }).setToken(config.botToken);
-		const commands = await loadCommands(this.commands);
+  private async deployCommands() {
+    const rest = new REST({ version: "10" }).setToken(config.botToken);
+    const commands = await loadCommands(this.commands);
 
-		const appId = this.client.application?.id;
-		if (!appId) {
-			throw new Error(
-				"Application ID is missing. Make sure the client is fully logged in.",
-			);
-		}
-		if (config.guildId) {
-			// Fast guild-specific deployment for testing
-			await rest.put(Routes.applicationGuildCommands(appId, config.guildId), {
-				body: commands,
-			});
-		} else {
-			// Global deployment (takes up to an hour)
-			await rest.put(Routes.applicationCommands(appId), { body: commands });
-		}
-	}
+    const appId = this.client.application?.id;
+    if (!appId) {
+      throw new Error(
+        "Application ID is missing. Make sure the client is fully logged in."
+      );
+    }
+    if (config.guildId) {
+      // Fast guild-specific deployment for testing
+      await rest.put(Routes.applicationGuildCommands(appId, config.guildId), {
+        body: commands,
+      });
+    } else {
+      // Global deployment (takes up to an hour)
+      await rest.put(Routes.applicationCommands(appId), { body: commands });
+    }
+  }
 
-	async shutdown(): Promise<void> {
-		// Silent shutdown - no console output to prevent lingering logs
+  async shutdown(): Promise<void> {
+    // Silent shutdown - no console output to prevent lingering logs
 
-		// Immediately destroy Discord client to stop all Discord operations
-		this.client.destroy();
+    // Immediately destroy Discord client to stop all Discord operations
+    this.client.destroy();
 
-		// Disconnect from PostgreSQL
-		if (this.postgresManager.isConnected()) {
-			await this.postgresManager.disconnect();
-		}
-	}
+    // Disconnect from PostgreSQL
+    if (this.postgresManager.isConnected()) {
+      await this.postgresManager.disconnect();
+    }
+  }
 }

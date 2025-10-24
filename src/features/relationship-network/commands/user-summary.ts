@@ -1,61 +1,61 @@
 import {
-	type ChatInputCommandInteraction,
-	SlashCommandBuilder,
-	EmbedBuilder,
-	PermissionFlagsBits,
+  type ChatInputCommandInteraction,
+  SlashCommandBuilder,
+  EmbedBuilder,
+  PermissionFlagsBits,
 } from "discord.js";
 import type { Command } from "../../../types";
-import { PostgreSQLManager } from "../../../database/PostgreSQLManager";
+import { PostgreSQLManager } from "../../database/PostgreSQLManager";
 
 export const userSummaryCommand: Command = {
-	data: new SlashCommandBuilder()
-		.setName("user-summary")
-		.setDescription(
-			"Get a detailed summary of a user including their relationships",
-		)
-		.addUserOption((option) =>
-			option
-				.setName("user")
-				.setDescription("The user to get a summary for")
-				.setRequired(true),
-		)
-		.addBooleanOption((option) =>
-			option
-				.setName("ephemeral")
-				.setDescription(
-					"Make the response visible only to you (default: false)",
-				)
-				.setRequired(false),
-		)
-		.setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-		.setDMPermission(false),
-	execute: async (interaction: ChatInputCommandInteraction) => {
-		const targetUser = interaction.options.getUser("user", true);
-		const ephemeral = interaction.options.getBoolean("ephemeral") ?? false;
-		const guildId = interaction.guildId;
+  data: new SlashCommandBuilder()
+    .setName("user-summary")
+    .setDescription(
+      "Get a detailed summary of a user including their relationships"
+    )
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("The user to get a summary for")
+        .setRequired(true)
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName("ephemeral")
+        .setDescription(
+          "Make the response visible only to you (default: false)"
+        )
+        .setRequired(false)
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDMPermission(false),
+  execute: async (interaction: ChatInputCommandInteraction) => {
+    const targetUser = interaction.options.getUser("user", true);
+    const ephemeral = interaction.options.getBoolean("ephemeral") ?? false;
+    const guildId = interaction.guildId;
 
-		await interaction.deferReply({ ephemeral });
+    await interaction.deferReply({ ephemeral });
 
-		if (!guildId) {
-			await interaction.editReply(
-				"🔸 This command can only be used in a server.",
-			);
-			return;
-		}
+    if (!guildId) {
+      await interaction.editReply(
+        "🔸 This command can only be used in a server."
+      );
+      return;
+    }
 
-		const db = new PostgreSQLManager();
+    const db = new PostgreSQLManager();
 
-		try {
-			const connected = await db.connect();
+    try {
+      const connected = await db.connect();
 
-			if (!connected) {
-				await interaction.editReply("🔸 Failed to connect to database.");
-				return;
-			}
+      if (!connected) {
+        await interaction.editReply("🔸 Failed to connect to database.");
+        return;
+      }
 
-			// Get user data
-			const userResult = await db.query(
-				`
+      // Get user data
+      const userResult = await db.query(
+        `
 				SELECT 
 					user_id,
 					username,
@@ -70,26 +70,26 @@ export const userSummaryCommand: Command = {
 				FROM members 
 				WHERE user_id = $1 AND guild_id = $2
 			`,
-				[targetUser.id, guildId],
-			);
+        [targetUser.id, guildId]
+      );
 
-			if (
-				!userResult.success ||
-				!userResult.data ||
-				userResult.data.length === 0
-			) {
-				await interaction.editReply(
-					`🔸 User ${targetUser.displayName} not found in this server.`,
-				);
-				await db.disconnect();
-				return;
-			}
+      if (
+        !userResult.success ||
+        !userResult.data ||
+        userResult.data.length === 0
+      ) {
+        await interaction.editReply(
+          `🔸 User ${targetUser.displayName} not found in this server.`
+        );
+        await db.disconnect();
+        return;
+      }
 
-			const userData = userResult.data[0];
+      const userData = userResult.data[0];
 
-			// Get user's relationships
-			const relationshipsResult = await db.query(
-				`
+      // Get user's relationships
+      const relationshipsResult = await db.query(
+        `
 				SELECT 
 					rn.user_id,
 					rn.affinity_percentage,
@@ -126,72 +126,74 @@ export const userSummaryCommand: Command = {
 				ORDER BY rn.affinity_percentage DESC
 				LIMIT 10
 			`,
-				[targetUser.id, guildId],
-			);
+        [targetUser.id, guildId]
+      );
 
-			const relationships = relationshipsResult.success
-				? relationshipsResult.data || []
-				: [];
+      const relationships = relationshipsResult.success
+        ? relationshipsResult.data || []
+        : [];
 
-			// Create embed with clean styling
-			const embed = new EmbedBuilder()
-				.setTitle(userData.display_name)
-				.setDescription(
-					`@${userData.username}${userData.global_name ? ` • ${userData.global_name}` : ""}`,
-				)
-				.setColor(0x5865f2)
-				.setThumbnail(
-					targetUser.displayAvatarURL({ size: 256, extension: "png" }),
-				)
-				.setTimestamp()
-				.setFooter({ text: `ID: ${targetUser.id}` });
+      // Create embed with clean styling
+      const embed = new EmbedBuilder()
+        .setTitle(userData.display_name)
+        .setDescription(
+          `@${userData.username}${
+            userData.global_name ? ` • ${userData.global_name}` : ""
+          }`
+        )
+        .setColor(0x5865f2)
+        .setThumbnail(
+          targetUser.displayAvatarURL({ size: 256, extension: "png" })
+        )
+        .setTimestamp()
+        .setFooter({ text: `ID: ${targetUser.id}` });
 
-			// Add user metadata with clean formatting
-			if (userData.summary) {
-				const summaryText =
-					userData.summary.length > 1000
-						? userData.summary.substring(0, 997) + "..."
-						: userData.summary;
-				embed.addFields({
-					name: "Summary",
-					value: summaryText,
-					inline: false,
-				});
-			}
+      // Add user metadata with clean formatting
+      if (userData.summary) {
+        const summaryText =
+          userData.summary.length > 1000
+            ? userData.summary.substring(0, 997) + "..."
+            : userData.summary;
+        embed.addFields({
+          name: "Summary",
+          value: summaryText,
+          inline: false,
+        });
+      }
 
-			// Format keywords cleanly
-			if (userData.keywords && userData.keywords.length > 0) {
-				const keywordText = userData.keywords.join(" • ");
-				embed.addFields({
-					name: "Keywords",
-					value: keywordText,
-					inline: false,
-				});
-			}
+      // Format keywords cleanly
+      if (userData.keywords && userData.keywords.length > 0) {
+        const keywordText = userData.keywords.join(" • ");
+        embed.addFields({
+          name: "Keywords",
+          value: keywordText,
+          inline: false,
+        });
+      }
 
-			// Format emojis cleanly
-			if (userData.emojis && userData.emojis.length > 0) {
-				const emojiText = userData.emojis.join(" ");
-				embed.addFields({
-					name: "Emojis",
-					value: emojiText,
-					inline: false,
-				});
-			}
+      // Format emojis cleanly
+      if (userData.emojis && userData.emojis.length > 0) {
+        const emojiText = userData.emojis.join(" ");
+        embed.addFields({
+          name: "Emojis",
+          value: emojiText,
+          inline: false,
+        });
+      }
 
-			await interaction.editReply({ embeds: [embed] });
-			await db.disconnect();
-		} catch (error) {
-			console.error("Error in user-summary command:", error);
-			await interaction.editReply(
-				"🔸 An error occurred while retrieving the user summary.",
-			);
+      await interaction.editReply({ embeds: [embed] });
+      await db.disconnect();
+    } catch (error) {
+      console.error("Error in user-summary command:", error);
+      await interaction.editReply(
+        "🔸 An error occurred while retrieving the user summary."
+      );
 
-			try {
-				await db.disconnect();
-			} catch (disconnectError) {
-				console.error("Error disconnecting from database:", disconnectError);
-			}
-		}
-	},
+      try {
+        await db.disconnect();
+      } catch (disconnectError) {
+        console.error("Error disconnecting from database:", disconnectError);
+      }
+    }
+  },
 };
