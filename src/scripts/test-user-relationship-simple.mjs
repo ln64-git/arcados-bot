@@ -10,7 +10,8 @@ async function testUserRelationshipNetwork(userId) {
 
 	// Direct database connection
 	const pool = new Pool({
-		connectionString: process.env.POSTGRES_URL || "postgresql://localhost:5432/arcados",
+		connectionString:
+			process.env.POSTGRES_URL || "postgresql://localhost:5432/arcados",
 	});
 
 	try {
@@ -19,11 +20,14 @@ async function testUserRelationshipNetwork(userId) {
 
 		// Check if user exists
 		console.log(`\n🔹 Checking if user ${userId} exists...`);
-		const userQuery = await client.query(`
+		const userQuery = await client.query(
+			`
 			SELECT DISTINCT guild_id, username, display_name 
 			FROM members 
 			WHERE user_id = $1 AND active = true
-		`, [userId]);
+		`,
+			[userId],
+		);
 
 		if (userQuery.rows.length === 0) {
 			console.log(`🔸 User ${userId} not found in any guilds`);
@@ -32,7 +36,9 @@ async function testUserRelationshipNetwork(userId) {
 
 		console.log(`✅ Found user in ${userQuery.rows.length} guild(s):`);
 		userQuery.rows.forEach((member) => {
-			console.log(`   - Guild: ${member.guild_id} (${member.display_name || member.username})`);
+			console.log(
+				`   - Guild: ${member.guild_id} (${member.display_name || member.username})`,
+			);
 		});
 
 		// Test with the first guild
@@ -40,25 +46,34 @@ async function testUserRelationshipNetwork(userId) {
 		console.log(`\n🔹 Testing with guild ${guildId}...`);
 
 		// Get guild member count
-		const memberCountQuery = await client.query(`
+		const memberCountQuery = await client.query(
+			`
 			SELECT COUNT(*) as count FROM members 
 			WHERE guild_id = $1 AND active = true
-		`, [guildId]);
-		
+		`,
+			[guildId],
+		);
+
 		console.log(`🔹 Guild has ${memberCountQuery.rows[0].count} members`);
 
 		// Get messages for this user
 		console.log(`\n🔹 Getting messages for user ${userId}...`);
-		const messagesQuery = await client.query(`
+		const messagesQuery = await client.query(
+			`
 			SELECT COUNT(*) as count FROM messages 
 			WHERE author_id = $1 AND guild_id = $2 AND active = true
-		`, [userId, guildId]);
-		
-		console.log(`🔹 User has ${messagesQuery.rows[0].count} messages in this guild`);
+		`,
+			[userId, guildId],
+		);
+
+		console.log(
+			`🔹 User has ${messagesQuery.rows[0].count} messages in this guild`,
+		);
 
 		// Get messages from both this user and others in the same channels
 		console.log(`\n🔹 Analyzing message interactions...`);
-		const interactionsQuery = await client.query(`
+		const interactionsQuery = await client.query(
+			`
 			SELECT 
 				m1.channel_id,
 				m1.author_id as user1,
@@ -77,32 +92,45 @@ async function testUserRelationshipNetwork(userId) {
 				AND (m1.author_id = $2 OR m2.author_id = $2)
 			ORDER BY m1.created_at
 			LIMIT 20
-		`, [guildId, userId]);
+		`,
+			[guildId, userId],
+		);
 
-		console.log(`🔹 Found ${interactionsQuery.rows.length} potential interactions`);
-		
+		console.log(
+			`🔹 Found ${interactionsQuery.rows.length} potential interactions`,
+		);
+
 		if (interactionsQuery.rows.length > 0) {
 			console.log(`\n🔹 Sample interactions:`);
 			interactionsQuery.rows.slice(0, 5).forEach((interaction, index) => {
-				const otherUser = interaction.user1 === userId ? interaction.user2 : interaction.user1;
-				console.log(`   ${index + 1}. User ${otherUser} - ${Math.round(interaction.time_diff_seconds)}s gap`);
+				const otherUser =
+					interaction.user1 === userId ? interaction.user2 : interaction.user1;
+				console.log(
+					`   ${index + 1}. User ${otherUser} - ${Math.round(interaction.time_diff_seconds)}s gap`,
+				);
 			});
 		}
 
 		// Check for mentions
 		console.log(`\n🔹 Checking for mentions...`);
-		const mentionsQuery = await client.query(`
+		const mentionsQuery = await client.query(
+			`
 			SELECT COUNT(*) as count FROM messages 
 			WHERE guild_id = $1 
 				AND content LIKE $2 
 				AND active = true
-		`, [guildId, `%<@${userId}>%`]);
-		
-		console.log(`🔹 Found ${mentionsQuery.rows[0].count} messages mentioning this user`);
+		`,
+			[guildId, `%<@${userId}>%`],
+		);
+
+		console.log(
+			`🔹 Found ${mentionsQuery.rows[0].count} messages mentioning this user`,
+		);
 
 		// Simple relationship scoring
 		console.log(`\n🔹 Calculating simple relationship scores...`);
-		const relationshipQuery = await client.query(`
+		const relationshipQuery = await client.query(
+			`
 			WITH user_interactions AS (
 				SELECT 
 					CASE 
@@ -131,12 +159,16 @@ async function testUserRelationshipNetwork(userId) {
 			WHERE other_user IS NOT NULL
 			ORDER BY affinity_score DESC
 			LIMIT 10
-		`, [guildId, userId]);
+		`,
+			[guildId, userId],
+		);
 
 		console.log(`\n🔹 Top relationships:`);
 		if (relationshipQuery.rows.length > 0) {
 			relationshipQuery.rows.forEach((rel, index) => {
-				console.log(`   ${index + 1}. User ${rel.other_user}: ${Math.round(rel.affinity_score * 100) / 100} (${rel.interaction_count} interactions)`);
+				console.log(
+					`   ${index + 1}. User ${rel.other_user}: ${Math.round(rel.affinity_score * 100) / 100} (${rel.interaction_count} interactions)`,
+				);
 			});
 		} else {
 			console.log(`   - No relationships found`);

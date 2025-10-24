@@ -10,20 +10,22 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load .env from project root
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
 async function debugRelationshipQuery(userId: string, guildId: string) {
-	console.log(`🔹 Debugging relationship query for user ${userId} in guild ${guildId}...`);
-	
+	console.log(
+		`🔹 Debugging relationship query for user ${userId} in guild ${guildId}...`,
+	);
+
 	if (!process.env.POSTGRES_URL) {
 		throw new Error("🔸 POSTGRES_URL not found in environment variables");
 	}
 
 	const db = new PostgreSQLManager();
-	
+
 	try {
 		const connected = await db.connect();
-		
+
 		if (!connected) {
 			throw new Error("🔸 Failed to connect to PostgreSQL");
 		}
@@ -32,7 +34,8 @@ async function debugRelationshipQuery(userId: string, guildId: string) {
 
 		// First, let's see what messages this user has
 		console.log("🔹 Checking user's messages...");
-		const userMessagesResult = await db.query(`
+		const userMessagesResult = await db.query(
+			`
 			SELECT 
 				author_id,
 				channel_id,
@@ -44,18 +47,25 @@ async function debugRelationshipQuery(userId: string, guildId: string) {
 				AND active = true
 			ORDER BY created_at DESC
 			LIMIT 10
-		`, [guildId, userId]);
+		`,
+			[guildId, userId],
+		);
 
 		if (userMessagesResult.success && userMessagesResult.data) {
-			console.log(`✅ Found ${userMessagesResult.data.length} messages from this user`);
+			console.log(
+				`✅ Found ${userMessagesResult.data.length} messages from this user`,
+			);
 			userMessagesResult.data.forEach((msg, index) => {
-				console.log(`   ${index + 1}. ${msg.created_at}: ${msg.content.substring(0, 50)}...`);
+				console.log(
+					`   ${index + 1}. ${msg.created_at}: ${msg.content.substring(0, 50)}...`,
+				);
 			});
 		}
 
 		// Now let's see what the interaction query returns
 		console.log("\n🔹 Testing interaction query...");
-		const interactionsResult = await db.query(`
+		const interactionsResult = await db.query(
+			`
 			WITH user_messages AS (
 				SELECT 
 					m1.author_id,
@@ -90,12 +100,18 @@ async function debugRelationshipQuery(userId: string, guildId: string) {
 			WHERE um.interaction_count >= 3
 			ORDER BY um.interaction_count DESC
 			LIMIT 20
-		`, [guildId, userId]);
+		`,
+			[guildId, userId],
+		);
 
 		if (interactionsResult.success && interactionsResult.data) {
-			console.log(`✅ Interaction query returned ${interactionsResult.data.length} results`);
+			console.log(
+				`✅ Interaction query returned ${interactionsResult.data.length} results`,
+			);
 			interactionsResult.data.forEach((rel, index) => {
-				console.log(`   ${index + 1}. User ${rel.interacted_with}: ${rel.interaction_count} interactions, ${rel.affinity_percentage}% affinity`);
+				console.log(
+					`   ${index + 1}. User ${rel.interacted_with}: ${rel.interaction_count} interactions, ${rel.affinity_percentage}% affinity`,
+				);
 			});
 		} else {
 			console.log(`🔸 Interaction query failed: ${interactionsResult.error}`);
@@ -103,23 +119,27 @@ async function debugRelationshipQuery(userId: string, guildId: string) {
 
 		// Let's also check what users exist in the guild
 		console.log("\n🔹 Checking guild members...");
-		const membersResult = await db.query(`
+		const membersResult = await db.query(
+			`
 			SELECT user_id, username, display_name
 			FROM members 
 			WHERE guild_id = $1 AND active = true
 			ORDER BY username
 			LIMIT 10
-		`, [guildId]);
+		`,
+			[guildId],
+		);
 
 		if (membersResult.success && membersResult.data) {
 			console.log(`✅ Found ${membersResult.data.length} members in guild`);
 			membersResult.data.forEach((member, index) => {
-				console.log(`   ${index + 1}. ${member.display_name} (@${member.username}) - ${member.user_id}`);
+				console.log(
+					`   ${index + 1}. ${member.display_name} (@${member.username}) - ${member.user_id}`,
+				);
 			});
 		}
 
 		await db.disconnect();
-		
 	} catch (error) {
 		console.error("🔸 Error debugging relationship query:", error);
 		throw error;
@@ -128,23 +148,24 @@ async function debugRelationshipQuery(userId: string, guildId: string) {
 
 async function main() {
 	const args = process.argv.slice(2);
-	
+
 	if (args.length < 2) {
 		console.log("Usage:");
 		console.log("  npx tsx debug-relationship-query.ts <user-id> <guild-id>");
 		console.log("");
 		console.log("Example:");
-		console.log("  npx tsx debug-relationship-query.ts 354823920010002432 1254694808228986912");
+		console.log(
+			"  npx tsx debug-relationship-query.ts 354823920010002432 1254694808228986912",
+		);
 		process.exit(1);
 	}
-	
+
 	const userId = args[0];
 	const guildId = args[1];
-	
+
 	try {
 		await debugRelationshipQuery(userId, guildId);
 		console.log("\n✅ Debug completed!");
-		
 	} catch (error) {
 		console.error("🔸 Script failed:", error);
 		process.exit(1);

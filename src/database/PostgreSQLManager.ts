@@ -73,7 +73,7 @@ export interface MemberData {
 	emojis?: string[];
 	notes?: string[];
 	relationship_network?: RelationshipEntry[];
-	
+
 	// Metadata
 	active: boolean;
 	created_at: Date;
@@ -122,7 +122,9 @@ export class PostgreSQLManager {
 
 	constructor() {
 		if (!config.postgresUrl) {
-			console.warn("🔸 PostgreSQL URL not configured. Database features will be unavailable.");
+			console.warn(
+				"🔸 PostgreSQL URL not configured. Database features will be unavailable.",
+			);
 		}
 	}
 
@@ -147,10 +149,10 @@ export class PostgreSQLManager {
 
 			this.isConnectedFlag = true;
 			console.log("🔹 Connected to PostgreSQL database");
-			
+
 			// Initialize schema
 			await this.initializeSchema();
-			
+
 			return true;
 		} catch (error) {
 			console.error("🔸 Failed to connect to PostgreSQL:", error);
@@ -332,7 +334,7 @@ export class PostgreSQLManager {
 					updated_at = NOW()
 				RETURNING *
 			`;
-			
+
 			const values = [
 				guildData.id,
 				guildData.name,
@@ -340,21 +342,26 @@ export class PostgreSQLManager {
 				guildData.icon,
 				guildData.owner_id,
 				guildData.member_count,
-				guildData.active
+				guildData.active,
 			];
 
 			const result = await client.query(query, values);
 			return { success: true, data: result.rows[0] };
 		} catch (error) {
 			console.error("🔸 Failed to upsert guild:", error);
-			return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
 		} finally {
 			client.release();
 		}
 	}
 
 	// Channel operations
-	async upsertChannel(channelData: ChannelData): Promise<DatabaseResult<ChannelData>> {
+	async upsertChannel(
+		channelData: ChannelData,
+	): Promise<DatabaseResult<ChannelData>> {
 		if (!this.isConnected()) {
 			return { success: false, error: "Database not connected" };
 		}
@@ -375,7 +382,7 @@ export class PostgreSQLManager {
 					updated_at = NOW()
 				RETURNING *
 			`;
-			
+
 			const values = [
 				channelData.id,
 				channelData.guild_id,
@@ -385,14 +392,17 @@ export class PostgreSQLManager {
 				channelData.topic,
 				channelData.nsfw,
 				channelData.parent_id,
-				channelData.active
+				channelData.active,
 			];
 
 			const result = await client.query(query, values);
 			return { success: true, data: result.rows[0] };
 		} catch (error) {
 			console.error("🔸 Failed to upsert channel:", error);
-			return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
 		} finally {
 			client.release();
 		}
@@ -420,7 +430,7 @@ export class PostgreSQLManager {
 					updated_at = NOW()
 				RETURNING *
 			`;
-			
+
 			const values = [
 				roleData.id,
 				roleData.guild_id,
@@ -430,21 +440,26 @@ export class PostgreSQLManager {
 				roleData.permissions,
 				roleData.mentionable,
 				roleData.hoist,
-				roleData.active
+				roleData.active,
 			];
 
 			const result = await client.query(query, values);
 			return { success: true, data: result.rows[0] };
 		} catch (error) {
 			console.error("🔸 Failed to upsert role:", error);
-			return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
 		} finally {
 			client.release();
 		}
 	}
 
 	// Member operations
-	async upsertMember(memberData: MemberData): Promise<DatabaseResult<MemberData>> {
+	async upsertMember(
+		memberData: MemberData,
+	): Promise<DatabaseResult<MemberData>> {
 		if (!this.isConnected()) {
 			return { success: false, error: "Database not connected" };
 		}
@@ -491,7 +506,7 @@ export class PostgreSQLManager {
 					updated_at = NOW()
 				RETURNING *
 			`;
-			
+
 			const values = [
 				memberData.id,
 				memberData.guild_id,
@@ -521,21 +536,26 @@ export class PostgreSQLManager {
 				memberData.status,
 				memberData.activities,
 				memberData.client_status,
-				memberData.active
+				memberData.active,
 			];
 
 			const result = await client.query(query, values);
 			return { success: true, data: result.rows[0] };
 		} catch (error) {
 			console.error("🔸 Failed to upsert member:", error);
-			return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
 		} finally {
 			client.release();
 		}
 	}
 
 	// Message operations
-	async upsertMessage(messageData: MessageData): Promise<DatabaseResult<MessageData>> {
+	async upsertMessage(
+		messageData: MessageData,
+	): Promise<DatabaseResult<MessageData>> {
 		if (!this.isConnected()) {
 			return { success: false, error: "Database not connected" };
 		}
@@ -553,7 +573,7 @@ export class PostgreSQLManager {
 					active = EXCLUDED.active
 				RETURNING *
 			`;
-			
+
 			const values = [
 				messageData.id,
 				messageData.guild_id,
@@ -564,14 +584,17 @@ export class PostgreSQLManager {
 				messageData.edited_at,
 				messageData.attachments,
 				messageData.embeds,
-				messageData.active
+				messageData.active,
 			];
 
 			const result = await client.query(query, values);
 			return { success: true, data: result.rows[0] };
 		} catch (error) {
 			console.error("🔸 Failed to upsert message:", error);
-			return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
 		} finally {
 			client.release();
 		}
@@ -589,7 +612,10 @@ export class PostgreSQLManager {
 			return { success: true, data: result.rows };
 		} catch (error) {
 			console.error("🔸 Query failed:", error);
-			return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
 		} finally {
 			client.release();
 		}
@@ -619,19 +645,24 @@ export class PostgreSQLManager {
 				WHERE g.id = $1 AND g.active = true
 				GROUP BY g.id, g.name, g.member_count
 			`;
-			
+
 			const result = await client.query(query, [guildId]);
 			return { success: true, data: result.rows[0] || null };
 		} catch (error) {
 			console.error("🔸 Failed to get guild stats:", error);
-			return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
 		} finally {
 			client.release();
 		}
 	}
 
 	// Relationship Network Operations
-	async getMembersByGuild(guildId: string): Promise<DatabaseResult<MemberData[]>> {
+	async getMembersByGuild(
+		guildId: string,
+	): Promise<DatabaseResult<MemberData[]>> {
 		if (!this.isConnected()) {
 			return { success: false, error: "Database not connected" };
 		}
@@ -643,12 +674,15 @@ export class PostgreSQLManager {
 				WHERE guild_id = $1 AND active = true
 				ORDER BY username
 			`;
-			
+
 			const result = await client.query(query, [guildId]);
 			return { success: true, data: result.rows };
 		} catch (error) {
 			console.error("🔸 Failed to get guild members:", error);
-			return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
 		} finally {
 			client.release();
 		}
@@ -666,13 +700,19 @@ export class PostgreSQLManager {
 			return { success: true, data: result.rows[0] || null };
 		} catch (error) {
 			console.error("🔸 Failed to get member:", error);
-			return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
 		} finally {
 			client.release();
 		}
 	}
 
-	async getMemberRelationshipNetwork(userId: string, guildId: string): Promise<DatabaseResult<RelationshipEntry[]>> {
+	async getMemberRelationshipNetwork(
+		userId: string,
+		guildId: string,
+	): Promise<DatabaseResult<RelationshipEntry[]>> {
 		if (!this.isConnected()) {
 			return { success: false, error: "Database not connected" };
 		}
@@ -684,10 +724,10 @@ export class PostgreSQLManager {
 				FROM members 
 				WHERE user_id = $1 AND guild_id = $2 AND active = true
 			`;
-			
+
 			const result = await client.query(query, [userId, guildId]);
 			const member = result.rows[0];
-			
+
 			if (!member) {
 				return { success: true, data: [] };
 			}
@@ -696,13 +736,19 @@ export class PostgreSQLManager {
 			return { success: true, data: relationshipNetwork };
 		} catch (error) {
 			console.error("🔸 Failed to get member relationship network:", error);
-			return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
 		} finally {
 			client.release();
 		}
 	}
 
-	async updateMemberRelationshipNetwork(memberId: string, relationships: RelationshipEntry[]): Promise<DatabaseResult<void>> {
+	async updateMemberRelationshipNetwork(
+		memberId: string,
+		relationships: RelationshipEntry[],
+	): Promise<DatabaseResult<void>> {
 		if (!this.isConnected()) {
 			return { success: false, error: "Database not connected" };
 		}
@@ -714,18 +760,26 @@ export class PostgreSQLManager {
 				SET relationship_network = $1, updated_at = NOW()
 				WHERE id = $2
 			`;
-			
+
 			await client.query(query, [JSON.stringify(relationships), memberId]);
 			return { success: true };
 		} catch (error) {
 			console.error("🔸 Failed to update member relationship network:", error);
-			return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
 		} finally {
 			client.release();
 		}
 	}
 
-	async getMessageInteractions(user1Id: string, user2Id: string, guildId: string, timeWindowMinutes: number = 5): Promise<DatabaseResult<any[]>> {
+	async getMessageInteractions(
+		user1Id: string,
+		user2Id: string,
+		guildId: string,
+		timeWindowMinutes: number = 5,
+	): Promise<DatabaseResult<any[]>> {
 		if (!this.isConnected()) {
 			return { success: false, error: "Database not connected" };
 		}
@@ -747,7 +801,7 @@ export class PostgreSQLManager {
 					AND active = true
 				ORDER BY created_at ASC
 			`;
-			
+
 			const result = await client.query(query, [guildId, user1Id, user2Id]);
 			const messages = result.rows;
 
@@ -760,15 +814,18 @@ export class PostgreSQLManager {
 				const messageTime = new Date(message.created_at).getTime();
 
 				// Check for mentions
-				const mentionPattern = new RegExp(`<@!?${user1Id === message.author_id ? user2Id : user1Id}>`, 'g');
+				const mentionPattern = new RegExp(
+					`<@!?${user1Id === message.author_id ? user2Id : user1Id}>`,
+					"g",
+				);
 				if (mentionPattern.test(message.content)) {
 					interactions.push({
-						interaction_type: 'mention',
+						interaction_type: "mention",
 						timestamp: new Date(message.created_at),
 						channel_id: message.channel_id,
 						message_id: message.id,
 						other_user_id: user1Id === message.author_id ? user2Id : user1Id,
-						points: 2
+						points: 2,
 					});
 				}
 
@@ -776,18 +833,19 @@ export class PostgreSQLManager {
 				if (i > 0) {
 					const prevMessage = messages[i - 1];
 					const prevTime = new Date(prevMessage.created_at).getTime();
-					
-					if (message.channel_id === prevMessage.channel_id && 
+
+					if (
+						message.channel_id === prevMessage.channel_id &&
 						message.author_id !== prevMessage.author_id &&
-						Math.abs(messageTime - prevTime) <= timeWindowMs) {
-						
+						Math.abs(messageTime - prevTime) <= timeWindowMs
+					) {
 						interactions.push({
-							interaction_type: 'same_channel',
+							interaction_type: "same_channel",
 							timestamp: new Date(message.created_at),
 							channel_id: message.channel_id,
 							message_id: message.id,
 							other_user_id: prevMessage.author_id,
-							points: 1
+							points: 1,
 						});
 					}
 				}
@@ -796,7 +854,10 @@ export class PostgreSQLManager {
 			return { success: true, data: interactions };
 		} catch (error) {
 			console.error("🔸 Failed to get message interactions:", error);
-			return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+			};
 		} finally {
 			client.release();
 		}

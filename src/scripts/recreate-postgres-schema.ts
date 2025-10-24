@@ -10,7 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load .env from project root
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
 async function recreateSchema() {
 	console.log("🔹 Recreating PostgreSQL schema...");
@@ -21,10 +21,10 @@ async function recreateSchema() {
 	}
 
 	const db = new PostgreSQLManager();
-	
+
 	try {
 		const connected = await db.connect();
-		
+
 		if (!connected) {
 			console.error("🔸 Failed to connect to PostgreSQL");
 			process.exit(1);
@@ -156,14 +156,19 @@ async function recreateSchema() {
 		await db.query("CREATE INDEX idx_members_guild_id ON members(guild_id)");
 		await db.query("CREATE INDEX idx_members_user_id ON members(user_id)");
 		await db.query("CREATE INDEX idx_messages_guild_id ON messages(guild_id)");
-		await db.query("CREATE INDEX idx_messages_channel_id ON messages(channel_id)");
-		await db.query("CREATE INDEX idx_messages_author_id ON messages(author_id)");
-		await db.query("CREATE INDEX idx_messages_created_at ON messages(created_at)");
+		await db.query(
+			"CREATE INDEX idx_messages_channel_id ON messages(channel_id)",
+		);
+		await db.query(
+			"CREATE INDEX idx_messages_author_id ON messages(author_id)",
+		);
+		await db.query(
+			"CREATE INDEX idx_messages_created_at ON messages(created_at)",
+		);
 
 		console.log("✅ Schema recreated successfully!");
-		
+
 		await db.disconnect();
-		
 	} catch (error) {
 		console.error("🔸 Error recreating schema:", error);
 		process.exit(1);

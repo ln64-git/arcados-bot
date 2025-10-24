@@ -1,5 +1,8 @@
 import { PostgreSQLManager } from "../../../database/PostgreSQLManager";
-import type { DatabaseResult, MemberData } from "../../../database/PostgreSQLManager";
+import type {
+	DatabaseResult,
+	MemberData,
+} from "../../../database/PostgreSQLManager";
 import { PostgreSQLRelationshipNetworkManager } from "../PostgreSQLRelationshipNetworkManager";
 
 /**

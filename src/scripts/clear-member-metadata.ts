@@ -10,10 +10,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load .env from project root
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
 async function clearMemberMetadata() {
-	console.log("🔹 Clearing member summaries, keywords, and emojis from PostgreSQL...");
+	console.log(
+		"🔹 Clearing member summaries, keywords, and emojis from PostgreSQL...",
+	);
 
 	if (!process.env.POSTGRES_URL) {
 		console.error("🔸 POSTGRES_URL not found in environment variables");
@@ -21,10 +23,10 @@ async function clearMemberMetadata() {
 	}
 
 	const db = new PostgreSQLManager();
-	
+
 	try {
 		const connected = await db.connect();
-		
+
 		if (!connected) {
 			console.error("🔸 Failed to connect to PostgreSQL");
 			process.exit(1);
@@ -33,8 +35,10 @@ async function clearMemberMetadata() {
 		console.log("✅ Connected to PostgreSQL");
 
 		// Clear member metadata fields
-		console.log("🔹 Clearing member summaries, keywords, emojis, notes, and relationship_network...");
-		
+		console.log(
+			"🔹 Clearing member summaries, keywords, emojis, notes, and relationship_network...",
+		);
+
 		const result = await db.query(`
 			UPDATE members 
 			SET 
@@ -49,9 +53,8 @@ async function clearMemberMetadata() {
 
 		console.log(`✅ Cleared metadata for ${result.rowCount} members`);
 		console.log("✅ Member metadata cleared successfully!");
-		
+
 		await db.disconnect();
-		
 	} catch (error) {
 		console.error("🔸 Error clearing member metadata:", error);
 		process.exit(1);

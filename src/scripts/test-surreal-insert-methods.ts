@@ -33,11 +33,11 @@ async function testSurrealDBInsertMethods() {
 
 		// Test 3: Using upsert (current method)
 		console.log("🔹 Test 3: Using upsert...");
-		const upsertResult = await db.db.upsert('messages:upsert-test-123', {
-			guild_id: '1254694808228986912',
-			channel_id: '1430111461547446402',
-			author_id: '99195129516007424',
-			content: 'UPSERT test message',
+		const upsertResult = await db.db.upsert("messages:upsert-test-123", {
+			guild_id: "1254694808228986912",
+			channel_id: "1430111461547446402",
+			author_id: "99195129516007424",
+			content: "UPSERT test message",
 			created_at: new Date(),
 			updated_at: new Date(),
 		});
@@ -54,10 +54,18 @@ async function testSurrealDBInsertMethods() {
 		const direct1 = await db.db.select("messages:insert-test-123");
 		const direct2 = await db.db.select("messages:create-test-123");
 		const direct3 = await db.db.select("messages:upsert-test-123");
-		console.log("🔹 Direct select INSERT:", direct1.length > 0 ? "Found" : "Not found");
-		console.log("🔹 Direct select CREATE:", direct2.length > 0 ? "Found" : "Not found");
-		console.log("🔹 Direct select UPSERT:", direct3.length > 0 ? "Found" : "Not found");
-
+		console.log(
+			"🔹 Direct select INSERT:",
+			direct1.length > 0 ? "Found" : "Not found",
+		);
+		console.log(
+			"🔹 Direct select CREATE:",
+			direct2.length > 0 ? "Found" : "Not found",
+		);
+		console.log(
+			"🔹 Direct select UPSERT:",
+			direct3.length > 0 ? "Found" : "Not found",
+		);
 	} catch (error) {
 		console.error("🔸 Error:", error);
 	} finally {

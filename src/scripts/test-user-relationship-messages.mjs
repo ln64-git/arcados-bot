@@ -10,7 +10,8 @@ async function testUserRelationshipNetwork(userId) {
 
 	// Direct database connection
 	const pool = new Pool({
-		connectionString: process.env.POSTGRES_URL || "postgresql://localhost:5432/arcados",
+		connectionString:
+			process.env.POSTGRES_URL || "postgresql://localhost:5432/arcados",
 	});
 
 	try {
@@ -19,12 +20,15 @@ async function testUserRelationshipNetwork(userId) {
 
 		// Check if user has messages
 		console.log(`\n🔹 Checking if user ${userId} has messages...`);
-		const userMessagesQuery = await client.query(`
+		const userMessagesQuery = await client.query(
+			`
 			SELECT COUNT(*) as count, guild_id 
 			FROM messages 
 			WHERE author_id = $1
 			GROUP BY guild_id
-		`, [userId]);
+		`,
+			[userId],
+		);
 
 		if (userMessagesQuery.rows.length === 0) {
 			console.log(`🔸 User ${userId} has no messages`);
@@ -42,28 +46,32 @@ async function testUserRelationshipNetwork(userId) {
 
 		// Get all unique authors in this guild
 		console.log(`\n🔹 Getting all users in guild...`);
-		const allUsersQuery = await client.query(`
+		const allUsersQuery = await client.query(
+			`
 			SELECT DISTINCT author_id, COUNT(*) as message_count
 			FROM messages 
 			WHERE guild_id = $1
 			GROUP BY author_id
 			ORDER BY message_count DESC
-		`, [guildId]);
-		
+		`,
+			[guildId],
+		);
+
 		console.log(`🔹 Found ${allUsersQuery.rows.length} users in guild`);
 
 		// Build relationship network using relative percentages
 		console.log(`\n🔹 Building relationship network...`);
 		const startTime = Date.now();
-		
+
 		const rawInteractions = [];
 		let totalInteractionPoints = 0;
-		
+
 		for (const otherUser of allUsersQuery.rows) {
 			if (otherUser.author_id === userId) continue; // Skip self
-			
+
 			// Calculate interactions between this user and the other user
-			const interactionsQuery = await client.query(`
+			const interactionsQuery = await client.query(
+				`
 				WITH user_messages AS (
 					SELECT 
 						m1.channel_id,
@@ -88,13 +96,15 @@ async function testUserRelationshipNetwork(userId) {
 					SUM(points) as total_points,
 					MAX(time2) as last_interaction
 				FROM user_messages
-			`, [guildId, userId, `%<@${otherUser.author_id}>%`, otherUser.author_id]);
-			
+			`,
+				[guildId, userId, `%<@${otherUser.author_id}>%`, otherUser.author_id],
+			);
+
 			const interaction = interactionsQuery.rows[0];
 			if (interaction.interaction_count > 0) {
 				const points = parseInt(interaction.total_points);
 				totalInteractionPoints += points;
-				
+
 				rawInteractions.push({
 					user_id: otherUser.author_id,
 					points: points,
@@ -103,16 +113,19 @@ async function testUserRelationshipNetwork(userId) {
 				});
 			}
 		}
-		
+
 		// Calculate percentages
-		const relationships = rawInteractions.map(raw => ({
+		const relationships = rawInteractions.map((raw) => ({
 			user_id: raw.user_id,
-			affinity_percentage: totalInteractionPoints > 0 ? (raw.points / totalInteractionPoints) * 100 : 0,
+			affinity_percentage:
+				totalInteractionPoints > 0
+					? (raw.points / totalInteractionPoints) * 100
+					: 0,
 			interaction_count: raw.interaction_count,
 			last_interaction: raw.last_interaction,
-			total_points: raw.points
+			total_points: raw.points,
 		}));
-		
+
 		const duration = Date.now() - startTime;
 		console.log(`✅ Relationship network built in ${duration}ms`);
 
@@ -122,28 +135,36 @@ async function testUserRelationshipNetwork(userId) {
 		// Display results
 		console.log(`\n🔹 Relationship Network Results:`);
 		console.log(`   - Total relationships: ${relationships.length}`);
-		
+
 		if (relationships.length > 0) {
 			console.log(`\n🔹 Top 10 Relationships:`);
 			relationships.slice(0, 10).forEach((rel, index) => {
-				const interactionInfo = rel.interaction_count ? ` (${rel.interaction_count} interactions, ${rel.total_points} points)` : "";
-				const lastInteraction = rel.last_interaction 
-					? ` - Last: ${rel.last_interaction.toISOString().split('T')[0]}` 
+				const interactionInfo = rel.interaction_count
+					? ` (${rel.interaction_count} interactions, ${rel.total_points} points)`
 					: "";
-				
-				console.log(`   ${index + 1}. ${rel.user_id}: ${rel.affinity_percentage.toFixed(2)}%${interactionInfo}${lastInteraction}`);
+				const lastInteraction = rel.last_interaction
+					? ` - Last: ${rel.last_interaction.toISOString().split("T")[0]}`
+					: "";
+
+				console.log(
+					`   ${index + 1}. ${rel.user_id}: ${rel.affinity_percentage.toFixed(2)}%${interactionInfo}${lastInteraction}`,
+				);
 			});
-			
+
 			// Show total percentage
-			const totalPercentage = relationships.reduce((sum, rel) => sum + rel.affinity_percentage, 0);
+			const totalPercentage = relationships.reduce(
+				(sum, rel) => sum + rel.affinity_percentage,
+				0,
+			);
 			console.log(`\n🔹 Total percentage: ${totalPercentage.toFixed(2)}%`);
 		} else {
-			console.log(`   - No relationships found (user may not have interacted with others)`);
+			console.log(
+				`   - No relationships found (user may not have interacted with others)`,
+			);
 		}
 
 		console.log(`\n🔹 Test completed successfully!`);
 		console.log("=".repeat(60));
-
 	} catch (error) {
 		console.error("🔸 Test failed:", error);
 		throw error;

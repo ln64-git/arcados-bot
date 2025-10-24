@@ -26,15 +26,20 @@ async function checkUserMessages() {
 		}
 
 		// Sort by timestamp ascending (earliest first)
-		userMessages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+		userMessages.sort(
+			(a, b) =>
+				new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+		);
 
 		console.log("\n🔹 Earliest 5 messages from this user:");
-		console.log("=" .repeat(80));
+		console.log("=".repeat(80));
 
 		const earliestMessages = userMessages.slice(0, 5);
 		earliestMessages.forEach((msg, index) => {
-			console.log(`${index + 1}. [${new Date(msg.timestamp).toLocaleString()}]`);
-			console.log(`   Content: "${msg.content || '(No content)'}"`);
+			console.log(
+				`${index + 1}. [${new Date(msg.timestamp).toLocaleString()}]`,
+			);
+			console.log(`   Content: "${msg.content || "(No content)"}"`);
 			console.log(`   Channel: ${msg.channel_id}`);
 			console.log(`   Guild: ${msg.guild_id}`);
 			console.log(`   Message ID: ${msg.id}`);
@@ -51,8 +56,9 @@ async function checkUserMessages() {
 		console.log(`   Total messages: ${userMessages.length}`);
 		console.log(`   Channels: ${channels.length} (${channels.join(", ")})`);
 		console.log(`   Guilds: ${guilds.length} (${guilds.join(", ")})`);
-		console.log(`   Date range: ${new Date(oldestMessage.timestamp).toLocaleString()} to ${new Date(newestMessage.timestamp).toLocaleString()}`);
-
+		console.log(
+			`   Date range: ${new Date(oldestMessage.timestamp).toLocaleString()} to ${new Date(newestMessage.timestamp).toLocaleString()}`,
+		);
 	} catch (error) {
 		console.error("🔸 Error:", error);
 	} finally {

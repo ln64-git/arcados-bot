@@ -10,7 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load .env from project root
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
 async function debugDiscordConnection() {
 	console.log("🔹 Debugging Discord connection...");
@@ -64,7 +64,6 @@ async function debugDiscordConnection() {
 		console.log(`✅ Found ${guild.members.cache.size} members`);
 
 		console.log("✅ All Discord data fetched successfully!");
-
 	} catch (error) {
 		console.error("🔸 Error:", error);
 	} finally {
@@ -77,4 +76,3 @@ debugDiscordConnection().catch((error) => {
 	console.error("🔸 Unhandled error:", error);
 	process.exit(1);
 });
-

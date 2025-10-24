@@ -69,7 +69,6 @@ class SimpleDiscordSync {
 
 			// Sync ALL messages from ALL channels
 			await this.syncAllMessages(guild);
-
 		} catch (error) {
 			console.error("❌ Error:", error);
 		} finally {
@@ -79,12 +78,12 @@ class SimpleDiscordSync {
 
 	private async syncAllMessages(guild: any) {
 		console.log(`🔹 Syncing ALL messages from guild: ${guild.name}`);
-		
+
 		// Get all text channels
 		const textChannels = guild.channels.cache.filter(
-			(channel: any) => 
-				channel.type === ChannelType.GuildText && 
-				channel.permissionsFor(guild.members.me)?.has("ViewChannel")
+			(channel: any) =>
+				channel.type === ChannelType.GuildText &&
+				channel.permissionsFor(guild.members.me)?.has("ViewChannel"),
 		);
 
 		console.log(`🔹 Found ${textChannels.size} text channels`);
@@ -94,12 +93,16 @@ class SimpleDiscordSync {
 
 		for (const [channelId, channel] of textChannels) {
 			totalChannels++;
-			console.log(`\n🔹 [${totalChannels}/${textChannels.size}] Syncing channel: ${channel.name}`);
+			console.log(
+				`\n🔹 [${totalChannels}/${textChannels.size}] Syncing channel: ${channel.name}`,
+			);
 
 			try {
 				const channelMessages = await this.syncChannelMessages(channel, guild);
 				totalMessages += channelMessages;
-				console.log(`✅ Synced ${channelMessages} messages from ${channel.name}`);
+				console.log(
+					`✅ Synced ${channelMessages} messages from ${channel.name}`,
+				);
 			} catch (error) {
 				console.error(`❌ Error syncing channel ${channel.name}:`, error);
 			}
@@ -125,7 +128,7 @@ class SimpleDiscordSync {
 				}
 
 				const messages = await channel.messages.fetch(options);
-				
+
 				if (messages.size === 0) {
 					break; // No more messages
 				}
@@ -158,13 +161,17 @@ class SimpleDiscordSync {
 					lastMessageId = messageId;
 				}
 
-				console.log(`   🔹 Processed ${messages.size} messages (total: ${messageCount})`);
+				console.log(
+					`   🔹 Processed ${messages.size} messages (total: ${messageCount})`,
+				);
 
 				// Small delay to avoid rate limits
-				await new Promise(resolve => setTimeout(resolve, 100));
-
+				await new Promise((resolve) => setTimeout(resolve, 100));
 			} catch (error) {
-				console.error(`   ❌ Error fetching messages from ${channel.name}:`, error);
+				console.error(
+					`   ❌ Error fetching messages from ${channel.name}:`,
+					error,
+				);
 				break;
 			}
 		}
@@ -197,7 +204,7 @@ class SimpleDiscordSync {
 					created_at: message.created_at,
 					updated_at: message.updated_at,
 					active: message.active,
-				}
+				},
 			);
 		} catch (error) {
 			// Ignore duplicate key errors

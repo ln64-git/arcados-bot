@@ -23,7 +23,10 @@ async function testMessageStorage() {
 		};
 
 		const result1 = await db.upsertMessage(simpleMessage);
-		console.log("🔹 Simple message result:", result1.success ? "Success" : result1.error);
+		console.log(
+			"🔹 Simple message result:",
+			result1.success ? "Success" : result1.error,
+		);
 
 		// Test 2: Store a message with the full record ID format
 		console.log("🔹 Test 2: Storing message with full record ID...");
@@ -38,7 +41,10 @@ async function testMessageStorage() {
 		};
 
 		const result2 = await db.upsertMessage(fullMessage);
-		console.log("🔹 Full message result:", result2.success ? "Success" : result2.error);
+		console.log(
+			"🔹 Full message result:",
+			result2.success ? "Success" : result2.error,
+		);
 
 		// Test 3: Query all messages
 		console.log("🔹 Test 3: Querying all messages...");
@@ -47,22 +53,31 @@ async function testMessageStorage() {
 
 		// Test 4: Try different query approaches
 		console.log("🔹 Test 4: Trying different query approaches...");
-		
+
 		// Query by guild_id
-		const guildMessages = await db.db.query("SELECT * FROM messages WHERE guild_id = '1254694808228986912'");
+		const guildMessages = await db.db.query(
+			"SELECT * FROM messages WHERE guild_id = '1254694808228986912'",
+		);
 		console.log("🔹 Guild messages count:", guildMessages[0]?.length || 0);
-		
+
 		// Query by author_id
-		const authorMessages = await db.db.query("SELECT * FROM messages WHERE author_id = '99195129516007424'");
+		const authorMessages = await db.db.query(
+			"SELECT * FROM messages WHERE author_id = '99195129516007424'",
+		);
 		console.log("🔹 Author messages count:", authorMessages[0]?.length || 0);
 
 		// Test 5: Direct select both messages
 		console.log("🔹 Test 5: Direct select both messages...");
 		const direct1 = await db.db.select("messages:simple-message-123");
 		const direct2 = await db.db.select("messages:full-message-123");
-		console.log("🔹 Direct select simple:", direct1.length > 0 ? "Found" : "Not found");
-		console.log("🔹 Direct select full:", direct2.length > 0 ? "Found" : "Not found");
-
+		console.log(
+			"🔹 Direct select simple:",
+			direct1.length > 0 ? "Found" : "Not found",
+		);
+		console.log(
+			"🔹 Direct select full:",
+			direct2.length > 0 ? "Found" : "Not found",
+		);
 	} catch (error) {
 		console.error("🔸 Error:", error);
 	} finally {

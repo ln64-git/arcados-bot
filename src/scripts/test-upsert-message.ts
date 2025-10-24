@@ -27,20 +27,21 @@ async function testUpsertMessage() {
 
 		if (result.success) {
 			console.log("🔹 Message upserted successfully");
-			
+
 			// Try to retrieve it
 			console.log("🔹 Retrieving message...");
 			const retrieved = await db.db.select("messages:test-message-123");
 			console.log("🔹 Retrieved message:", retrieved);
-			
+
 			// Try to query it
 			console.log("🔹 Querying message...");
-			const queried = await db.db.query("SELECT * FROM messages WHERE id = 'test-message-123'");
+			const queried = await db.db.query(
+				"SELECT * FROM messages WHERE id = 'test-message-123'",
+			);
 			console.log("🔹 Queried message:", queried);
 		} else {
 			console.error("🔸 Failed to upsert message:", result.error);
 		}
-
 	} catch (error) {
 		console.error("🔸 Error:", error);
 	} finally {

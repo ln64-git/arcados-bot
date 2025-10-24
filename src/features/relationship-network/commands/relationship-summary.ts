@@ -11,23 +11,19 @@ export const relationshipSummaryCommand: Command = {
 	data: new SlashCommandBuilder()
 		.setName("relationship-summary")
 		.setDescription("Get relationship summary between two users")
-		.addUserOption(option =>
-			option
-				.setName("user1")
-				.setDescription("First user")
-				.setRequired(true)
+		.addUserOption((option) =>
+			option.setName("user1").setDescription("First user").setRequired(true),
 		)
-		.addUserOption(option =>
-			option
-				.setName("user2")
-				.setDescription("Second user")
-				.setRequired(true)
+		.addUserOption((option) =>
+			option.setName("user2").setDescription("Second user").setRequired(true),
 		)
-		.addBooleanOption(option =>
+		.addBooleanOption((option) =>
 			option
 				.setName("ephemeral")
-				.setDescription("Make the response visible only to you (default: false)")
-				.setRequired(false)
+				.setDescription(
+					"Make the response visible only to you (default: false)",
+				)
+				.setRequired(false),
 		)
 		.setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
 		.setDMPermission(false),
@@ -51,17 +47,18 @@ export const relationshipSummaryCommand: Command = {
 		}
 
 		const db = new PostgreSQLManager();
-		
+
 		try {
 			const connected = await db.connect();
-			
+
 			if (!connected) {
 				await interaction.editReply("Failed to connect to database.");
 				return;
 			}
 
 			// Get user1's relationship with user2
-			const relationshipResult = await db.query(`
+			const relationshipResult = await db.query(
+				`
 				SELECT 
 					rn.target_user_id,
 					rn.affinity_percentage,
@@ -93,10 +90,18 @@ export const relationshipSummaryCommand: Command = {
 				) rn
 				LEFT JOIN members u2 ON u2.user_id = rn.target_user_id AND u2.guild_id = u1.guild_id
 				WHERE u1.user_id = $1 AND u1.guild_id = $2 AND rn.target_user_id = $3
-			`, [user1.id, guildId, user2.id]);
+			`,
+				[user1.id, guildId, user2.id],
+			);
 
-			if (!relationshipResult.success || !relationshipResult.data || relationshipResult.data.length === 0) {
-				await interaction.editReply(`Sorry, no relationship detected between ${user1.displayName} and ${user2.displayName}.`);
+			if (
+				!relationshipResult.success ||
+				!relationshipResult.data ||
+				relationshipResult.data.length === 0
+			) {
+				await interaction.editReply(
+					`Sorry, no relationship detected between ${user1.displayName} and ${user2.displayName}.`,
+				);
 				await db.disconnect();
 				return;
 			}
@@ -105,61 +110,75 @@ export const relationshipSummaryCommand: Command = {
 
 			// Create embed
 			const embed = new EmbedBuilder()
-				.setTitle(`Relationship: ${relationship.user1_display_name} ↔ ${relationship.user2_display_name}`)
-				.setDescription(`@${relationship.user1_username} • @${relationship.user2_username}`)
-				.setColor(0x5865F2)
+				.setTitle(
+					`Relationship: ${relationship.user1_display_name} ↔ ${relationship.user2_display_name}`,
+				)
+				.setDescription(
+					`@${relationship.user1_username} • @${relationship.user2_username}`,
+				)
+				.setColor(0x5865f2)
 				.setTimestamp()
-				.setFooter({ text: `${relationship.affinity_percentage}% affinity • ${relationship.interaction_count} interactions` });
+				.setFooter({
+					text: `${relationship.affinity_percentage}% affinity • ${relationship.interaction_count} interactions`,
+				});
 
 			// Add relationship metadata
 			if (relationship.relationship_summary) {
-				const summaryText = relationship.relationship_summary.length > 1000 ? 
-					relationship.relationship_summary.substring(0, 997) + "..." : 
-					relationship.relationship_summary;
+				const summaryText =
+					relationship.relationship_summary.length > 1000
+						? relationship.relationship_summary.substring(0, 997) + "..."
+						: relationship.relationship_summary;
 				embed.addFields({
 					name: "Summary",
 					value: summaryText,
-					inline: false
+					inline: false,
 				});
 			}
 
 			// Add keywords
-			if (relationship.relationship_keywords && relationship.relationship_keywords.length > 0) {
-				const keywordText = relationship.relationship_keywords.join(' • ');
+			if (
+				relationship.relationship_keywords &&
+				relationship.relationship_keywords.length > 0
+			) {
+				const keywordText = relationship.relationship_keywords.join(" • ");
 				embed.addFields({
 					name: "Keywords",
 					value: keywordText,
-					inline: false
+					inline: false,
 				});
 			}
 
 			// Add emojis
-			if (relationship.relationship_emojis && relationship.relationship_emojis.length > 0) {
-				const emojiText = relationship.relationship_emojis.join(' ');
+			if (
+				relationship.relationship_emojis &&
+				relationship.relationship_emojis.length > 0
+			) {
+				const emojiText = relationship.relationship_emojis.join(" ");
 				embed.addFields({
 					name: "Emojis",
 					value: emojiText,
-					inline: false
+					inline: false,
 				});
 			}
 
 			// Add interaction info
 			const lastInteraction = new Date(relationship.last_interaction);
 			const lastInteractionText = `<t:${Math.floor(lastInteraction.getTime() / 1000)}:R>`;
-			
+
 			embed.addFields({
 				name: "Interaction Info",
 				value: `Last interaction: ${lastInteractionText}`,
-				inline: false
+				inline: false,
 			});
 
 			await interaction.editReply({ embeds: [embed] });
 			await db.disconnect();
-
 		} catch (error) {
 			console.error("Error in relationship-summary command:", error);
-			await interaction.editReply("An error occurred while retrieving the relationship summary.");
-			
+			await interaction.editReply(
+				"An error occurred while retrieving the relationship summary.",
+			);
+
 			try {
 				await db.disconnect();
 			} catch (disconnectError) {

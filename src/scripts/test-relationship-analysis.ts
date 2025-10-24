@@ -17,7 +17,9 @@ async function analyzeUserRelationships(userId: string) {
 
 		if (!memberResult.success || !memberResult.data) {
 			console.log("🔸 User not found in database");
-			console.log("🔸 This suggests the Discord sync may not have completed properly");
+			console.log(
+				"🔸 This suggests the Discord sync may not have completed properly",
+			);
 			return;
 		}
 
@@ -31,9 +33,7 @@ async function analyzeUserRelationships(userId: string) {
 		);
 
 		if (computeResult.success) {
-			console.log(
-				`🔹 Updated relationship network for ${userId}`,
-			);
+			console.log(`🔹 Updated relationship network for ${userId}`);
 		} else {
 			console.error(
 				`🔸 Failed to compute relationships for ${userId}:`,
@@ -48,7 +48,9 @@ async function analyzeUserRelationships(userId: string) {
 		);
 
 		if (relationshipsResult.success && relationshipsResult.data) {
-			console.log(`🔹 Top relationships for ${memberResult.data.display_name}:`);
+			console.log(
+				`🔹 Top relationships for ${memberResult.data.display_name}:`,
+			);
 			for (const rel of relationshipsResult.data) {
 				const otherMember = await db.getMember(rel.user_id, guildId);
 				const otherDisplayName = otherMember.success

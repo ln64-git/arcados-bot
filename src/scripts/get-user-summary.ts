@@ -4,14 +4,17 @@ import * as dotenv from "dotenv";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import { PostgreSQLManager } from "../database/PostgreSQLManager.js";
-import type { MemberData, RelationshipEntry } from "../database/PostgreSQLManager.js";
+import type {
+	MemberData,
+	RelationshipEntry,
+} from "../database/PostgreSQLManager.js";
 
 // Get __dirname equivalent for ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load .env from project root
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
 interface UserSummaryResult {
 	user: {
@@ -42,7 +45,10 @@ interface UserSummaryResult {
 	retrieved_at: Date;
 }
 
-async function getUserSummary(userId: string, guildId: string): Promise<UserSummaryResult> {
+async function getUserSummary(
+	userId: string,
+	guildId: string,
+): Promise<UserSummaryResult> {
 	console.log(`🔹 Getting user summary for ${userId} in guild ${guildId}...`);
 
 	if (!process.env.POSTGRES_URL) {
@@ -50,10 +56,10 @@ async function getUserSummary(userId: string, guildId: string): Promise<UserSumm
 	}
 
 	const db = new PostgreSQLManager();
-	
+
 	try {
 		const connected = await db.connect();
-		
+
 		if (!connected) {
 			throw new Error("🔸 Failed to connect to PostgreSQL");
 		}
@@ -62,7 +68,8 @@ async function getUserSummary(userId: string, guildId: string): Promise<UserSumm
 
 		// Get user data
 		console.log("🔹 Retrieving user data...");
-		const userResult = await db.query(`
+		const userResult = await db.query(
+			`
 			SELECT 
 				user_id,
 				username,
@@ -76,9 +83,15 @@ async function getUserSummary(userId: string, guildId: string): Promise<UserSumm
 				roles
 			FROM members 
 			WHERE user_id = $1 AND guild_id = $2
-		`, [userId, guildId]);
+		`,
+			[userId, guildId],
+		);
 
-		if (!userResult.success || !userResult.data || userResult.data.length === 0) {
+		if (
+			!userResult.success ||
+			!userResult.data ||
+			userResult.data.length === 0
+		) {
 			throw new Error(`🔸 User ${userId} not found in guild ${guildId}`);
 		}
 
@@ -87,7 +100,8 @@ async function getUserSummary(userId: string, guildId: string): Promise<UserSumm
 
 		// Get user's relationships with metadata
 		console.log("🔹 Retrieving user relationships...");
-		const relationshipsResult = await db.query(`
+		const relationshipsResult = await db.query(
+			`
 			SELECT 
 				rn.user_id,
 				rn.affinity_percentage,
@@ -123,10 +137,14 @@ async function getUserSummary(userId: string, guildId: string): Promise<UserSumm
 			WHERE m.user_id = $1 AND m.guild_id = $2
 			ORDER BY rn.affinity_percentage DESC
 			LIMIT 50
-		`, [userId, guildId]);
+		`,
+			[userId, guildId],
+		);
 
 		if (!relationshipsResult.success) {
-			throw new Error(`🔸 Failed to get relationships: ${relationshipsResult.error}`);
+			throw new Error(
+				`🔸 Failed to get relationships: ${relationshipsResult.error}`,
+			);
 		}
 
 		const relationships = relationshipsResult.data || [];
@@ -144,9 +162,9 @@ async function getUserSummary(userId: string, guildId: string): Promise<UserSumm
 				emojis: userData.emojis || [],
 				notes: userData.notes || [],
 				joined_at: new Date(userData.joined_at),
-				roles: userData.roles || []
+				roles: userData.roles || [],
 			},
-			relationships: relationships.map(rel => ({
+			relationships: relationships.map((rel) => ({
 				user_id: rel.user_id,
 				username: rel.username,
 				display_name: rel.display_name,
@@ -156,15 +174,14 @@ async function getUserSummary(userId: string, guildId: string): Promise<UserSumm
 				summary: rel.relationship_summary || undefined,
 				keywords: rel.relationship_keywords || [],
 				emojis: rel.relationship_emojis || [],
-				notes: rel.relationship_notes || []
+				notes: rel.relationship_notes || [],
 			})),
 			total_relationships: relationships.length,
-			retrieved_at: new Date()
+			retrieved_at: new Date(),
 		};
 
 		await db.disconnect();
 		return result;
-		
 	} catch (error) {
 		console.error("🔸 Error getting user summary:", error);
 		throw error;
@@ -174,16 +191,20 @@ async function getUserSummary(userId: string, guildId: string): Promise<UserSumm
 function formatUserSummary(summary: UserSummaryResult): void {
 	console.log("\n🔹 User Summary Report");
 	console.log("=".repeat(60));
-	
+
 	// User basic info
-	console.log(`👤 User: ${summary.user.display_name} (@${summary.user.username})`);
+	console.log(
+		`👤 User: ${summary.user.display_name} (@${summary.user.username})`,
+	);
 	if (summary.user.global_name) {
 		console.log(`🌐 Global Name: ${summary.user.global_name}`);
 	}
 	console.log(`🆔 User ID: ${summary.user.id}`);
-	console.log(`📅 Joined: ${summary.user.joined_at.toISOString().split('T')[0]}`);
+	console.log(
+		`📅 Joined: ${summary.user.joined_at.toISOString().split("T")[0]}`,
+	);
 	console.log(`🎭 Roles: ${summary.user.roles.length} roles`);
-	
+
 	// User metadata
 	console.log("\n📝 User Metadata:");
 	if (summary.user.summary) {
@@ -191,29 +212,29 @@ function formatUserSummary(summary: UserSummaryResult): void {
 	} else {
 		console.log("   Summary: Not available");
 	}
-	
+
 	if (summary.user.keywords && summary.user.keywords.length > 0) {
-		console.log(`   Keywords: ${summary.user.keywords.join(', ')}`);
+		console.log(`   Keywords: ${summary.user.keywords.join(", ")}`);
 	} else {
 		console.log("   Keywords: Not available");
 	}
-	
+
 	if (summary.user.emojis && summary.user.emojis.length > 0) {
-		console.log(`   Emojis: ${summary.user.emojis.join(' ')}`);
+		console.log(`   Emojis: ${summary.user.emojis.join(" ")}`);
 	} else {
 		console.log("   Emojis: Not available");
 	}
-	
+
 	if (summary.user.notes && summary.user.notes.length > 0) {
-		console.log(`   Notes: ${summary.user.notes.join(', ')}`);
+		console.log(`   Notes: ${summary.user.notes.join(", ")}`);
 	} else {
 		console.log("   Notes: Not available");
 	}
-	
+
 	// Relationships
 	console.log(`\n🔗 Relationships (${summary.total_relationships} total):`);
 	console.log("-".repeat(60));
-	
+
 	if (summary.relationships.length === 0) {
 		console.log("   No relationships found");
 	} else {
@@ -222,26 +243,28 @@ function formatUserSummary(summary: UserSummaryResult): void {
 			console.log(`   🆔 User ID: ${rel.user_id}`);
 			console.log(`   📊 Affinity: ${rel.affinity_percentage.toFixed(1)}%`);
 			console.log(`   💬 Interactions: ${rel.interaction_count}`);
-			console.log(`   🕒 Last Interaction: ${rel.last_interaction.toISOString().split('T')[0]}`);
-			
+			console.log(
+				`   🕒 Last Interaction: ${rel.last_interaction.toISOString().split("T")[0]}`,
+			);
+
 			if (rel.summary) {
 				console.log(`   📝 Summary: ${rel.summary}`);
 			}
-			
+
 			if (rel.keywords && rel.keywords.length > 0) {
-				console.log(`   🏷️ Keywords: ${rel.keywords.join(', ')}`);
+				console.log(`   🏷️ Keywords: ${rel.keywords.join(", ")}`);
 			}
-			
+
 			if (rel.emojis && rel.emojis.length > 0) {
-				console.log(`   😀 Emojis: ${rel.emojis.join(' ')}`);
+				console.log(`   😀 Emojis: ${rel.emojis.join(" ")}`);
 			}
-			
+
 			if (rel.notes && rel.notes.length > 0) {
-				console.log(`   📋 Notes: ${rel.notes.join(', ')}`);
+				console.log(`   📋 Notes: ${rel.notes.join(", ")}`);
 			}
 		});
 	}
-	
+
 	console.log(`\n🕒 Retrieved at: ${summary.retrieved_at.toISOString()}`);
 }
 
@@ -251,35 +274,38 @@ function formatUserSummaryJSON(summary: UserSummaryResult): void {
 
 async function main() {
 	const args = process.argv.slice(2);
-	
+
 	if (args.length < 2) {
 		console.log("Usage:");
 		console.log("  npx tsx get-user-summary.ts <user-id> <guild-id> [--json]");
 		console.log("");
 		console.log("Examples:");
-		console.log("  npx tsx get-user-summary.ts 123456789012345678 987654321098765432");
-		console.log("  npx tsx get-user-summary.ts 123456789012345678 987654321098765432 --json");
+		console.log(
+			"  npx tsx get-user-summary.ts 123456789012345678 987654321098765432",
+		);
+		console.log(
+			"  npx tsx get-user-summary.ts 123456789012345678 987654321098765432 --json",
+		);
 		console.log("");
 		console.log("Options:");
 		console.log("  --json    Output in JSON format instead of formatted text");
 		process.exit(1);
 	}
-	
+
 	const userId = args[0];
 	const guildId = args[1];
-	const jsonOutput = args.includes('--json');
-	
+	const jsonOutput = args.includes("--json");
+
 	try {
 		const summary = await getUserSummary(userId, guildId);
-		
+
 		if (jsonOutput) {
 			formatUserSummaryJSON(summary);
 		} else {
 			formatUserSummary(summary);
 		}
-		
+
 		console.log("\n✅ User summary retrieved successfully!");
-		
 	} catch (error) {
 		console.error("🔸 Script failed:", error);
 		process.exit(1);

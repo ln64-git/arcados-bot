@@ -21,7 +21,7 @@ async function wipeDatabase() {
 			"roles",
 			"messages",
 			"actions",
-			"sync_metadata"
+			"sync_metadata",
 		];
 
 		for (const table of tables) {
@@ -47,7 +47,6 @@ async function wipeDatabase() {
 		}
 
 		console.log("🔹 Database wipe completed!");
-
 	} catch (error) {
 		console.error("🔸 Error during database wipe:", error);
 	} finally {

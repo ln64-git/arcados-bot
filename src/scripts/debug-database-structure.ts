@@ -27,14 +27,15 @@ async function debugDatabaseStructure() {
 
 		// Try a different approach - check if the record exists with a different query
 		console.log("🔹 Checking if test message exists with different query...");
-		const exists = await db.db.query("SELECT * FROM messages WHERE id CONTAINS 'test-message-123'");
+		const exists = await db.db.query(
+			"SELECT * FROM messages WHERE id CONTAINS 'test-message-123'",
+		);
 		console.log("Exists query result:", exists);
 
 		// Check what tables actually exist
 		console.log("🔹 Checking what tables exist...");
 		const tables = await db.db.query("SELECT * FROM $tables");
 		console.log("Tables:", tables);
-
 	} catch (error) {
 		console.error("🔸 Error:", error);
 	} finally {

@@ -56,7 +56,6 @@ async function testSurrealDBUpsertSyntax() {
 		console.log("🔹 Test 4: Querying all messages...");
 		const allMessages = await db.db.query("SELECT * FROM messages");
 		console.log("🔹 All messages count:", allMessages[0]?.length || 0);
-
 	} catch (error) {
 		console.error("🔸 Error:", error);
 	} finally {

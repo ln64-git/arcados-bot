@@ -139,7 +139,9 @@ async function testPostgreSQLRelationshipNetwork(): Promise<void> {
 				console.log("✅ relationship_network column exists in members table");
 				console.log(`   - Data type: ${schemaTest.data[0].data_type}`);
 			} else {
-				console.log("🔸 relationship_network column not found - schema may need updating");
+				console.log(
+					"🔸 relationship_network column not found - schema may need updating",
+				);
 			}
 		} catch (error) {
 			console.log(`🔸 Schema test failed: ${error}`);

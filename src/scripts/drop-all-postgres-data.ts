@@ -10,7 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load .env from project root
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
 async function dropAllData() {
 	console.log("🔹 Dropping ALL data from PostgreSQL...");
@@ -21,10 +21,10 @@ async function dropAllData() {
 	}
 
 	const db = new PostgreSQLManager();
-	
+
 	try {
 		const connected = await db.connect();
-		
+
 		if (!connected) {
 			console.error("🔸 Failed to connect to PostgreSQL");
 			process.exit(1);
@@ -54,9 +54,8 @@ async function dropAllData() {
 		console.log(`✅ Deleted all guilds`);
 
 		console.log("✅ ALL data dropped successfully!");
-		
+
 		await db.disconnect();
-		
 	} catch (error) {
 		console.error("🔸 Error dropping all data:", error);
 		process.exit(1);
@@ -67,4 +66,3 @@ dropAllData().catch((error) => {
 	console.error("🔸 Unhandled error:", error);
 	process.exit(1);
 });
-

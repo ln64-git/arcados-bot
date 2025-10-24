@@ -35,7 +35,9 @@ export class PostgreSQLRelationshipNetworkManager {
 			);
 
 			if (!interactionsResult.success) {
-				throw new Error(`Failed to get message interactions: ${interactionsResult.error}`);
+				throw new Error(
+					`Failed to get message interactions: ${interactionsResult.error}`,
+				);
 			}
 
 			const interactions = interactionsResult.data || [];
@@ -72,7 +74,7 @@ export class PostgreSQLRelationshipNetworkManager {
 			}
 
 			const members = membersResult.data || [];
-			
+
 			// Calculate total interaction points for this user across all other users
 			let totalInteractionPoints = 0;
 			const rawInteractions: Array<{
@@ -99,8 +101,11 @@ export class PostgreSQLRelationshipNetworkManager {
 						rawInteractions.push({
 							user_id: member.user_id,
 							points: points,
-							interaction_count: affinityResult.interaction_summary.interaction_count,
-							last_interaction: affinityResult.interaction_summary.last_interaction || new Date(),
+							interaction_count:
+								affinityResult.interaction_summary.interaction_count,
+							last_interaction:
+								affinityResult.interaction_summary.last_interaction ||
+								new Date(),
 						});
 					}
 				} catch (error) {
@@ -114,15 +119,20 @@ export class PostgreSQLRelationshipNetworkManager {
 			}
 
 			// Calculate percentages
-			const relationships: RelationshipEntry[] = rawInteractions.map(raw => ({
+			const relationships: RelationshipEntry[] = rawInteractions.map((raw) => ({
 				user_id: raw.user_id,
-				affinity_percentage: totalInteractionPoints > 0 ? (raw.points / totalInteractionPoints) * 100 : 0,
+				affinity_percentage:
+					totalInteractionPoints > 0
+						? (raw.points / totalInteractionPoints) * 100
+						: 0,
 				interaction_count: raw.interaction_count,
 				last_interaction: raw.last_interaction,
 			}));
 
 			// Sort by percentage descending and limit to top 50
-			relationships.sort((a, b) => b.affinity_percentage - a.affinity_percentage);
+			relationships.sort(
+				(a, b) => b.affinity_percentage - a.affinity_percentage,
+			);
 			return relationships.slice(0, 50);
 		} catch (error) {
 			throw new Error(
@@ -157,7 +167,9 @@ export class PostgreSQLRelationshipNetworkManager {
 			);
 
 			if (!updateResult.success) {
-				throw new Error(`Failed to update member relationships: ${updateResult.error}`);
+				throw new Error(
+					`Failed to update member relationships: ${updateResult.error}`,
+				);
 			}
 
 			const duration = Date.now() - startTime;
@@ -189,7 +201,11 @@ export class PostgreSQLRelationshipNetworkManager {
 				guildId,
 			);
 
-			if (existingResult.success && existingResult.data && existingResult.data.length > 0) {
+			if (
+				existingResult.success &&
+				existingResult.data &&
+				existingResult.data.length > 0
+			) {
 				return {
 					success: true,
 					data: existingResult.data.slice(0, limit),
@@ -198,7 +214,10 @@ export class PostgreSQLRelationshipNetworkManager {
 
 			// No existing relationships, compute fresh ones
 			console.log(`🔹 Computing fresh relationship network for ${userId}`);
-			const relationships = await this.buildRelationshipNetwork(userId, guildId);
+			const relationships = await this.buildRelationshipNetwork(
+				userId,
+				guildId,
+			);
 
 			// Update database with fresh relationships
 			await this.updateMemberRelationships(userId, guildId);

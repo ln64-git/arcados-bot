@@ -1,5 +1,20 @@
-import { Client, GatewayIntentBits, Guild, Channel, Role, GuildMember, Message } from "discord.js";
-import { PostgreSQLManager, GuildData, ChannelData, RoleData, MemberData, MessageData } from "../../database/PostgreSQLManager.js";
+import {
+	Client,
+	GatewayIntentBits,
+	Guild,
+	Channel,
+	Role,
+	GuildMember,
+	Message,
+} from "discord.js";
+import {
+	PostgreSQLManager,
+	GuildData,
+	ChannelData,
+	RoleData,
+	MemberData,
+	MessageData,
+} from "../../database/PostgreSQLManager.js";
 import { config } from "../../config/index.js";
 
 export class GuildSyncManager {
@@ -67,11 +82,12 @@ export class GuildSyncManager {
 				throw new Error(`Guild ${this.guildId} not found!`);
 			}
 
-			console.log(`✅ Found guild: ${guild.name} (${guild.memberCount} members)`);
+			console.log(
+				`✅ Found guild: ${guild.name} (${guild.memberCount} members)`,
+			);
 
 			// Perform full guild sync
 			await this.performFullGuildSync(guild);
-
 		} catch (error) {
 			console.error("🔸 Error:", error);
 		} finally {
@@ -148,13 +164,16 @@ export class GuildSyncManager {
 			position: channel.position || undefined,
 			topic: "topic" in channel ? channel.topic || undefined : undefined,
 			nsfw: "nsfw" in channel ? channel.nsfw : undefined,
-			parent_id: "parent" in channel && channel.parent ? channel.parent.id : undefined,
+			parent_id:
+				"parent" in channel && channel.parent ? channel.parent.id : undefined,
 			active: true,
 		};
 
 		const result = await this.db.upsertChannel(channelData);
 		if (!result.success) {
-			console.error(`🔸 Failed to sync channel ${channel.name}: ${result.error}`);
+			console.error(
+				`🔸 Failed to sync channel ${channel.name}: ${result.error}`,
+			);
 		}
 	}
 
@@ -179,7 +198,7 @@ export class GuildSyncManager {
 
 	private async syncMembers(guild: Guild): Promise<void> {
 		console.log("🔹 Fetching guild members...");
-		
+
 		try {
 			// Fetch all members
 			await guild.members.fetch();
@@ -187,22 +206,26 @@ export class GuildSyncManager {
 
 			let memberCount = 0;
 			let errorCount = 0;
-			
+
 			for (const [memberId, member] of guild.members.cache) {
 				try {
 					await this.syncMember(member, guild.id);
 					memberCount++;
-					
+
 					// Progress indicator every 50 members
 					if (memberCount % 50 === 0) {
-						console.log(`🔹 Synced ${memberCount}/${guild.members.cache.size} members...`);
+						console.log(
+							`🔹 Synced ${memberCount}/${guild.members.cache.size} members...`,
+						);
 					}
 				} catch (error) {
 					errorCount++;
-					console.error(`🔸 Failed to sync member ${member.user.tag}: ${error}`);
+					console.error(
+						`🔸 Failed to sync member ${member.user.tag}: ${error}`,
+					);
 				}
 			}
-			
+
 			console.log(`✅ Synced ${memberCount} members (${errorCount} errors)`);
 		} catch (error) {
 			console.error("🔸 Failed to fetch members:", error);
@@ -210,7 +233,10 @@ export class GuildSyncManager {
 		}
 	}
 
-	private async syncMember(member: GuildMember, guildId: string): Promise<void> {
+	private async syncMember(
+		member: GuildMember,
+		guildId: string,
+	): Promise<void> {
 		// Ensure we have the full member data
 		if (member.partial) {
 			await member.fetch();
@@ -223,8 +249,12 @@ export class GuildSyncManager {
 
 		if (member.presence) {
 			status = member.presence.status;
-			activities = member.presence.activities ? JSON.stringify(member.presence.activities) : undefined;
-			clientStatus = member.presence.clientStatus ? JSON.stringify(member.presence.clientStatus) : undefined;
+			activities = member.presence.activities
+				? JSON.stringify(member.presence.activities)
+				: undefined;
+			clientStatus = member.presence.clientStatus
+				? JSON.stringify(member.presence.clientStatus)
+				: undefined;
 		}
 
 		const memberData: MemberData = {
@@ -252,9 +282,10 @@ export class GuildSyncManager {
 			// Guild-specific member data
 			nick: member.nickname || undefined,
 			joined_at: member.joinedAt || new Date(),
-			roles: member.roles.cache.map(role => role.id),
+			roles: member.roles.cache.map((role) => role.id),
 			permissions: member.permissions.bitfield.toString(),
-			communication_disabled_until: member.communicationDisabledUntil || undefined,
+			communication_disabled_until:
+				member.communicationDisabledUntil || undefined,
 			pending: member.pending || undefined,
 			premium_since: member.premiumSince || undefined,
 			timeout: undefined, // This property doesn't exist on GuildMember
@@ -272,14 +303,16 @@ export class GuildSyncManager {
 
 		const result = await this.db.upsertMember(memberData);
 		if (!result.success) {
-			console.error(`🔸 Failed to sync member ${member.user.tag}: ${result.error}`);
+			console.error(
+				`🔸 Failed to sync member ${member.user.tag}: ${result.error}`,
+			);
 			throw new Error(`Failed to sync member: ${result.error}`);
 		}
 	}
 
 	private async syncMessages(guild: Guild): Promise<void> {
 		const textChannels = guild.channels.cache.filter(
-			channel => channel.type === 0 && channel.isTextBased()
+			(channel) => channel.type === 0 && channel.isTextBased(),
 		);
 
 		console.log(`🔹 Found ${textChannels.size} text channels`);
@@ -293,7 +326,7 @@ export class GuildSyncManager {
 			if (!channel.isTextBased()) continue;
 
 			console.log(`🔹 Syncing messages from channel: ${channel.name}`);
-			
+
 			try {
 				let lastMessageId: string | undefined;
 				let channelMessageCount = 0;
@@ -307,7 +340,7 @@ export class GuildSyncManager {
 					});
 
 					const timeoutPromise = new Promise<never>((_, reject) => {
-						setTimeout(() => reject(new Error('Message fetch timeout')), 30000); // 30 second timeout
+						setTimeout(() => reject(new Error("Message fetch timeout")), 30000); // 30 second timeout
 					});
 
 					const messages = await Promise.race([fetchPromise, timeoutPromise]);
@@ -323,26 +356,34 @@ export class GuildSyncManager {
 					// Fix: Set lastMessageId to the last message in the batch
 					lastMessageId = messages.last()?.id;
 					batchCount++;
-					
+
 					// Progress reporting every 5 batches
 					if (batchCount % 5 === 0) {
-						console.log(`🔹 Processed ${channelMessageCount} messages from ${channel.name}...`);
+						console.log(
+							`🔹 Processed ${channelMessageCount} messages from ${channel.name}...`,
+						);
 					}
 
 					// Small delay to prevent rate limiting
-					await new Promise(resolve => setTimeout(resolve, 100));
+					await new Promise((resolve) => setTimeout(resolve, 100));
 				}
 
-				console.log(`✅ Synced ${channelMessageCount} messages from ${channel.name}`);
+				console.log(
+					`✅ Synced ${channelMessageCount} messages from ${channel.name}`,
+				);
 				processedChannels++;
-
 			} catch (error) {
-				console.error(`🔸 Failed to sync messages from ${channel.name}:`, error);
+				console.error(
+					`🔸 Failed to sync messages from ${channel.name}:`,
+					error,
+				);
 				processedChannels++; // Still count as processed to continue
 			}
 		}
 
-		console.log(`✅ Synced ${totalMessages} messages from ${processedChannels} channels`);
+		console.log(
+			`✅ Synced ${totalMessages} messages from ${processedChannels} channels`,
+		);
 	}
 
 	private async syncMessage(message: Message, guildId: string): Promise<void> {
@@ -356,8 +397,14 @@ export class GuildSyncManager {
 			content: message.content,
 			created_at: message.createdAt,
 			edited_at: message.editedAt || undefined,
-			attachments: message.attachments.size > 0 ? message.attachments.map(att => att.url) : undefined,
-			embeds: message.embeds.length > 0 ? message.embeds.map(embed => JSON.stringify(embed)) : undefined,
+			attachments:
+				message.attachments.size > 0
+					? message.attachments.map((att) => att.url)
+					: undefined,
+			embeds:
+				message.embeds.length > 0
+					? message.embeds.map((embed) => JSON.stringify(embed))
+					: undefined,
 			active: true,
 		};
 

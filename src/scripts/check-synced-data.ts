@@ -39,13 +39,18 @@ async function checkDatabaseData() {
 		}
 
 		// Check specific user
-		const userResult = await db.getMember("99195129516007424", process.env.GUILD_ID || "");
+		const userResult = await db.getMember(
+			"99195129516007424",
+			process.env.GUILD_ID || "",
+		);
 		if (userResult.success && userResult.data) {
-			console.log(`🔹 Found user alex:`, JSON.stringify(userResult.data, null, 2));
+			console.log(
+				`🔹 Found user alex:`,
+				JSON.stringify(userResult.data, null, 2),
+			);
 		} else {
 			console.log("🔸 User alex not found");
 		}
-
 	} catch (error) {
 		console.error("🔸 Error:", error);
 	} finally {

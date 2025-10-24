@@ -24,20 +24,29 @@ async function testUserRelationshipNetwork(userId: string): Promise<void> {
 
 		// First, find which guild(s) this user belongs to
 		console.log(`\n🔹 Finding guilds for user ${userId}...`);
-		const guildQuery = await db.query(`
+		const guildQuery = await db.query(
+			`
 			SELECT DISTINCT guild_id, username, display_name 
 			FROM members 
 			WHERE user_id = $1 AND active = true
-		`, [userId]);
+		`,
+			[userId],
+		);
 
-		if (!guildQuery.success || !guildQuery.data || guildQuery.data.length === 0) {
+		if (
+			!guildQuery.success ||
+			!guildQuery.data ||
+			guildQuery.data.length === 0
+		) {
 			console.log(`🔸 User ${userId} not found in any guilds`);
 			return;
 		}
 
 		console.log(`✅ Found user in ${guildQuery.data.length} guild(s):`);
 		guildQuery.data.forEach((member: any) => {
-			console.log(`   - Guild: ${member.guild_id} (${member.display_name || member.username})`);
+			console.log(
+				`   - Guild: ${member.guild_id} (${member.display_name || member.username})`,
+			);
 		});
 
 		// Test with the first guild
@@ -47,40 +56,54 @@ async function testUserRelationshipNetwork(userId: string): Promise<void> {
 		// Get guild member count
 		const memberCountResult = await db.getMembersByGuild(guildId);
 		if (memberCountResult.success) {
-			console.log(`🔹 Guild has ${memberCountResult.data?.length || 0} members`);
+			console.log(
+				`🔹 Guild has ${memberCountResult.data?.length || 0} members`,
+			);
 		}
 
 		// Build relationship network
 		console.log(`\n🔹 Building relationship network...`);
 		const startTime = Date.now();
-		
-		const relationships = await relationshipManager.buildRelationshipNetwork(userId, guildId);
-		
+
+		const relationships = await relationshipManager.buildRelationshipNetwork(
+			userId,
+			guildId,
+		);
+
 		const duration = Date.now() - startTime;
 		console.log(`✅ Relationship network built in ${duration}ms`);
 
 		// Display results
 		console.log(`\n🔹 Relationship Network Results:`);
 		console.log(`   - Total relationships: ${relationships.length}`);
-		
+
 		if (relationships.length > 0) {
 			console.log(`\n🔹 Top 10 Relationships:`);
 			relationships.slice(0, 10).forEach((rel, index) => {
-				const interactionInfo = rel.interaction_count ? ` (${rel.interaction_count} interactions)` : "";
-				const lastInteraction = rel.last_interaction 
-					? ` - Last: ${rel.last_interaction.toISOString().split('T')[0]}` 
+				const interactionInfo = rel.interaction_count
+					? ` (${rel.interaction_count} interactions)`
 					: "";
-				
-				console.log(`   ${index + 1}. ${rel.user_id}: ${rel.affinity_score}${interactionInfo}${lastInteraction}`);
+				const lastInteraction = rel.last_interaction
+					? ` - Last: ${rel.last_interaction.toISOString().split("T")[0]}`
+					: "";
+
+				console.log(
+					`   ${index + 1}. ${rel.user_id}: ${rel.affinity_score}${interactionInfo}${lastInteraction}`,
+				);
 			});
 		} else {
-			console.log(`   - No relationships found (user may not have interacted with others)`);
+			console.log(
+				`   - No relationships found (user may not have interacted with others)`,
+			);
 		}
 
 		// Update the database with the computed relationships
 		console.log(`\n🔹 Updating database with computed relationships...`);
-		const updateResult = await relationshipManager.updateMemberRelationships(userId, guildId);
-		
+		const updateResult = await relationshipManager.updateMemberRelationships(
+			userId,
+			guildId,
+		);
+
 		if (updateResult.success) {
 			console.log(`✅ Successfully updated relationship network in database`);
 		} else {
@@ -89,17 +112,24 @@ async function testUserRelationshipNetwork(userId: string): Promise<void> {
 
 		// Test retrieving the relationships
 		console.log(`\n🔹 Testing retrieval of stored relationships...`);
-		const retrieveResult = await relationshipManager.getTopRelationships(userId, guildId, 5);
-		
+		const retrieveResult = await relationshipManager.getTopRelationships(
+			userId,
+			guildId,
+			5,
+		);
+
 		if (retrieveResult.success && retrieveResult.data) {
-			console.log(`✅ Successfully retrieved ${retrieveResult.data.length} relationships from database`);
+			console.log(
+				`✅ Successfully retrieved ${retrieveResult.data.length} relationships from database`,
+			);
 		} else {
-			console.log(`🔸 Failed to retrieve relationships: ${retrieveResult.error}`);
+			console.log(
+				`🔸 Failed to retrieve relationships: ${retrieveResult.error}`,
+			);
 		}
 
 		console.log(`\n🔹 Test completed successfully!`);
 		console.log("=".repeat(60));
-
 	} catch (error) {
 		console.error("🔸 Test failed:", error);
 		throw error;

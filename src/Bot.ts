@@ -111,7 +111,6 @@ export class Bot {
 		}
 	}
 
-
 	async shutdown(): Promise<void> {
 		// Silent shutdown - no console output to prevent lingering logs
 

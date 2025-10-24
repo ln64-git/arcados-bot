@@ -27,11 +27,15 @@ async function migratePostgreSQLSchema(): Promise<void> {
 			AND column_name = 'relationship_network'
 		`);
 
-		if (checkColumn.success && checkColumn.data && checkColumn.data.length > 0) {
+		if (
+			checkColumn.success &&
+			checkColumn.data &&
+			checkColumn.data.length > 0
+		) {
 			console.log("✅ relationship_network column already exists");
 		} else {
 			console.log("🔹 Adding relationship_network column to members table...");
-			
+
 			const addColumn = await db.query(`
 				ALTER TABLE members 
 				ADD COLUMN relationship_network JSONB DEFAULT '[]'
@@ -40,7 +44,9 @@ async function migratePostgreSQLSchema(): Promise<void> {
 			if (addColumn.success) {
 				console.log("✅ Successfully added relationship_network column");
 			} else {
-				console.log(`🔸 Failed to add relationship_network column: ${addColumn.error}`);
+				console.log(
+					`🔸 Failed to add relationship_network column: ${addColumn.error}`,
+				);
 			}
 		}
 
@@ -52,11 +58,15 @@ async function migratePostgreSQLSchema(): Promise<void> {
 			AND column_name = 'summary'
 		`);
 
-		if (checkSummary.success && checkSummary.data && checkSummary.data.length > 0) {
+		if (
+			checkSummary.success &&
+			checkSummary.data &&
+			checkSummary.data.length > 0
+		) {
 			console.log("✅ summary column already exists");
 		} else {
 			console.log("🔹 Adding summary column to members table...");
-			
+
 			const addSummary = await db.query(`
 				ALTER TABLE members 
 				ADD COLUMN summary TEXT
@@ -77,11 +87,15 @@ async function migratePostgreSQLSchema(): Promise<void> {
 			AND column_name = 'keywords'
 		`);
 
-		if (checkKeywords.success && checkKeywords.data && checkKeywords.data.length > 0) {
+		if (
+			checkKeywords.success &&
+			checkKeywords.data &&
+			checkKeywords.data.length > 0
+		) {
 			console.log("✅ keywords column already exists");
 		} else {
 			console.log("🔹 Adding keywords column to members table...");
-			
+
 			const addKeywords = await db.query(`
 				ALTER TABLE members 
 				ADD COLUMN keywords TEXT[]
@@ -102,11 +116,15 @@ async function migratePostgreSQLSchema(): Promise<void> {
 			AND column_name = 'emojis'
 		`);
 
-		if (checkEmojis.success && checkEmojis.data && checkEmojis.data.length > 0) {
+		if (
+			checkEmojis.success &&
+			checkEmojis.data &&
+			checkEmojis.data.length > 0
+		) {
 			console.log("✅ emojis column already exists");
 		} else {
 			console.log("🔹 Adding emojis column to members table...");
-			
+
 			const addEmojis = await db.query(`
 				ALTER TABLE members 
 				ADD COLUMN emojis TEXT[]
@@ -131,7 +149,7 @@ async function migratePostgreSQLSchema(): Promise<void> {
 			console.log("✅ notes column already exists");
 		} else {
 			console.log("🔹 Adding notes column to members table...");
-			
+
 			const addNotes = await db.query(`
 				ALTER TABLE members 
 				ADD COLUMN notes TEXT[]
@@ -157,14 +175,17 @@ async function migratePostgreSQLSchema(): Promise<void> {
 		if (verifySchema.success && verifySchema.data) {
 			console.log("✅ Schema verification successful:");
 			verifySchema.data.forEach((column: any) => {
-				console.log(`   - ${column.column_name}: ${column.data_type} (nullable: ${column.is_nullable})`);
+				console.log(
+					`   - ${column.column_name}: ${column.data_type} (nullable: ${column.is_nullable})`,
+				);
 			});
 		}
 
 		console.log("\n🔹 Migration completed successfully!");
 		console.log("=".repeat(60));
-		console.log("🔹 Your PostgreSQL schema is now ready for relationship networks");
-
+		console.log(
+			"🔹 Your PostgreSQL schema is now ready for relationship networks",
+		);
 	} catch (error) {
 		console.error("🔸 Migration failed:", error);
 		throw error;

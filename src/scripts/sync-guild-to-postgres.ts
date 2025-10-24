@@ -10,7 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load .env from project root
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
 async function main() {
 	console.log("🔹 Starting Guild Sync to PostgreSQL...");
@@ -36,20 +36,21 @@ async function main() {
 
 	console.log("🔹 Environment variables loaded successfully");
 	console.log(`🔹 Target Guild ID: ${process.env.GUILD_ID}`);
-	console.log(`🔹 PostgreSQL URL: ${process.env.POSTGRES_URL.substring(0, 20)}...`);
+	console.log(
+		`🔹 PostgreSQL URL: ${process.env.POSTGRES_URL.substring(0, 20)}...`,
+	);
 
 	const syncManager = new GuildSyncManager();
-	
+
 	try {
 		await syncManager.start();
-		
+
 		// Get and display guild statistics
 		console.log("\n🔹 Fetching guild statistics...");
 		await syncManager.getGuildStats();
-		
+
 		console.log("\n✅ Guild sync completed successfully!");
 		console.log("🔹 Your guild data has been synced to PostgreSQL");
-		
 	} catch (error) {
 		console.error("🔸 Error during guild sync:", error);
 		process.exit(1);
@@ -57,13 +58,13 @@ async function main() {
 }
 
 // Handle graceful shutdown
-process.on('SIGINT', () => {
-	console.log('\n🔹 Received SIGINT, shutting down gracefully...');
+process.on("SIGINT", () => {
+	console.log("\n🔹 Received SIGINT, shutting down gracefully...");
 	process.exit(0);
 });
 
-process.on('SIGTERM', () => {
-	console.log('\n🔹 Received SIGTERM, shutting down gracefully...');
+process.on("SIGTERM", () => {
+	console.log("\n🔹 Received SIGTERM, shutting down gracefully...");
 	process.exit(0);
 });
 

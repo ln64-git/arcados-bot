@@ -33,12 +33,7 @@
 		"watch-users": "npx tsx src/scripts/watch-user-changes.ts",
 		"watch-db": "npx tsx src/scripts/watch-database-changes.ts"
 	},
-	"keywords": [
-		"discord",
-		"bot",
-		"template",
-		"typescript"
-	],
+	"keywords": ["discord", "bot", "template", "typescript"],
 	"author": "",
 	"license": "MIT",
 	"devDependencies": {
@@ -78,11 +73,7 @@
 		},
 		"files": {
 			"ignoreUnknown": false,
-			"ignore": [
-				"node_modules",
-				"dist",
-				"*.min.js"
-			]
+			"ignore": ["node_modules", "dist", "*.min.js"]
 		},
 		"formatter": {
 			"enabled": true,
