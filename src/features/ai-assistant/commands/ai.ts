@@ -5,7 +5,7 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { config } from "../../../config";
-import { type AIResponse, GrokManager } from "../GrokManager";
+import { AIManager } from "../AIManager";
 import type { Command } from "../../../types";
 
 interface DiscordField {
@@ -107,20 +107,20 @@ function parseContentForDiscord(content: string): StructuredContent {
   return result;
 }
 
-let grokManager: GrokManager | null = null;
+let aiManager: AIManager | null = null;
 
-// Initialize GrokManager lazily
-function getGrokManager(): GrokManager {
-  if (!grokManager) {
+// Initialize AIManager lazily
+function getAIManager(): AIManager {
+  if (!aiManager) {
     try {
-      grokManager = new GrokManager();
+      aiManager = AIManager.getInstance();
     } catch (error) {
       throw new Error(
-        "🔸 AI service is not configured. Please add your Grok API key to the .env file:\n`GROK_API_KEY=your_api_key_here`\n\nGet your API key from: https://console.x.ai/"
+        "🔸 AI service is not configured. Please add your API keys to the .env file:\n`GROK_API_KEY=your_api_key_here`\n\nGet your API key from: https://console.x.ai/"
       );
     }
   }
-  return grokManager;
+  return aiManager;
 }
 
 export const aiCommand: Command = {
@@ -159,11 +159,11 @@ export const aiCommand: Command = {
       return;
     }
 
-    // Check if Grok API key is configured
-    if (!config.grokApiKey) {
+    // Check if any AI API key is configured
+    if (!config.grokApiKey && !config.openaiApiKey && !config.geminiApiKey) {
       await interaction.reply({
         content:
-          "🔸 AI service is not configured. Please add your Grok API key to the .env file:\n`GROK_API_KEY=your_api_key_here`\n\nGet your API key from: https://console.x.ai/",
+          "🔸 AI service is not configured. Please add at least one API key to the .env file:\n`GROK_API_KEY=your_api_key_here`\n`OPENAI_API_KEY=your_api_key_here`\n`GEMINI_API_KEY=your_api_key_here`",
         ephemeral: true,
       });
       return;
@@ -176,46 +176,53 @@ export const aiCommand: Command = {
     await interaction.deferReply();
 
     try {
-      const manager = getGrokManager();
+      const manager = getAIManager();
       const userId = interaction.user.id;
 
-      let response: AIResponse;
+      let response: any;
       let title: string;
       let color: number;
+      let provider: string;
 
       switch (mode) {
         case "ask": {
-          response = await manager.askQuestion(prompt, userId);
+          provider = "grok"; // Can be changed to "openai" or "gemini" later
+          response = await manager.generateText(prompt, userId, provider);
           title = `Ask: *${prompt}*`;
           color = 0x3c3d7d; // Same as starboard
           break;
         }
         case "imagine": {
-          response = await manager.generateImage(prompt, userId);
+          provider = "grok"; // Can be changed to "openai" later
+          response = await manager.generateImage(prompt, userId, provider);
           title = `Imagine: *${prompt}*`;
           color = 0x3c3d7d; // Same as starboard
           break;
         }
         case "fact-check": {
-          response = await manager.factCheck(prompt, userId);
+          provider = "grok"; // Can be changed to "openai" or "gemini" later
+          response = await manager.factCheck(prompt, userId, provider);
           title = `Fact Check: *${prompt}*`;
           color = 0x3c3d7d; // Same as starboard
           break;
         }
         case "source": {
-          response = await manager.citeSources(prompt, userId);
+          provider = "grok"; // Can be changed to "openai" or "gemini" later
+          response = await manager.citeSources(prompt, userId, provider);
           title = `Source: *${prompt}*`;
           color = 0x3c3d7d; // Same as starboard
           break;
         }
         case "define": {
-          response = await manager.defineTerm(prompt, userId);
+          provider = "grok"; // Can be changed to "openai" or "gemini" later
+          response = await manager.defineTerm(prompt, userId, provider);
           title = `Define: *${prompt}*`;
           color = 0x3c3d7d; // Same as starboard
           break;
         }
         case "context": {
-          response = await manager.provideContext(prompt, userId);
+          provider = "grok"; // Can be changed to "openai" or "gemini" later
+          response = await manager.provideContext(prompt, userId, provider);
           title = `Context: *${prompt}*`;
           color = 0x3c3d7d; // Same as starboard
           break;
@@ -236,17 +243,14 @@ export const aiCommand: Command = {
       }
 
       // Get rate limit info for footer
-      const rateLimitInfo = manager.getRateLimitInfo(userId);
+      const rateLimitInfo = manager.getRateLimitInfo(userId, provider);
       const resetTime =
         rateLimitInfo.resetTime > 0
           ? new Date(rateLimitInfo.resetTime).toLocaleTimeString()
           : "Now";
 
-      // Determine model name for footer
-      let modelName = "Grok-3";
-      if (mode === "imagine") {
-        modelName = "Grok-2-Image";
-      }
+      // Get model name for footer
+      const modelName = manager.getProviderModelName(provider);
 
       const embed = new EmbedBuilder()
         .setTitle(title)
