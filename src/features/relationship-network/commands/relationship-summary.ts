@@ -68,6 +68,7 @@ export const relationshipSummaryCommand: Command = {
 					rn.keywords as relationship_keywords,
 					rn.emojis as relationship_emojis,
 					rn.notes as relationship_notes,
+					rn.conversations as relationship_conversations,
 					u1.display_name as user1_display_name,
 					u1.username as user1_username,
 					u2.display_name as user2_display_name,
@@ -86,7 +87,8 @@ export const relationshipSummaryCommand: Command = {
 						rel->>'summary' as summary,
 						rel->'keywords' as keywords,
 						rel->'emojis' as emojis,
-						rel->'notes' as notes
+						rel->'notes' as notes,
+						rel->'conversations' as conversations
 				) rn
 				LEFT JOIN members u2 ON u2.user_id = rn.target_user_id AND u2.guild_id = u1.guild_id
 				WHERE u1.user_id = $1 AND u1.guild_id = $2 AND rn.target_user_id = $3
@@ -172,6 +174,122 @@ export const relationshipSummaryCommand: Command = {
         value: `Last interaction: ${lastInteractionText}`,
         inline: false,
       });
+
+      // Add enhanced affinity breakdown if conversations are present
+      if (
+        relationship.relationship_conversations &&
+        relationship.relationship_conversations.length > 0
+      ) {
+        const conversations = relationship.relationship_conversations;
+        const totalConversations = conversations.length;
+        const totalMessages = conversations.reduce(
+          (sum: number, conv: any) => sum + (conv.message_count || 0),
+          0
+        );
+
+        // Count mentions and name interactions
+        let mentionCount = 0;
+        let nameInteractionCount = 0;
+        conversations.forEach((conv: any) => {
+          if (
+            conv.interaction_types &&
+            conv.interaction_types.includes("mention")
+          ) {
+            mentionCount++;
+          }
+          if (conv.has_name_usage) {
+            nameInteractionCount++;
+          }
+        });
+
+        // Calculate points (updated to match NetworkManager)
+        const conversationPoints = totalConversations * 1;
+        const messagePoints = Math.round(totalMessages * 0.05 * 10) / 10;
+        const interactionBonuses = nameInteractionCount * 1 + mentionCount * 1;
+        const totalScore =
+          conversationPoints + messagePoints + interactionBonuses;
+
+        let affinityText = `**Total Score:** ${totalScore.toFixed(
+          1
+        )} points\n\n`;
+        affinityText += `Conversations: ${totalConversations} (${conversationPoints} pts)\n`;
+        affinityText += `Messages: ${totalMessages} (${messagePoints} pts)\n`;
+        if (interactionBonuses > 0) {
+          affinityText += `\n**Interaction Bonuses:** ${interactionBonuses} pts\n`;
+          if (mentionCount > 0) {
+            affinityText += `• Mentions: ${mentionCount} (+${
+              mentionCount * 1
+            } pts)\n`;
+          }
+          if (nameInteractionCount > 0) {
+            affinityText += `• Name interactions: ${nameInteractionCount} (+${
+              nameInteractionCount * 1
+            } pts)`;
+          }
+        }
+
+        embed.addFields({
+          name: "Affinity Score Breakdown",
+          value: affinityText,
+          inline: false,
+        });
+      }
+
+      // Add conversation info
+      if (
+        relationship.relationship_conversations &&
+        relationship.relationship_conversations.length > 0
+      ) {
+        const conversations = relationship.relationship_conversations;
+        const totalConversations = conversations.length;
+        const totalMessages = conversations.reduce(
+          (sum: number, conv: any) => sum + (conv.message_count || 0),
+          0
+        );
+
+        // Get most recent conversation
+        const mostRecentConv = conversations[conversations.length - 1];
+        const lastConversationTime = new Date(mostRecentConv.end_time);
+        const lastConversationText = `<t:${Math.floor(
+          lastConversationTime.getTime() / 1000
+        )}:R>`;
+
+        let conversationText = `Total conversations: ${totalConversations}\n`;
+        conversationText += `Total messages exchanged: ${totalMessages}\n`;
+        conversationText += `Last conversation: ${lastConversationText}`;
+
+        // Add recent conversation details (last 3)
+        if (conversations.length > 0) {
+          conversationText += `\n\n**Recent Conversations:**`;
+          const recentConvs = conversations.slice(-3).reverse();
+          recentConvs.forEach((conv: any, index: number) => {
+            const convStart = new Date(conv.start_time);
+            const convEnd = new Date(conv.end_time);
+            const duration = Math.round(
+              (convEnd.getTime() - convStart.getTime()) / (1000 * 60)
+            );
+
+            conversationText += `\n${index + 1}. ${
+              conv.message_count
+            } messages, ${duration}min duration`;
+            if (conv.interaction_types && conv.interaction_types.length > 0) {
+              conversationText += ` (${conv.interaction_types.join(", ")})`;
+            }
+          });
+        }
+
+        embed.addFields({
+          name: "Conversations",
+          value: conversationText,
+          inline: false,
+        });
+      } else {
+        embed.addFields({
+          name: "Conversations",
+          value: "No conversations detected",
+          inline: false,
+        });
+      }
 
       await interaction.editReply({ embeds: [embed] });
       await db.disconnect();

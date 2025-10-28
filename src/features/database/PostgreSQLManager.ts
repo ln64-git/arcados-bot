@@ -1,5 +1,6 @@
 import { Pool, PoolClient, QueryResult } from "pg";
 import { config } from "../../config/index.js";
+import type { ConversationEntry } from "../relationship-network/types";
 
 export interface DatabaseResult<T> {
   success: boolean;
@@ -89,6 +90,12 @@ export interface RelationshipEntry {
   keywords?: string[];
   emojis?: string[];
   notes?: string[];
+  conversations?: ConversationEntry[];
+  // Additional fields for display and analysis
+  display_name?: string;
+  username?: string;
+  raw_points?: number;
+  total_messages?: number;
 }
 
 export interface RoleData {
@@ -755,13 +762,46 @@ export class PostgreSQLManager {
 
     const client = await this.pool!.connect();
     try {
+      // First check if member exists
+      const checkResult = await client.query(
+        `SELECT id FROM members WHERE id = $1`,
+        [memberId]
+      );
+
+      if (checkResult.rows.length === 0) {
+        console.error(`🔸 Member not found with id: ${memberId}`);
+        return {
+          success: false,
+          error: `Member not found: ${memberId}`,
+        };
+      }
+
+      console.log(
+        `🔹 Updating member ${memberId} with ${relationships.length} relationships`
+      );
+
       const query = `
 				UPDATE members 
 				SET relationship_network = $1, updated_at = NOW()
 				WHERE id = $2
 			`;
 
-      await client.query(query, [JSON.stringify(relationships), memberId]);
+      const result = await client.query(query, [
+        JSON.stringify(relationships),
+        memberId,
+      ]);
+      console.log(
+        `✅ Update query executed, rows affected: ${result.rowCount}`
+      );
+
+      if (result.rowCount === 0) {
+        console.error(`🔸 Update affected 0 rows for id: ${memberId}`);
+        return {
+          success: false,
+          error: "Update affected 0 rows",
+        };
+      }
+
       return { success: true };
     } catch (error) {
       console.error("🔸 Failed to update member relationship network:", error);
@@ -854,6 +894,108 @@ export class PostgreSQLManager {
       return { success: true, data: interactions };
     } catch (error) {
       console.error("🔸 Failed to get message interactions:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get all messages between two users for conversation detection (excluding bot messages)
+   */
+  async getMessagesBetweenUsers(
+    user1Id: string,
+    user2Id: string,
+    guildId: string
+  ): Promise<DatabaseResult<any[]>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        SELECT 
+          m.id,
+          m.channel_id,
+          m.author_id,
+          m.content,
+          m.created_at,
+          m.edited_at,
+          m.attachments,
+          m.embeds
+        FROM messages m
+        JOIN members mem ON m.author_id = mem.user_id AND m.guild_id = mem.guild_id
+        WHERE m.guild_id = $1 
+          AND m.author_id IN ($2, $3)
+          AND m.active = true
+          AND mem.bot = false
+        ORDER BY m.created_at ASC
+      `;
+
+      const result = await client.query(query, [guildId, user1Id, user2Id]);
+
+      return { success: true, data: result.rows };
+    } catch (error) {
+      console.error("🔸 Failed to get messages between users:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get all names (current + historical) for a user in a guild
+   */
+  async getUserNames(
+    userId: string,
+    guildId: string
+  ): Promise<DatabaseResult<string[]>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        SELECT DISTINCT
+          username,
+          display_name,
+          global_name,
+          nick
+        FROM members 
+        WHERE user_id = $1 AND guild_id = $2 AND active = true
+        UNION
+        SELECT DISTINCT
+          username,
+          display_name,
+          global_name,
+          nick
+        FROM members 
+        WHERE user_id = $1 AND guild_id = $2 AND active = false
+        ORDER BY username
+      `;
+
+      const result = await client.query(query, [userId, guildId]);
+
+      // Collect all unique names
+      const names = new Set<string>();
+      result.rows.forEach((row) => {
+        if (row.username) names.add(row.username);
+        if (row.display_name) names.add(row.display_name);
+        if (row.global_name) names.add(row.global_name);
+        if (row.nick) names.add(row.nick);
+      });
+
+      return { success: true, data: Array.from(names) };
+    } catch (error) {
+      console.error("🔸 Failed to get user names:", error);
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",

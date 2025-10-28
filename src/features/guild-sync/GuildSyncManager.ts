@@ -159,9 +159,10 @@ export class GuildSyncManager {
     const channelData: ChannelData = {
       id: channel.id,
       guild_id: guildId,
-      name: channel.name || "",
+      name: "name" in channel ? channel.name || "" : "",
       type: channel.type,
-      position: channel.position || undefined,
+      position:
+        "position" in channel ? channel.position || undefined : undefined,
       topic: "topic" in channel ? channel.topic || undefined : undefined,
       nsfw: "nsfw" in channel ? channel.nsfw : undefined,
       parent_id:
@@ -172,7 +173,9 @@ export class GuildSyncManager {
     const result = await this.db.upsertChannel(channelData);
     if (!result.success) {
       console.error(
-        `🔸 Failed to sync channel ${channel.name}: ${result.error}`
+        `🔸 Failed to sync channel ${
+          "name" in channel ? channel.name : channel.id
+        }: ${result.error}`
       );
     }
   }
@@ -242,6 +245,34 @@ export class GuildSyncManager {
       await member.fetch();
     }
 
+    // Also fetch the user data directly to get accurate profile information
+    let user = member.user;
+    try {
+      user = await this.client.users.fetch(member.id);
+    } catch (error) {
+      console.warn(
+        `🔸 Could not fetch user ${member.id} directly, using member data: ${error}`
+      );
+    }
+
+    // Check if we got fallback data and try Discord REST API as fallback
+    if (this.isFallbackUserData(user)) {
+      console.log(
+        `🔸 User ${member.id} has fallback data, trying Discord REST API...`
+      );
+      try {
+        const restUser = await this.fetchUserFromRestAPI(member.id);
+        if (restUser) {
+          user = restUser;
+          console.log(`✅ Got real user data from REST API for ${member.id}`);
+        }
+      } catch (error) {
+        console.warn(
+          `🔸 Discord REST API fallback failed for ${member.id}: ${error}`
+        );
+      }
+    }
+
     // Extract presence data if available
     let status: string | undefined;
     let activities: string | undefined;
@@ -263,21 +294,21 @@ export class GuildSyncManager {
       guild_id: guildId,
       user_id: member.id,
 
-      // User profile data (from member.user)
-      username: member.user.username,
-      display_name: member.displayName,
-      global_name: member.user.globalName || undefined,
-      avatar: member.user.avatar || undefined,
-      avatar_decoration: member.user.avatarDecoration || undefined,
-      banner: member.user.banner || undefined,
-      accent_color: member.user.accentColor || undefined,
-      discriminator: member.user.discriminator,
-      bio: member.user.bio || undefined,
-      flags: member.user.flags || undefined,
-      premium_type: member.user.premiumType || undefined,
-      public_flags: member.user.publicFlags || undefined,
-      bot: member.user.bot,
-      system: member.user.system || undefined,
+      // User profile data (from fetched user data for accuracy)
+      username: user.username,
+      display_name: member.displayName || user.globalName || user.username,
+      global_name: user.globalName || undefined,
+      avatar: user.avatar || undefined,
+      avatar_decoration: user.avatarDecoration || undefined,
+      banner: user.banner || undefined,
+      accent_color: user.accentColor || undefined,
+      discriminator: user.discriminator,
+      bio: undefined, // user.bio is not available in Discord.js
+      flags: undefined, // user.flags is not available in Discord.js
+      premium_type: undefined, // user.premiumType is not available in Discord.js
+      public_flags: undefined, // user.publicFlags is not available in Discord.js
+      bot: user.bot,
+      system: user.system || undefined,
 
       // Guild-specific member data
       nick: member.nickname || undefined,
@@ -411,6 +442,77 @@ export class GuildSyncManager {
     const result = await this.db.upsertMessage(messageData);
     if (!result.success) {
       console.error(`🔸 Failed to sync message ${message.id}: ${result.error}`);
+    }
+  }
+
+  /**
+   * Check if user data appears to be Discord fallback data
+   */
+  private isFallbackUserData(user: any): boolean {
+    // Check for common Discord fallback patterns
+    const username = user.username || "";
+    const discriminator = user.discriminator || "";
+
+    // Pattern 1: username starts with "user_" followed by user ID
+    if (username.startsWith("user_") && username.length > 20) {
+      return true;
+    }
+
+    // Pattern 2: discriminator is "0000" (common fallback)
+    if (discriminator === "0000") {
+      return true;
+    }
+
+    // Pattern 3: username matches user ID pattern
+    if (username.match(/^\d{17,19}$/)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Fetch user data directly from Discord REST API
+   */
+  private async fetchUserFromRestAPI(userId: string): Promise<any> {
+    try {
+      const response = await fetch(
+        `https://discord.com/api/v10/users/${userId}`,
+        {
+          headers: {
+            Authorization: `Bot ${config.botToken}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      if (response.ok) {
+        const userData = await response.json();
+
+        // Convert REST API response to Discord.js User-like object
+        return {
+          id: userData.id,
+          username: userData.username,
+          globalName: userData.global_name,
+          discriminator: userData.discriminator,
+          avatar: userData.avatar,
+          bot: userData.bot || false,
+          system: userData.system || false,
+          createdAt: new Date(userData.created_at),
+          // Add other properties that might be needed
+          displayName: userData.global_name || userData.username,
+        };
+      } else {
+        console.warn(
+          `🔸 Discord REST API returned ${response.status} for user ${userId}`
+        );
+        return null;
+      }
+    } catch (error) {
+      console.warn(
+        `🔸 Discord REST API request failed for user ${userId}: ${error}`
+      );
+      return null;
     }
   }
 
