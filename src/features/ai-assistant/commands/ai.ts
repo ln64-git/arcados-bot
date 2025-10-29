@@ -7,6 +7,7 @@ import {
 import { config } from "../../../config";
 import { AIManager } from "../AIManager";
 import type { Command } from "../../../types";
+import { startSession } from "../ChatSessionManager";
 
 interface DiscordField {
   name: string;
@@ -138,14 +139,22 @@ export const aiCommand: Command = {
           { name: "Fact Check", value: "fact-check" },
           { name: "Source", value: "source" },
           { name: "Define", value: "define" },
-          { name: "Context", value: "context" }
+          { name: "Context", value: "context" },
+          { name: "Chat", value: "chat" }
         )
     )
     .addStringOption((option) =>
       option
         .setName("prompt")
-        .setDescription("Your prompt for the AI")
+        .setDescription("Your prompt (or opening message for chat)")
         .setRequired(true)
+        .setMaxLength(500)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("persona")
+        .setDescription("Optional persona or style for chat mode")
+        .setRequired(false)
         .setMaxLength(500)
     ),
 
@@ -171,6 +180,7 @@ export const aiCommand: Command = {
 
     const mode = interaction.options.getString("mode", true);
     const prompt = interaction.options.getString("prompt", true);
+    const persona = interaction.options.getString("persona") || undefined;
 
     // Defer reply since AI requests can take time
     await interaction.deferReply();
@@ -227,6 +237,29 @@ export const aiCommand: Command = {
           color = 0x3c3d7d; // Same as starboard
           break;
         }
+        case "chat": {
+          provider = "grok";
+
+          // Short, conversational system prompt layer
+          const chatStyle =
+            "You are a friendly, concise Discord chat companion. Keep replies brief (1-2 sentences), natural, and conversational. Avoid long lists or formal tone.";
+
+          // Use existing pipeline for now (no native history); persona is treated as part of method prompt
+          const methodPrompt = persona
+            ? `${chatStyle}\nPersona: ${persona}`
+            : chatStyle;
+
+          // Use public API for stability
+          response = await manager.generateText(
+            `${methodPrompt}\n${prompt}`,
+            userId,
+            provider
+          );
+
+          title = `Chat: *${prompt}*`;
+          color = 0x3c3d7d;
+          break;
+        }
         default: {
           await interaction.editReply({
             content: "🔸 Invalid AI mode specified!",
@@ -235,9 +268,12 @@ export const aiCommand: Command = {
         }
       }
 
-      if (!response.success) {
+      if (!response || response.success !== true) {
         await interaction.editReply({
-          content: `🔸 ${response.error}`,
+          content: `🔸 ${
+            response?.error ||
+            "An error occurred while processing your AI request."
+          }`,
         });
         return;
       }
@@ -264,7 +300,9 @@ export const aiCommand: Command = {
 
       // Parse and structure content for Discord embeds
       if (mode !== "imagine") {
-        const structuredContent = parseContentForDiscord(response.content);
+        const structuredContent = parseContentForDiscord(
+          response.content || ""
+        );
 
         if (structuredContent.description) {
           embed.setDescription(structuredContent.description);
@@ -300,7 +338,21 @@ export const aiCommand: Command = {
         replyOptions.files = files;
       }
 
-      await interaction.editReply(replyOptions);
+      const reply = await interaction.editReply(replyOptions);
+
+      // If this is a chat, start a tracked session for replies
+      if (mode === "chat") {
+        try {
+          const repliedMessage = await interaction.fetchReply();
+          startSession({
+            initialBotMessage: repliedMessage,
+            userId: interaction.user.id,
+            persona,
+            initialUserMessage: prompt,
+            initialAssistantMessage: response.content || "",
+          });
+        } catch {}
+      }
     } catch (error) {
       console.error("🔸 Error in AI command:", error);
       await interaction.editReply({

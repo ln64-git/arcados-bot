@@ -10,6 +10,13 @@ import { config } from "./config";
 import { PostgreSQLManager } from "./features/database/PostgreSQLManager";
 import type { Command } from "./types";
 import { loadCommands } from "./utils/loadCommands";
+import { AIManager } from "./features/ai-assistant/AIManager";
+import {
+  getSessionByRepliedMessageId,
+  appendUserTurn,
+  appendAssistantTurnAndTrackMessage,
+  formatHistoryForPrompt,
+} from "./features/ai-assistant/ChatSessionManager";
 
 export class Bot {
   public client: Client;
@@ -86,6 +93,47 @@ export class Bot {
           // If sending the error message fails, just log it - don't try again
           console.error("🔸 Failed to send error message to interaction:", err);
         }
+      }
+    });
+
+    // Continue chat sessions when users reply to bot messages
+    this.client.on("messageCreate", async (message) => {
+      try {
+        // Ignore bot messages and messages without a reference
+        if (message.author.bot) return;
+        const refId = message.reference?.messageId;
+        if (!refId) return;
+
+        const found = getSessionByRepliedMessageId(refId);
+        if (!found) return;
+
+        const manager = AIManager.getInstance();
+        const provider = "grok"; // default provider for chat
+        const methodPrompt =
+          "You are a friendly, concise Discord chat companion. Keep replies brief (1-2 sentences), natural, and conversational. Avoid long lists or formal tone.";
+
+        // Append user's new turn
+        appendUserTurn(found.sessionId, message.content);
+        const compiledPrompt = formatHistoryForPrompt(found.sessionId);
+
+        // Use public API with chat style included in prompt
+        const fullPrompt = `${methodPrompt}\n\n${compiledPrompt}`;
+        const contentResponse = await manager.generateText(
+          fullPrompt,
+          message.author.id,
+          provider
+        );
+
+        if (!contentResponse?.success || !contentResponse.content) return;
+
+        const reply = await message.reply({ content: contentResponse.content });
+        appendAssistantTurnAndTrackMessage(
+          found.sessionId,
+          reply,
+          contentResponse.content
+        );
+      } catch (err) {
+        // Silent fail to avoid noisy channels
       }
     });
   }
