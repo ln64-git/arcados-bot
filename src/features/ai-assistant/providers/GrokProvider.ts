@@ -1,7 +1,14 @@
 import { ChatOpenAI } from "@langchain/openai";
+import {
+  HumanMessage,
+  SystemMessage,
+  AIMessage,
+  ToolMessage,
+} from "@langchain/core/messages";
 import axios from "axios";
 import { config } from "../../../config";
 import { BaseAIProvider } from "./BaseAIProvider";
+import type { ToolCall, ToolCallResponse } from "./AIProvider";
 
 export class GrokProvider extends BaseAIProvider {
   private model: ChatOpenAI;
@@ -44,6 +51,90 @@ export class GrokProvider extends BaseAIProvider {
     return typeof response.content === "string"
       ? response.content
       : String(response.content);
+  }
+
+  // Tool calling support using LangChain
+  override async callTextAPIWithTools(
+    systemPrompt: string,
+    userPrompt: string,
+    tools: Array<{ name: string; description: string; parameters: any }>,
+    toolResults?: ToolCallResponse[]
+  ): Promise<{ content: string; toolCalls?: ToolCall[] }> {
+    // Convert tools to LangChain format
+    const langchainTools = tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    }));
+
+    // Bind tools to model
+    const modelWithTools = this.model.bindTools(
+      langchainTools.map((tool) => ({
+        type: "function" as const,
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+        },
+      }))
+    );
+
+    // Build messages
+    const messages: Array<
+      SystemMessage | HumanMessage | AIMessage | ToolMessage
+    > = [new SystemMessage(systemPrompt)];
+
+    // Add tool results if provided (for multi-turn tool calling)
+    if (toolResults && toolResults.length > 0) {
+      messages.push(new HumanMessage(userPrompt));
+      for (const toolResult of toolResults) {
+        messages.push(
+          new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: toolResult.name,
+                id: toolResult.toolCallId,
+                args: {},
+              },
+            ],
+          })
+        );
+        messages.push(
+          new ToolMessage({
+            content: toolResult.content,
+            tool_call_id: toolResult.toolCallId,
+          })
+        );
+      }
+    } else {
+      messages.push(new HumanMessage(userPrompt));
+    }
+
+    // Invoke model
+    const response = await modelWithTools.invoke(messages);
+
+    // Extract tool calls if present
+    const toolCalls: ToolCall[] = [];
+    if (response.tool_calls && response.tool_calls.length > 0) {
+      for (const toolCall of response.tool_calls) {
+        toolCalls.push({
+          id: toolCall.id || "",
+          name: toolCall.name || "",
+          arguments: toolCall.args || {},
+        });
+      }
+    }
+
+    const content =
+      typeof response.content === "string"
+        ? response.content
+        : String(response.content || "");
+
+    return {
+      content,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+    };
   }
 
   // Only handle the actual API call - no AI logic here

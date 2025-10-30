@@ -16,7 +16,10 @@ import {
   appendUserTurn,
   appendAssistantTurnAndTrackMessage,
   formatHistoryForPrompt,
+  getSessionHistory,
+  startSession,
 } from "./features/ai-assistant/ChatSessionManager";
+import { resolveMentionsInText } from "./features/ai-assistant/utils/MentionResolver";
 
 export class Bot {
   public client: Client;
@@ -96,44 +99,169 @@ export class Bot {
       }
     });
 
-    // Continue chat sessions when users reply to bot messages
+    // Handle bot mentions and continue chat sessions when users reply to bot messages
     this.client.on("messageCreate", async (message) => {
       try {
-        // Ignore bot messages and messages without a reference
+        // Ignore bot messages
         if (message.author.bot) return;
+
+        if (!message.guildId) return;
+
+        const manager = AIManager.getInstance();
+        const provider = "grok"; // default provider for chat
+        const botUserId = this.client.user?.id;
+
+        if (!botUserId) {
+          console.log("🔸 Bot user ID not available yet");
+          return;
+        }
+
+        // Check if bot is mentioned (not a reply, just a mention in content)
+        // Check both mentions.users and the message content for mention patterns
+        const isBotMentionedInUsers = message.mentions.users.has(botUserId);
+        const mentionPattern = new RegExp(`<@!?${botUserId}>`);
+        const isBotMentionedInContent = mentionPattern.test(message.content);
+        const isBotMentioned =
+          (isBotMentionedInUsers || isBotMentionedInContent) &&
+          !message.reference;
+
+        // Debug logging (can be removed later)
+        if (isBotMentionedInUsers || isBotMentionedInContent) {
+          console.log(
+            `🔹 Bot mention detected: users=${isBotMentionedInUsers}, content=${isBotMentionedInContent}, isReply=${!!message.reference}, willHandle=${isBotMentioned}`
+          );
+        }
+
+        if (isBotMentioned) {
+          // Extract message content without the mention
+          let userContent = message.content
+            .replace(new RegExp(`<@!?${botUserId}>`, "g"), "")
+            .trim();
+
+          // If empty after removing mention, use a default prompt
+          if (!userContent) {
+            userContent = "Hello!";
+          }
+
+          // Map self-referential queries to an explicit self-mention so tools can resolve the user
+          const selfQueryRegex =
+            /(who\s+am\s+i\b|whoami\b|tell\s+me\s+about\s+me\b|what\s+do\s+you\s+know\s+about\s+me\b|who\s+is\s+me\b)/i;
+          if (selfQueryRegex.test(userContent)) {
+            userContent = `tell me about <@${message.author.id}>`;
+          }
+
+          // For AI, keep the raw content (with <@id> intact) so tools can extract IDs reliably
+          const rawForAI = userContent;
+
+          // Optionally resolve mentions for display/session context only
+          let resolvedContent = userContent;
+          if (this.postgresManager.isConnected()) {
+            try {
+              resolvedContent = await resolveMentionsInText(
+                userContent,
+                message.guildId,
+                this.postgresManager
+              );
+            } catch (err) {
+              console.error("🔸 Error resolving mentions:", err);
+            }
+          }
+
+          // Generate response with guild context
+          await manager.runWithGuildContext(message.guildId, async () => {
+            const contentResponse = await manager.generateText(
+              rawForAI,
+              message.author.id,
+              provider,
+              { persona: "casual", useDiscordFormatting: false }
+            );
+
+            if (!contentResponse?.success || !contentResponse.content) {
+              console.error(
+                "🔸 Failed to generate response for bot mention:",
+                contentResponse?.error
+              );
+              return;
+            }
+
+            // Send response and start new session
+            const reply = await message.reply({
+              content: contentResponse.content,
+            });
+
+            // Start a new chat session
+            startSession({
+              initialBotMessage: reply,
+              userId: message.author.id,
+              initialUserMessage: resolvedContent,
+              initialAssistantMessage: contentResponse.content,
+            });
+          });
+
+          return;
+        }
+
+        // Continue existing chat sessions when users reply to bot messages
         const refId = message.reference?.messageId;
         if (!refId) return;
 
         const found = getSessionByRepliedMessageId(refId);
         if (!found) return;
 
-        const manager = AIManager.getInstance();
-        const provider = "grok"; // default provider for chat
-        const methodPrompt =
-          "You are a friendly, concise Discord chat companion. Keep replies brief (1-2 sentences), natural, and conversational. Avoid long lists or formal tone.";
+        // Resolve mentions in user message
+        let resolvedContent = message.content;
+        // Map self-referential queries to an explicit self-mention so tools can resolve the user
+        const selfQueryRegex =
+          /(who\s+am\s+i\b|whoami\b|tell\s+me\s+about\s+me\b|what\s+do\s+you\s+know\s+about\s+me\b|who\s+is\s+me\b)/i;
+        if (selfQueryRegex.test(resolvedContent)) {
+          resolvedContent = `tell me about <@${message.author.id}>`;
+        }
+        const rawForAI = resolvedContent; // keep raw (with <@id>) for AI
+        if (this.postgresManager.isConnected()) {
+          try {
+            resolvedContent = await resolveMentionsInText(
+              message.content,
+              message.guildId,
+              this.postgresManager
+            );
+          } catch (err) {
+            console.error("🔸 Error resolving mentions in reply:", err);
+          }
+        }
 
-        // Append user's new turn
-        appendUserTurn(found.sessionId, message.content);
-        const compiledPrompt = formatHistoryForPrompt(found.sessionId);
+        // Get session history for context
+        const history = getSessionHistory(found.sessionId);
 
-        // Use public API with chat style included in prompt
-        const fullPrompt = `${methodPrompt}\n\n${compiledPrompt}`;
-        const contentResponse = await manager.generateText(
-          fullPrompt,
-          message.author.id,
-          provider
-        );
+        // Use tool-enabled generation with history context
+        await manager.runWithGuildContext(message.guildId, async () => {
+          const contentResponse = await manager.generateText(
+            rawForAI,
+            message.author.id,
+            provider,
+            {
+              persona: "casual",
+              history,
+              useDiscordFormatting: false,
+            }
+          );
 
-        if (!contentResponse?.success || !contentResponse.content) return;
+          if (!contentResponse?.success || !contentResponse.content) return;
 
-        const reply = await message.reply({ content: contentResponse.content });
-        appendAssistantTurnAndTrackMessage(
-          found.sessionId,
-          reply,
-          contentResponse.content
-        );
+          // Append user's turn to session (store resolved version)
+          appendUserTurn(found.sessionId, resolvedContent);
+
+          const reply = await message.reply({
+            content: contentResponse.content,
+          });
+          appendAssistantTurnAndTrackMessage(
+            found.sessionId,
+            reply,
+            contentResponse.content
+          );
+        });
       } catch (err) {
-        // Silent fail to avoid noisy channels
+        // Log errors but don't send to channel to avoid spam
+        console.error("🔸 Error in messageCreate handler:", err);
       }
     });
   }

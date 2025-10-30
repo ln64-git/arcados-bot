@@ -1,4 +1,9 @@
-import { AIProvider, RateLimitInfo } from "./AIProvider";
+import {
+  AIProvider,
+  RateLimitInfo,
+  type ToolCall,
+  type ToolCallResponse,
+} from "./AIProvider";
 
 export abstract class BaseAIProvider implements AIProvider {
   protected rateLimits: Map<string, { count: number; resetTime: number }> =
@@ -20,6 +25,14 @@ export abstract class BaseAIProvider implements AIProvider {
   abstract callImageAPI(
     prompt: string
   ): Promise<{ url: string; buffer: Buffer }>;
+
+  // Optional tool calling - subclasses should implement if they support it
+  callTextAPIWithTools?(
+    systemPrompt: string,
+    userPrompt: string,
+    tools: Array<{ name: string; description: string; parameters: any }>,
+    toolResults?: ToolCallResponse[]
+  ): Promise<{ content: string; toolCalls?: ToolCall[] }>;
 
   // Common rate limiting functionality
   protected checkRateLimit(userId: string): boolean {

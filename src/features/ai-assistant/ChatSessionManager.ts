@@ -122,3 +122,18 @@ export function formatHistoryForPrompt(sessionId: string): string {
   parts.push("Assistant (reply concisely in 1-2 sentences):");
   return parts.join("\n");
 }
+
+export function getSessionHistory(
+  sessionId: string
+): Array<{ role: string; content: string }> {
+  const session = sessions.get(sessionId);
+  if (!session) return [];
+  // Return recent history (excluding system messages for tool calling)
+  return session.history
+    .filter((t) => t.role !== "system")
+    .slice(-10)
+    .map((t) => ({
+      role: t.role === "user" ? "user" : "assistant",
+      content: t.content,
+    }));
+}

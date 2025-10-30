@@ -8,6 +8,8 @@ import { config } from "../../../config";
 import { AIManager } from "../AIManager";
 import type { Command } from "../../../types";
 import { startSession } from "../ChatSessionManager";
+import { resolveMentionsInText } from "../utils/MentionResolver";
+import { PostgreSQLManager } from "../../database/PostgreSQLManager";
 
 interface DiscordField {
   name: string;
@@ -110,6 +112,28 @@ function parseContentForDiscord(content: string): StructuredContent {
 
 let aiManager: AIManager | null = null;
 
+// Replace <@id> mentions with @DisplayName from the guild cache for user-facing titles
+function resolveMentionsForDisplay(
+  content: string,
+  interaction: ChatInputCommandInteraction
+): string {
+  const guild = interaction.guild;
+  if (!guild) return content;
+  return content.replace(/<@!?(\d+)>/g, (_match, userId) => {
+    const member = guild.members.cache.get(userId);
+    const name =
+      member?.displayName || member?.user?.globalName || member?.user?.username;
+    return name ? `@${name}` : `@user${String(userId).slice(-4)}`;
+  });
+}
+
+// Discord embed limits helper
+function clampText(input: string, max: number): string {
+  if (!input) return input;
+  if (input.length <= max) return input;
+  return input.slice(0, Math.max(0, max - 1)) + "…";
+}
+
 // Initialize AIManager lazily
 function getAIManager(): AIManager {
   if (!aiManager) {
@@ -140,7 +164,8 @@ export const aiCommand: Command = {
           { name: "Source", value: "source" },
           { name: "Define", value: "define" },
           { name: "Context", value: "context" },
-          { name: "Chat", value: "chat" }
+          { name: "Chat", value: "chat" },
+          { name: "Privacy & Ethics", value: "privacy" }
         )
     )
     .addStringOption((option) =>
@@ -148,7 +173,7 @@ export const aiCommand: Command = {
         .setName("prompt")
         .setDescription("Your prompt (or opening message for chat)")
         .setRequired(true)
-        .setMaxLength(500)
+        .setMaxLength(2000)
     )
     .addStringOption((option) =>
       option
@@ -240,24 +265,52 @@ export const aiCommand: Command = {
         case "chat": {
           provider = "grok";
 
-          // Short, conversational system prompt layer
-          const chatStyle =
-            "You are a friendly, concise Discord chat companion. Keep replies brief (1-2 sentences), natural, and conversational. Avoid long lists or formal tone.";
-
-          // Use existing pipeline for now (no native history); persona is treated as part of method prompt
-          const methodPrompt = persona
-            ? `${chatStyle}\nPersona: ${persona}`
-            : chatStyle;
-
-          // Use public API for stability
-          response = await manager.generateText(
-            `${methodPrompt}\n${prompt}`,
-            userId,
-            provider
+          // Resolve for display so the embed title shows @DisplayName, but keep raw mention for AI tools
+          const resolvedPromptForDisplay = resolveMentionsForDisplay(
+            prompt,
+            interaction
           );
 
-          title = `Chat: *${prompt}*`;
+          // Run with inferred guild context so tools are available automatically
+          if (interaction.guildId) {
+            await AIManager.getInstance().runWithGuildContext(
+              interaction.guildId,
+              async () => {
+                response = await manager.generateText(
+                  prompt,
+                  userId,
+                  provider,
+                  { persona }
+                );
+              }
+            );
+          } else {
+            response = await manager.generateText(prompt, userId, provider, {
+              persona,
+            });
+          }
+          title = `Chat: *${resolvedPromptForDisplay}*`;
           color = 0x3c3d7d;
+          break;
+        }
+        case "privacy": {
+          // Use a static, clearly formatted privacy & ethics statement
+          provider = "grok"; // keep provider for consistent footer formatting
+          const content = [
+            "Arcados-bot reads **public server messages** only.",
+            "",
+            "Sent to Grok AI via **TLS 1.3**.",
+            "",
+            "Stored with **AES-256** encryption. Not retained.",
+            "",
+            "No DMs. No private data. No external sharing.",
+            "",
+            "Compliant with Discord ToS.",
+          ].join("\n");
+
+          response = { success: true, content };
+          title = "AI Privacy";
+          color = 0x3c3d7d; // Same as starboard
           break;
         }
         default: {
@@ -288,8 +341,22 @@ export const aiCommand: Command = {
       // Get model name for footer
       const modelName = manager.getProviderModelName(provider);
 
+      // Title logic: if the full formatted title fits (<=256), use it.
+      // Otherwise, use a short static title and place the full formatted prompt line at the top of the description.
+      const intendedTitle = (title || "Response").replace(/\s+/g, " ").trim();
+      const fitsInTitle = intendedTitle.length <= 256;
+
+      // Short fallback per mode
+      const shortTitle = (() => {
+        if (mode === "imagine") return "Imagine";
+        const idx = intendedTitle.indexOf(":");
+        const base = idx > 0 ? intendedTitle.slice(0, idx) : "Response";
+        return base.length > 256 ? base.slice(0, 255) : base;
+      })();
+
+      // Build embed with correct title
       const embed = new EmbedBuilder()
-        .setTitle(title)
+        .setTitle(clampText(fitsInTitle ? intendedTitle : shortTitle, 256))
         .setColor(color)
         .setFooter({
           text: `Generated with ${modelName}\nRate limit: ${
@@ -304,15 +371,23 @@ export const aiCommand: Command = {
           response.content || ""
         );
 
-        if (structuredContent.description) {
-          embed.setDescription(structuredContent.description);
-        }
+        // If the full title didn't fit, prepend it (with italics already in `title`) to the description
+        const prefixLine = fitsInTitle ? "" : intendedTitle;
+        const combinedDescription = [
+          prefixLine,
+          structuredContent.description || "",
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+
+        if (combinedDescription)
+          embed.setDescription(clampText(combinedDescription, 4096));
 
         // Add fields for better organization
         for (const field of structuredContent.fields) {
           embed.addFields({
-            name: field.name,
-            value: field.value,
+            name: clampText(field.name, 256),
+            value: clampText(field.value, 1024),
             inline: field.inline || false,
           });
         }
@@ -330,6 +405,11 @@ export const aiCommand: Command = {
         embed.setImage(response.imageUrl);
       }
 
+      // For imagine: if title is too long, put full prompt in description only (below the image)
+      if (mode === "imagine" && !fitsInTitle) {
+        embed.setDescription(clampText(intendedTitle, 4096));
+      }
+
       const replyOptions: {
         embeds: EmbedBuilder[];
         files?: AttachmentBuilder[];
@@ -340,7 +420,7 @@ export const aiCommand: Command = {
 
       const reply = await interaction.editReply(replyOptions);
 
-      // If this is a chat, start a tracked session for replies
+      // Start a tracked session for replies so any reply to the bot message continues in chat mode
       if (mode === "chat") {
         try {
           const repliedMessage = await interaction.fetchReply();
@@ -350,6 +430,19 @@ export const aiCommand: Command = {
             persona,
             initialUserMessage: prompt,
             initialAssistantMessage: response.content || "",
+          });
+        } catch {}
+      } else if (mode !== "privacy") {
+        // For non-chat modes (e.g., imagine, ask, define, etc.), also start a session
+        try {
+          const repliedMessage = await interaction.fetchReply();
+          startSession({
+            initialBotMessage: repliedMessage,
+            userId: interaction.user.id,
+            persona, // optional
+            initialUserMessage: prompt,
+            // Use a friendly placeholder if the assistant's content is empty (e.g., imagine)
+            initialAssistantMessage: response.content || "(bot replied)",
           });
         } catch {}
       }

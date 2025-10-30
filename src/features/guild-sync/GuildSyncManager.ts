@@ -342,78 +342,125 @@ export class GuildSyncManager {
   }
 
   private async syncMessages(guild: Guild): Promise<void> {
-    const textChannels = guild.channels.cache.filter(
-      (channel) => channel.type === 0 && channel.isTextBased()
+    // Include all guild channels that are text-based (text, announcement, forum, media),
+    // threads are fetched from their parent channels below.
+    const textParents = guild.channels.cache.filter(
+      (channel) =>
+        channel.isTextBased() &&
+        !(
+          "isThread" in channel &&
+          typeof (channel as any).isThread === "function" &&
+          (channel as any).isThread()
+        )
     );
 
-    console.log(`🔹 Found ${textChannels.size} text channels`);
+    console.log(`🔹 Found ${textParents.size} text-based parent channels`);
 
     let totalMessages = 0;
     let processedChannels = 0;
-    const maxMessagesPerChannel = 1000; // Limit to prevent hanging
     const batchSize = 50; // Smaller batches for better progress reporting
 
-    for (const [channelId, channel] of textChannels) {
-      if (!channel.isTextBased()) continue;
+    // Helper to backfill a single text-based channel or thread channel
+    const backfillChannel = async (channel: any) => {
+      if (!channel.isTextBased()) return { count: 0 };
 
-      console.log(`🔹 Syncing messages from channel: ${channel.name}`);
-
+      // Ensure channel exists in DB before inserting messages (FK constraint)
       try {
-        let lastMessageId: string | undefined;
-        let channelMessageCount = 0;
-        let batchCount = 0;
+        await this.syncChannel(channel, guild.id);
+      } catch (_) {}
 
-        while (channelMessageCount < maxMessagesPerChannel) {
-          // Add timeout to prevent hanging
-          const fetchPromise = channel.messages.fetch({
-            limit: batchSize,
-            before: lastMessageId,
-          });
+      let lastMessageId: string | undefined;
+      let channelMessageCount = 0;
+      let batchCount = 0;
 
-          const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error("Message fetch timeout")), 30000); // 30 second timeout
-          });
+      while (true) {
+        const fetchPromise = channel.messages.fetch({
+          limit: batchSize,
+          before: lastMessageId,
+        });
 
-          const messages = await Promise.race([fetchPromise, timeoutPromise]);
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("Message fetch timeout")), 30000);
+        });
 
-          if (messages.size === 0) break;
+        const messages = await Promise.race([fetchPromise, timeoutPromise]);
+        if (messages.size === 0) break;
 
-          for (const [messageId, message] of messages) {
-            await this.syncMessage(message, guild.id);
-            channelMessageCount++;
-            totalMessages++;
-          }
-
-          // Fix: Set lastMessageId to the last message in the batch
-          lastMessageId = messages.last()?.id;
-          batchCount++;
-
-          // Progress reporting every 5 batches
-          if (batchCount % 5 === 0) {
-            console.log(
-              `🔹 Processed ${channelMessageCount} messages from ${channel.name}...`
-            );
-          }
-
-          // Small delay to prevent rate limiting
-          await new Promise((resolve) => setTimeout(resolve, 100));
+        for (const [, message] of messages) {
+          await this.syncMessage(message, guild.id);
+          channelMessageCount++;
+          totalMessages++;
         }
 
+        lastMessageId = messages.last()?.id;
+        batchCount++;
+        if (batchCount % 5 === 0) {
+          console.log(
+            `🔹 Processed ${channelMessageCount} messages from ${channel.name}`
+          );
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      console.log(
+        `✅ Synced ${channelMessageCount} messages from ${channel.name}`
+      );
+      return { count: channelMessageCount };
+    };
+
+    for (const [, parent] of textParents) {
+      try {
         console.log(
-          `✅ Synced ${channelMessageCount} messages from ${channel.name}`
+          `🔹 Syncing messages from channel: ${
+            "name" in parent ? parent.name : parent.id
+          }`
         );
+        // Backfill parent channel itself
+        await backfillChannel(parent);
         processedChannels++;
+
+        // Handle threads under this parent (active and archived)
+        if ("threads" in parent && parent.threads) {
+          try {
+            const active = await parent.threads.fetchActive();
+            for (const [, thread] of active.threads) {
+              await backfillChannel(thread);
+              processedChannels++;
+            }
+          } catch (e) {
+            console.warn(
+              `🔸 Could not fetch active threads for ${parent.name}:`,
+              e
+            );
+          }
+          try {
+            const archived = await parent.threads.fetchArchived({
+              fetchAll: true,
+            });
+            for (const [, thread] of archived.threads) {
+              await backfillChannel(thread);
+              processedChannels++;
+            }
+          } catch (e) {
+            console.warn(
+              `🔸 Could not fetch archived threads for ${parent.name}:`,
+              e
+            );
+          }
+        }
       } catch (error) {
         console.error(
-          `🔸 Failed to sync messages from ${channel.name}:`,
+          `🔸 Failed to sync messages from ${
+            "name" in parent ? parent.name : parent.id
+          }:`,
           error
         );
-        processedChannels++; // Still count as processed to continue
+        processedChannels++; // count and continue
       }
     }
 
     console.log(
-      `✅ Synced ${totalMessages} messages from ${processedChannels} channels`
+      `✅ Synced ${totalMessages} messages from ${processedChannels} channels/threads`
     );
   }
 
