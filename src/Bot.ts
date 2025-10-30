@@ -168,6 +168,30 @@ export class Bot {
           }
 
           // Generate response with guild context
+          // Helper to split and send long messages safely under Discord's 2000-char limit
+          const sendChunked = async (text: string) => {
+            const limit = 1900; // leave headroom for safety
+            const chunks: string[] = [];
+            let remaining = text;
+            while (remaining.length > limit) {
+              // Try to split on paragraph, sentence, or newline boundaries
+              let idx = Math.max(
+                remaining.lastIndexOf("\n\n", limit),
+                remaining.lastIndexOf("\n", limit),
+                remaining.lastIndexOf(". ", limit)
+              );
+              if (idx < limit * 0.6) idx = limit; // fallback to hard split
+              chunks.push(remaining.slice(0, idx).trim());
+              remaining = remaining.slice(idx).trimStart();
+            }
+            if (remaining.length) chunks.push(remaining);
+            let lastMessage = message as any;
+            for (const chunk of chunks) {
+              lastMessage = await lastMessage.reply({ content: chunk });
+            }
+            return lastMessage;
+          };
+
           await manager.runWithGuildContext(message.guildId, async () => {
             const contentResponse = await manager.generateText(
               rawForAI,
@@ -184,10 +208,25 @@ export class Bot {
               return;
             }
 
+            // Hard guard: if too long, notify and skip sending the full text
+            const limit = 1900;
+            if (contentResponse.content.length > limit) {
+              const reply = await message.reply({
+                content:
+                  "That answer's a bit too long to fit here. Could you narrow it down, or try /ai for a cleaner, formatted version?",
+              });
+              // Start a new chat session with the notice only
+              startSession({
+                initialBotMessage: reply,
+                userId: message.author.id,
+                initialUserMessage: resolvedContent,
+                initialAssistantMessage: reply.content || "",
+              });
+              return;
+            }
+
             // Send response and start new session
-            const reply = await message.reply({
-              content: contentResponse.content,
-            });
+            const reply = await sendChunked(contentResponse.content);
 
             // Start a new chat session
             startSession({
@@ -207,6 +246,12 @@ export class Bot {
 
         const found = getSessionByRepliedMessageId(refId);
         if (!found) return;
+
+        // Ignore replies with no meaningful text (attachments only or mentions only)
+        const rawReplyText = (message.content || "").trim();
+        if (!rawReplyText) return;
+        const textWithoutUserMentions = rawReplyText.replace(/<@!?\d+>/g, "");
+        if (textWithoutUserMentions.trim().length === 0) return;
 
         // Resolve mentions in user message
         let resolvedContent = message.content;
@@ -250,9 +295,17 @@ export class Bot {
           // Append user's turn to session (store resolved version)
           appendUserTurn(found.sessionId, resolvedContent);
 
-          const reply = await message.reply({
-            content: contentResponse.content,
-          });
+          const reply = await (async () => {
+            const limit = 1900;
+            if (contentResponse.content.length <= limit) {
+              return await message.reply({ content: contentResponse.content });
+            }
+            // Notify and skip long replies in reply-context
+            return await message.reply({
+              content:
+                "That reply would be too long for one message. Mind tightening the request, or use /ai for a formatted response?",
+            });
+          })();
           appendAssistantTurnAndTrackMessage(
             found.sessionId,
             reply,
