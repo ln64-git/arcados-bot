@@ -132,6 +132,12 @@ export class Bot {
           );
         }
 
+        // Prevent mass-mention pings from bot output (usable in all branches)
+        const sanitizeEveryone = (input: string | undefined | null): string => {
+          if (!input) return "";
+          return input.replace(/@everyone/gi, "@\u200Beveryone");
+        };
+
         if (isBotMentioned) {
           // Extract message content without the mention
           let userContent = message.content
@@ -167,9 +173,10 @@ export class Bot {
             }
           }
 
-          // Generate response with guild context
           // Helper to split and send long messages safely under Discord's 2000-char limit
-          const sendChunked = async (text: string) => {
+          const sendChunked = async (
+            text: string
+          ): Promise<{ message: any; sentText: string }> => {
             const limit = 1900; // leave headroom for safety
             const chunks: string[] = [];
             let remaining = text;
@@ -186,10 +193,20 @@ export class Bot {
             }
             if (remaining.length) chunks.push(remaining);
             let lastMessage = message as any;
+            const sentParts: string[] = [];
             for (const chunk of chunks) {
-              lastMessage = await lastMessage.reply({ content: chunk });
+              lastMessage = await lastMessage.reply({
+                content: sanitizeEveryone(chunk),
+                allowedMentions: {
+                  parse: ["users", "roles"],
+                  repliedUser: false,
+                },
+              });
+              sentParts.push(
+                (lastMessage as any).content || sanitizeEveryone(chunk)
+              );
             }
-            return lastMessage;
+            return { message: lastMessage, sentText: sentParts.join("\n\n") };
           };
 
           await manager.runWithGuildContext(message.guildId, async () => {
@@ -214,6 +231,10 @@ export class Bot {
               const reply = await message.reply({
                 content:
                   "That answer's a bit too long to fit here. Could you narrow it down, or try /ai for a cleaner, formatted version?",
+                allowedMentions: {
+                  parse: ["users", "roles"],
+                  repliedUser: false,
+                },
               });
               // Start a new chat session with the notice only
               startSession({
@@ -226,14 +247,16 @@ export class Bot {
             }
 
             // Send response and start new session
-            const reply = await sendChunked(contentResponse.content);
+            const { message: reply, sentText } = await sendChunked(
+              contentResponse.content
+            );
 
-            // Start a new chat session
+            // Start a new chat session, storing exactly what was sent
             startSession({
               initialBotMessage: reply,
               userId: message.author.id,
               initialUserMessage: resolvedContent,
-              initialAssistantMessage: contentResponse.content,
+              initialAssistantMessage: sentText,
             });
           });
 
@@ -298,18 +321,29 @@ export class Bot {
           const reply = await (async () => {
             const limit = 1900;
             if (contentResponse.content.length <= limit) {
-              return await message.reply({ content: contentResponse.content });
+              return await message.reply({
+                content: sanitizeEveryone(contentResponse.content),
+                allowedMentions: {
+                  parse: ["users", "roles"],
+                  repliedUser: false,
+                },
+              });
             }
             // Notify and skip long replies in reply-context
             return await message.reply({
               content:
                 "That reply would be too long for one message. Mind tightening the request, or use /ai for a formatted response?",
+              allowedMentions: {
+                parse: ["users", "roles"],
+                repliedUser: false,
+              },
             });
           })();
+          // Store exactly what was sent in session history
           appendAssistantTurnAndTrackMessage(
             found.sessionId,
             reply,
-            contentResponse.content
+            (reply as any)?.content || sanitizeEveryone(contentResponse.content)
           );
         });
       } catch (err) {

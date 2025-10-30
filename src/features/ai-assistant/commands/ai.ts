@@ -134,6 +134,12 @@ function clampText(input: string, max: number): string {
   return input.slice(0, Math.max(0, max - 1)) + "…";
 }
 
+// Prevent mass-mention pings from bot output
+function sanitizeEveryone(input: string | undefined | null): string {
+  if (!input) return "";
+  return input.replace(/@everyone/gi, "@\u200Beveryone");
+}
+
 // Initialize AIManager lazily
 function getAIManager(): AIManager {
   if (!aiManager) {
@@ -355,8 +361,9 @@ export const aiCommand: Command = {
       })();
 
       // Build embed with correct title
+      const safeTitle = sanitizeEveryone(fitsInTitle ? intendedTitle : shortTitle);
       const embed = new EmbedBuilder()
-        .setTitle(clampText(fitsInTitle ? intendedTitle : shortTitle, 256))
+        .setTitle(clampText(safeTitle, 256))
         .setColor(color)
         .setFooter({
           text: `Generated with ${modelName}\nRate limit: ${
@@ -381,13 +388,15 @@ export const aiCommand: Command = {
           .join("\n\n");
 
         if (combinedDescription)
-          embed.setDescription(clampText(combinedDescription, 4096));
+          embed.setDescription(
+            clampText(sanitizeEveryone(combinedDescription), 4096)
+          );
 
         // Add fields for better organization
         for (const field of structuredContent.fields) {
           embed.addFields({
-            name: clampText(field.name, 256),
-            value: clampText(field.value, 1024),
+            name: clampText(sanitizeEveryone(field.name), 256),
+            value: clampText(sanitizeEveryone(field.value), 1024),
             inline: field.inline || false,
           });
         }
@@ -407,7 +416,7 @@ export const aiCommand: Command = {
 
       // For imagine: if title is too long, put full prompt in description only (below the image)
       if (mode === "imagine" && !fitsInTitle) {
-        embed.setDescription(clampText(intendedTitle, 4096));
+        embed.setDescription(clampText(sanitizeEveryone(intendedTitle), 4096));
       }
 
       const replyOptions: {
@@ -417,6 +426,12 @@ export const aiCommand: Command = {
       if (files) {
         replyOptions.files = files;
       }
+
+      // Ensure mass-mentions are never parsed by Discord
+      (replyOptions as any).allowedMentions = {
+        parse: ["users", "roles"],
+        repliedUser: false,
+      };
 
       const reply = await interaction.editReply(replyOptions);
 
