@@ -18,6 +18,7 @@ import { conversationTools } from "./tools/ConversationTools";
 import { messageTools } from "./tools/MessageTools";
 import { serverTools } from "./tools/ServerTools";
 import type { PostgreSQLManager } from "../database/PostgreSQLManager";
+import { computeResponsePolicy } from "./utils/ResponseLengthPolicy";
 
 export class AIManager {
   private static instance: AIManager | null = null;
@@ -615,8 +616,13 @@ export class AIManager {
       ? `Tool guidance:\n- Keep responses casual and direct - like texting, not writing essays.\n- When asked about a user, call getUserInfo but be selective. 1-2 sentences max.\n- If the message refers to the speaker (e.g., "who am I?", "tell me about me"), use the current user's ID (context.userId) with getUserInfo.\n- NO formal language, NO philosophical rambling, NO fancy metaphors, NO academic tone.\n- Just answer the question simply. \n- \n- Be human: "yeah", "probably", "kinda", "pretty much" - use casual speech.\n- If input has <@123>, call getUserInfo with that userId.`
       : `Tool guidance:\n- Use tools to access database information when needed.\n- Provide accurate, well-structured responses using available context.\n- If input has <@123>, call getUserInfo with that userId.`;
 
-    // Build method prompt with formatting if needed
-    const fullMethodPrompt = `${formatting}${methodPrompt}\n\n${toolGuide}`;
+    // Build method prompt with adaptive policy (no rigid rules)
+    const initialPolicy = computeResponsePolicy({
+      userPrompt,
+      historyCount: options?.history?.length || 0,
+      toolContextBytes: 0,
+    });
+    const fullMethodPrompt = `${formatting}${methodPrompt}\n\n${toolGuide}\n\n${initialPolicy.guidance}`;
     const systemPrompt = this.buildSystemPrompt(fullMethodPrompt, personaKey);
 
     // Override with custom persona if provided
@@ -643,7 +649,7 @@ export class AIManager {
                 `${msg.role === "user" ? "User" : "Assistant"}: ${msg.content}`
             )
             .join("\n");
-          composedUser = `${historyText}\n\nUser: ${userPrompt}`;
+          composedUser = `${historyText}\n\nUser: ${userPrompt}\n\nGuidance: ${initialPolicy.guidance}`;
         }
 
         const response = await provider.callTextAPIWithTools!(
@@ -783,7 +789,12 @@ export class AIManager {
           const toolResultsText = toolResults
             .map((tr) => `${tr.name} returned: ${tr.content}`)
             .join("\n\n");
-          userPrompt = `Here's some context:\n\n${toolResultsText}\n\nGive a brief, conversational response (2-3 sentences max). NO sections, NO headings, NO lists. Just chat naturally about it.`;
+          const updatedPolicy = computeResponsePolicy({
+            userPrompt,
+            historyCount: options?.history?.length || 0,
+            toolContextBytes: toolResultsText.length,
+          });
+          composedUser = `Context:\n\n${toolResultsText}\n\nGuidance: ${updatedPolicy.guidance}\n\nUser: ${userPrompt}`;
         }
       }
 
@@ -867,6 +878,8 @@ export class AIManager {
 
 		${methodPrompt}`;
   }
+
+  // Legacy length heuristic was removed; replaced by ResponseLengthPolicy
 
   private async processAIRequest(
     provider: AIProvider,

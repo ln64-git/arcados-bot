@@ -68,6 +68,7 @@ export class GrokProvider extends BaseAIProvider {
     }));
 
     // Bind tools to model
+    // Bind tools to model (runtime params are currently applied via guidance at the prompt level)
     const modelWithTools = this.model.bindTools(
       langchainTools.map((tool) => ({
         type: "function" as const,

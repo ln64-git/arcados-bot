@@ -10,6 +10,7 @@ export abstract class BaseAIProvider implements AIProvider {
     new Map();
   protected readonly RATE_LIMIT: number;
   protected readonly RATE_WINDOW = 60 * 1000; // 1 minute in milliseconds
+  private runtime: { maxTokens?: number; temperatureNudge?: number } = {};
 
   constructor(rateLimit: number = 5) {
     this.RATE_LIMIT = rateLimit;
@@ -33,6 +34,22 @@ export abstract class BaseAIProvider implements AIProvider {
     tools: Array<{ name: string; description: string; parameters: any }>,
     toolResults?: ToolCallResponse[]
   ): Promise<{ content: string; toolCalls?: ToolCall[] }>;
+
+  // Runtime parameter helpers (optional for callers)
+  public setRuntimeParams(params: {
+    maxTokens?: number;
+    temperatureNudge?: number;
+  }) {
+    this.runtime = params || {};
+  }
+  protected consumeRuntimeParams(): {
+    maxTokens?: number;
+    temperatureNudge?: number;
+  } {
+    const copy = { ...this.runtime };
+    this.runtime = {};
+    return copy;
+  }
 
   // Common rate limiting functionality
   protected checkRateLimit(userId: string): boolean {
