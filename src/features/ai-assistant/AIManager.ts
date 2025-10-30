@@ -448,10 +448,9 @@ export class AIManager {
     const personaKey = options?.personaKey || "casual"; // Chat mode defaults to casual
     const persona = this.getPersona(personaKey);
 
-    // Build chat-specific instructions if using casual persona
-    const chatInstructions = persona.chatStyle
-      ? "You're chatting in Discord - write like you're texting a friend, not giving a lecture. Keep it casual, brief (1-2 sentences), and natural. Avoid formal language, philosophical rambling, or fancy metaphors. Just answer the question directly and friendly. Example: 'My favorite game is probably Chess, I like the strategy of it.' NOT: 'My favorite \"video game\" isn't bound by pixels... it's the eternal contest of piercing illusions, a relentless hunt for raw clarity...' Be direct, be human, be chill."
-      : "";
+    // Build chat-specific instructions (chat mode is always casual)
+    const chatInstructions =
+      "You're chatting in Discord - write like you're texting a friend, not giving a lecture. Keep it casual, brief (1-2 sentences), and natural. Avoid formal language, philosophical rambling, or fancy metaphors. Just answer the question directly and friendly. Example: 'My favorite game is probably Chess, I like the strategy of it.' NOT: 'My favorite \"video game\" isn't bound by pixels... it's the eternal contest of piercing illusions, a relentless hunt for raw clarity...' Be direct, be human, be chill.";
 
     // Allow custom persona override via persona string
     const personaPrompt = options?.persona
@@ -953,7 +952,6 @@ export class AIManager {
   private getPersona(personaKey?: string): {
     name: string;
     base: string;
-    chatStyle: boolean;
   } {
     const key = personaKey || this.DEFAULT_PERSONA;
     return (

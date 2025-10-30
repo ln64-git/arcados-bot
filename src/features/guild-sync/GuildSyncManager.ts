@@ -410,11 +410,9 @@ export class GuildSyncManager {
 
     for (const [, parent] of textParents) {
       try {
-        console.log(
-          `🔹 Syncing messages from channel: ${
-            "name" in parent ? parent.name : parent.id
-          }`
-        );
+        const parentLabel =
+          (parent as any)?.name ?? (parent as any)?.id ?? String(parent);
+        console.log(`🔹 Syncing messages from channel: ${parentLabel}`);
         // Backfill parent channel itself
         await backfillChannel(parent);
         processedChannels++;
@@ -449,10 +447,10 @@ export class GuildSyncManager {
           }
         }
       } catch (error) {
+        const parentLabelErr =
+          (parent as any)?.name ?? (parent as any)?.id ?? String(parent);
         console.error(
-          `🔸 Failed to sync messages from ${
-            "name" in parent ? parent.name : parent.id
-          }:`,
+          `🔸 Failed to sync messages from ${parentLabelErr}:`,
           error
         );
         processedChannels++; // count and continue
