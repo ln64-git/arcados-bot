@@ -31,7 +31,8 @@
 		"regenerate:relationships": "npx tsx src/scripts/regenerate-relationship-network.ts",
 		"user:summary": "npx tsx src/scripts/get-user-summary.ts",
 		"watch-users": "npx tsx src/scripts/watch-user-changes.ts",
-		"watch-db": "npx tsx src/scripts/watch-database-changes.ts"
+		"watch-db": "npx tsx src/scripts/watch-database-changes.ts",
+		"test:ai": "npx tsx src/features/ai-assistant/scripts/test-ai-assistant.ts"
 	},
 	"keywords": ["discord", "bot", "template", "typescript"],
 	"author": "",
