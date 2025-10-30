@@ -429,7 +429,6 @@ export class AIManager {
     providerName: string,
     db: PostgreSQLManager,
     options?: {
-      persona?: string;
       personaKey?: string;
       history?: Array<{ role: string; content: string }>;
     }
@@ -444,26 +443,9 @@ export class AIManager {
     const rateLimitError = this.checkRateLimitAndReturn(userId, provider);
     if (rateLimitError) return rateLimitError;
 
-    // Determine persona - use casual by default for chat, or specified persona
-    const personaKey = options?.personaKey || "casual"; // Chat mode defaults to casual
-    const persona = this.getPersona(personaKey);
-
-    // Build chat-specific instructions (chat mode is always casual)
-    const chatInstructions =
-      "You're chatting in Discord - write like you're texting a friend, not giving a lecture. Keep it casual, brief (1-2 sentences), and natural. Avoid formal language, philosophical rambling, or fancy metaphors. Just answer the question directly and friendly. Example: 'My favorite game is probably Chess, I like the strategy of it.' NOT: 'My favorite \"video game\" isn't bound by pixels... it's the eternal contest of piercing illusions, a relentless hunt for raw clarity...' Be direct, be human, be chill.";
-
-    // Allow custom persona override via persona string
-    const personaPrompt = options?.persona
-      ? `${chatInstructions}\nCustom Persona: ${options.persona}`
-      : chatInstructions;
-
-    const toolGuide = `Tool guidance:\n- Keep responses casual and direct - like texting, not writing essays.\n- When asked about a user, call getUserInfo but be selective. 1-2 sentences max.\n- If the message refers to the speaker (e.g., "who am I?", "tell me about me"), use the current user's ID (context.userId) with getUserInfo.\n- NO formal language, NO philosophical rambling, NO fancy metaphors, NO academic tone.\n- Just answer the question simply. Example: "Lucas has been here a while, likes dev and gaming stuff, pretty active with 800 messages or so. He hangs out with Wink and a few others mostly."\n- BAD (don't do): "Lucas, known globally as Lucas, joined on 6/24/2024. He embodies a multifaceted presence, diving into tech with equal grit. Like a falcon circling..." That's way too formal.\n- Be human: "yeah", "probably", "kinda", "pretty much" - use casual speech.\n- If input has <@123>, call getUserInfo with that userId.`;
-
-    // Build system prompt using persona base + chat instructions + tool guidance
-    const methodPrompt = personaPrompt
-      ? `${personaPrompt}\n\n${toolGuide}`
-      : toolGuide;
-    const systemPrompt = `${persona.base}\n\n${methodPrompt}`;
+    // Minimal system prompt: personaKey only, no formatting/hand-holding
+    const personaKey = options?.personaKey || this.DEFAULT_PERSONA;
+    const systemPrompt = this.buildSystemPrompt("", personaKey);
 
     // Convert tools to provider format
     const tools = this.databaseTools.toGrokFunctions(); // Start with Grok, can be made provider-specific later
@@ -519,105 +501,14 @@ export class AIManager {
             context
           );
 
-          // Format tool result for AI - include full data for getUserInfo
-          let resultContent = "";
-          if (typeof toolResult === "string") {
-            resultContent = toolResult;
-          } else if (toolResult.error) {
-            resultContent = toolResult.error;
-          } else if (toolCall.name === "getUserInfo" && toolResult.data) {
-            // For getUserInfo, pass all context naturally - let AI weave it together conversationally
-            const rc = toolResult.data.richContext;
-
-            if (rc) {
-              // Build natural context string without rigid structure - just facts the AI can use naturally
-              const contextLines: string[] = [];
-
-              // Identity
-              contextLines.push(
-                `${rc.displayName} (@${rc.username})${
-                  rc.globalName && rc.globalName !== rc.displayName
-                    ? ` - also goes by ${rc.globalName}`
-                    : ""
-                }`
-              );
-
-              // Summary
-              if (rc.summary) {
-                contextLines.push(`Summary: ${rc.summary}`);
-              }
-
-              // Membership context (prefer server-age-relative descriptor when available)
-              if ((rc as any).serverMembershipDescriptor) {
-                contextLines.push(
-                  String((rc as any).serverMembershipDescriptor)
-                );
-              } else if (rc.joinedAt) {
-                const daysSince = Math.floor(
-                  (Date.now() - rc.joinedAt.getTime()) / (1000 * 60 * 60 * 24)
-                );
-                if (daysSince < 30)
-                  contextLines.push(`Recently joined the server`);
-                else if (daysSince < 365)
-                  contextLines.push(
-                    `Member for ${Math.floor(daysSince / 30)} months`
-                  );
-                else
-                  contextLines.push(
-                    `Longtime member - ${Math.floor(daysSince / 365)} year${
-                      Math.floor(daysSince / 365) > 1 ? "s" : ""
-                    }`
-                  );
-              }
-
-              // Activity
-              if (rc.messageCount > 0) {
-                contextLines.push(
-                  `Active contributor with ${rc.messageCount} messages`
-                );
-              }
-
-              // Roles (names only)
-              if (rc.roles && rc.roles.length > 0) {
-                contextLines.push(`Roles: ${rc.roles.join(", ")}`);
-              }
-
-              // Interests/Keywords
-              if (rc.keywords && rc.keywords.length > 0) {
-                contextLines.push(
-                  `Interests/topics: ${rc.keywords.slice(0, 10).join(", ")}`
-                );
-              }
-
-              // Relationships
-              if (
-                rc.relationships &&
-                rc.relationships !== "No relationships tracked"
-              ) {
-                contextLines.push(`Relationships:\n${rc.relationships}`);
-              }
-
-              // Emojis
-              if (rc.emojis && rc.emojis.length > 0) {
-                contextLines.push(`Common emojis: ${rc.emojis.join(" ")}`);
-              }
-
-              // Return as a simple, unstructured context block
-              resultContent = contextLines.join("\n");
-            } else {
-              // Fallback
-              resultContent =
-                toolResult.data.formatted ||
+          // Minimal tool result passing
+          const resultContent =
+            typeof toolResult === "string"
+              ? toolResult
+              : toolResult.error ||
+                toolResult.data?.formatted ||
                 toolResult.summary ||
-                "User information retrieved";
-            }
-          } else {
-            // For other tools, use formatted data or summary
-            resultContent =
-              toolResult.data?.formatted ||
-              toolResult.summary ||
-              "Tool executed";
-          }
+                "OK";
 
           toolResults.push({
             toolCallId: toolCall.id,
@@ -627,12 +518,12 @@ export class AIManager {
           });
         }
 
-        // Update prompt for next iteration to include tool results
+        // Update prompt for next iteration to include tool results (simple handoff)
         if (iteration < maxIterations - 1) {
           const toolResultsText = toolResults
             .map((tr) => `${tr.name} returned: ${tr.content}`)
             .join("\n\n");
-          prompt = `Here's some context:\n\n${toolResultsText}\n\nGive a brief, conversational response (2-3 sentences max). NO sections, NO headings, NO lists. Just chat naturally about it.`;
+          prompt = `Context:\n\n${toolResultsText}`;
         }
       }
 
@@ -721,7 +612,7 @@ export class AIManager {
 
     // Tool guidance - casual for chat (no formatting), neutral for structured
     const toolGuide = !useFormatting
-      ? `Tool guidance:\n- Keep responses casual and direct - like texting, not writing essays.\n- When asked about a user, call getUserInfo but be selective. 1-2 sentences max.\n- If the message refers to the speaker (e.g., "who am I?", "tell me about me"), use the current user's ID (context.userId) with getUserInfo.\n- NO formal language, NO philosophical rambling, NO fancy metaphors, NO academic tone.\n- Just answer the question simply. Example: "Lucas has been here a while, likes dev and gaming stuff, pretty active with 800 messages or so. He hangs out with Wink and a few others mostly."\n- BAD (don't do): "Lucas, known globally as Lucas, joined on 6/24/2024. He embodies a multifaceted presence, diving into tech with equal grit. Like a falcon circling..." That's way too formal.\n- Be human: "yeah", "probably", "kinda", "pretty much" - use casual speech.\n- If input has <@123>, call getUserInfo with that userId.`
+      ? `Tool guidance:\n- Keep responses casual and direct - like texting, not writing essays.\n- When asked about a user, call getUserInfo but be selective. 1-2 sentences max.\n- If the message refers to the speaker (e.g., "who am I?", "tell me about me"), use the current user's ID (context.userId) with getUserInfo.\n- NO formal language, NO philosophical rambling, NO fancy metaphors, NO academic tone.\n- Just answer the question simply. \n- \n- Be human: "yeah", "probably", "kinda", "pretty much" - use casual speech.\n- If input has <@123>, call getUserInfo with that userId.`
       : `Tool guidance:\n- Use tools to access database information when needed.\n- Provide accurate, well-structured responses using available context.\n- If input has <@123>, call getUserInfo with that userId.`;
 
     // Build method prompt with formatting if needed
