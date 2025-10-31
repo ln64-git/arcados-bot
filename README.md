@@ -1,6 +1,6 @@
 # Arcados Discord Bot
 
-A comprehensive Discord bot with real-time SurrealDB integration, built with TypeScript and Discord.js v14.
+A comprehensive Discord bot with real-time PostgreSQL integration and relationship networks, built with TypeScript and Discord.js v14.
 
 ## Features
 
@@ -9,11 +9,11 @@ A comprehensive Discord bot with real-time SurrealDB integration, built with Typ
 - 🔹 Error handling
 - 🔹 Guild-specific or global command deployment
 - 🔹 Clean, extensible architecture
-- 🔹 **Real-time SurrealDB synchronization**
-- 🔹 **Live Query subscriptions**
-- 🔹 **Database-triggered Discord actions**
+- 🔹 **Real-time PostgreSQL synchronization**
+- 🔹 **Incremental relationship network updates**
+- 🔹 **Multi-participant conversation segments**
 - 🔹 **Full Discord data sync (guilds, channels, members, roles, messages)**
-- 🔹 **Graceful degradation when database unavailable**
+- 🔹 **Boot-time database healing and maintenance**
 - 🔹 **Voice Channel Manager** - Self-organizing voice channels with owner-based moderation
 
 ## Setup
@@ -31,14 +31,8 @@ A comprehensive Discord bot with real-time SurrealDB integration, built with Typ
    BOT_TOKEN=your_discord_bot_token_here
    GUILD_ID=your_guild_id_for_testing  # Optional, for guild-specific commands
 
-   # SurrealDB Cloud settings (optional - bot works without database)
-   SURREAL_URL=wss://your-instance.surrealdb.com/rpc
-   SURREAL_NAMESPACE=arcados-bot
-   SURREAL_DATABASE=arcados-bot
-   SURREAL_USERNAME=your_username
-   SURREAL_PASSWORD=your_password
-   # OR use token authentication:
-   SURREAL_TOKEN=your_surreal_token
+   # PostgreSQL settings (optional - bot works without database)
+   POSTGRES_URL=your_postgres_connection_string
 
    # Optional Discord settings
    BOT_PREFIX=!
@@ -53,13 +47,12 @@ A comprehensive Discord bot with real-time SurrealDB integration, built with Typ
    - Go to "Bot" section and create a bot
    - Copy the token and add it to your `.env` file
 
-4. **Set up SurrealDB Cloud (optional):**
+4. **Set up PostgreSQL (optional):**
 
-   - Sign up at [SurrealDB Cloud](https://surrealdb.com/cloud)
-   - Create a new project
-   - Get your connection URL and credentials
-   - Add them to your `.env` file
-   - **Note:** The bot will work without SurrealDB, but you'll miss out on real-time sync features
+   - Use any PostgreSQL database (local or cloud like Neon, Supabase, etc.)
+   - Get your connection string
+   - Add `POSTGRES_URL` to your `.env` file
+   - **Note:** The bot will work without PostgreSQL, but you'll miss out on relationship networks and conversation tracking
 
 5. **Invite your bot to a server:**
    - In the Discord Developer Portal, go to "OAuth2" > "URL Generator"
@@ -81,40 +74,39 @@ npm start
 npm run dev
 ```
 
-## SurrealDB Integration
+## PostgreSQL Integration & Relationship Networks
 
-This bot features comprehensive SurrealDB integration with real-time synchronization:
+This bot features comprehensive PostgreSQL integration with real-time relationship tracking:
 
 ### What Gets Synced
 
 - **Guilds**: Server information, member counts, settings
-- **Channels**: All text/voice channels with metadata
-- **Members**: User data, roles, join dates
+- **Channels**: All text/voice channels with metadata and watermarks
+- **Members**: User data, roles, join dates, relationship networks
 - **Roles**: Role permissions, colors, positions
-- **Messages**: Message content, timestamps, attachments (optional)
+- **Messages**: Message content, timestamps, attachments
+- **Relationship Edges**: Directed dyads with interaction counters
+- **Conversation Segments**: Multi-participant conversation tracking
 
 ### Real-time Features
 
-- **Live Queries**: Instant notifications when database changes
-- **Database Actions**: Trigger Discord actions from database changes
-- **Bidirectional Sync**: Discord events update database, database changes trigger Discord actions
+- **Incremental Updates**: O(1) edge counter updates on messages/reactions
+- **Streaming Segments**: Auto-finalized conversation segments (5m inactivity, min 3 msgs)
+- **Boot-time Healing**: Database consistency checks and backfill on startup
+- **Periodic Maintenance**: Rolling window updates, segment compaction
 
-### Database Actions
+### Relationship Networks
 
-The bot can execute Discord actions based on database changes:
-
-- **Member Role Updates**: External admin panel → Discord role changes
-- **Member Bans**: Database ban records → Discord kicks/bans
-- **Scheduled Messages**: Database records → Discord messages at specified times
-- **Milestone Celebrations**: Member count thresholds → Celebration messages
-- **Achievement Roles**: XP thresholds → Role assignments
-- **Global Bans**: Centralized ban list → Multi-guild enforcement
+- **Directed Edges**: Track interactions between any two users
+- **Multi-participant Conversations**: Support for group chats
+- **Bot Memory**: Bot maintains relationship summaries per user
+- **Peer Context**: Understands relationships between active conversation participants
 
 ### Graceful Degradation
 
-- Bot continues functioning if SurrealDB is unavailable
+- Bot continues functioning if PostgreSQL is unavailable
 - All Discord features work without database connection
-- Automatic reconnection with exponential backoff
+- Automatic reconnection with retry/backoff
 - Error logging without crashes
 
 ## Adding Commands
@@ -146,14 +138,15 @@ src/
 ├── Bot.ts                    # Main bot class
 ├── main.ts                   # Entry point
 ├── config/                   # Configuration management
-├── database/                 # SurrealDB integration
-│   ├── schema.ts            # Database schemas and types
-│   └── SurrealDBManager.ts  # Database connection and operations
+├── database/                 # PostgreSQL integration
+│   └── PostgreSQLManager.ts  # Database connection and operations
 ├── features/                # Bot features
-│   ├── discord-sync/        # Discord-SurrealDB synchronization
-│   │   ├── DiscordSyncManager.ts  # Sync orchestration
-│   │   ├── actions.ts       # Database-triggered actions
-│   │   └── types.ts         # Sync-specific types
+│   ├── guild-sync/          # Guild synchronization
+│   │   ├── DatabaseHealer.ts  # Boot-time healing and maintenance
+│   │   └── LiveSyncWatcher.ts # Real-time event watcher
+│   ├── relationship-network/ # Relationship tracking
+│   │   ├── NetworkManager.ts  # Relationship network builder
+│   │   └── ConversationManager.ts # Conversation segment manager
 │   ├── ai-assistant/        # AI features
 │   ├── server-lore/         # Server lore features
 │   └── speak-voice-call/    # Voice call features
@@ -174,14 +167,10 @@ src/
 - `BOT_PREFIX`: Command prefix (default: "!")
 - `BOT_OWNER_ID`: Bot owner user ID
 
-### SurrealDB Settings (Optional)
+### PostgreSQL Settings (Optional)
 
-- `SURREAL_URL`: SurrealDB connection URL (WebSocket)
-- `SURREAL_NAMESPACE`: Database namespace (default: "arcados-bot")
-- `SURREAL_DATABASE`: Database name (default: "arcados-bot")
-- `SURREAL_USERNAME`: Database username (default: "root")
-- `SURREAL_PASSWORD`: Database password (default: "root")
-- `SURREAL_TOKEN`: OAuth2 token (alternative to username/password)
+- `POSTGRES_URL`: PostgreSQL connection string
+- `DB_NAME`: Database name (default: "arcados")
 
 ## Voice Channel Manager
 
@@ -217,7 +206,7 @@ Set the `SPAWN_CHANNEL_ID` environment variable to the ID of the voice channel w
 - **User Preferences**: Customize channel names, user limits, and privacy settings
 - **Ban Lists**: Maintain personal ban lists that apply to all your channels
 - **Grandfather Protection**: Prevents disruption during ownership changes
-- **Real-time Updates**: Changes apply instantly via SurrealDB Live Queries
+- **Real-time Updates**: Changes apply instantly via PostgreSQL triggers and live sync watchers
 
 ## License
 

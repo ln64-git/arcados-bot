@@ -24,6 +24,7 @@
 		"test:postgres": "npx tsx src/scripts/test-postgres-connection.ts",
 		"sync:guild": "npx tsx src/scripts/sync-guild-to-postgres.ts",
 		"drop:guild": "npx tsx src/scripts/drop-guild-data.ts",
+		
 		"drop:all": "npx tsx src/scripts/drop-all-postgres-data.ts",
 		"recreate:schema": "npx tsx src/scripts/recreate-postgres-schema.ts",
 		"debug:discord": "npx tsx src/scripts/debug-discord-connection.ts",
@@ -32,7 +33,20 @@
 		"user:summary": "npx tsx src/scripts/get-user-summary.ts",
 		"watch-users": "npx tsx src/scripts/watch-user-changes.ts",
 		"watch-db": "npx tsx src/scripts/watch-database-changes.ts",
-		"test:ai": "npx tsx src/features/ai-assistant/scripts/test-ai-assistant.ts"
+		"test:ai": "npx tsx src/features/ai-assistant/scripts/test-ai-assistant.ts",
+		"test:realtime": "npx tsx src/scripts/test-realtime-sync.ts",
+		"test:healing": "npx tsx src/scripts/test-healing.ts",
+		"check:messages": "npx tsx src/scripts/check-recent-messages.ts",
+		"check:user-messages": "npx tsx src/scripts/check-user-messages.ts",
+		"generate:relationships": "npx tsx src/scripts/generate-relationships-from-history.ts",
+		"test:relationships": "npx tsx src/scripts/test-relationships.ts",
+		"check:replies": "npx tsx src/scripts/check-message-replies.ts",
+		"check:reply-counts": "npx tsx src/scripts/check-reply-counts.ts",
+		"check:channel-replies": "npx tsx src/scripts/check-channel-replies.ts",
+		"repair:channel-replies": "npx tsx src/scripts/repair-channel-replies.ts",
+		"sync:channel": "npx tsx src/scripts/sync-single-channel.ts",
+		"backfill:replies": "npx tsx src/scripts/backfill-reply-references.ts",
+		"clear:messages": "npx tsx src/scripts/clear-guild-messages.ts"
 	},
 	"keywords": ["discord", "bot", "template", "typescript"],
 	"author": "",
@@ -58,7 +72,6 @@
 		"install": "^0.13.0",
 		"langchain": "^0.3.36",
 		"pg": "^8.16.3",
-		"surrealdb": "^1.3.2",
 		"uuid": "^13.0.0"
 	},
 	"engines": {

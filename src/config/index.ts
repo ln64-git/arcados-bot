@@ -20,14 +20,6 @@ export interface BotConfig {
   postgresUrl?: string;
   dbName: string;
 
-  // SurrealDB settings
-  surrealUrl?: string;
-  surrealNamespace?: string;
-  surrealDatabase?: string;
-  surrealUsername?: string;
-  surrealPassword?: string;
-  surrealToken?: string;
-
   // Cache settings
   redisUrl?: string;
 
@@ -79,14 +71,6 @@ function validateConfig(): BotConfig {
     // Database settings
     postgresUrl: process.env.POSTGRES_URL || undefined,
     dbName: process.env.DB_NAME || "arcados",
-
-    // SurrealDB settings
-    surrealUrl: process.env.SURREAL_URL || undefined,
-    surrealNamespace: process.env.SURREAL_NAMESPACE || "arcados-bot",
-    surrealDatabase: process.env.SURREAL_DATABASE || "arcados-bot",
-    surrealUsername: process.env.SURREAL_USERNAME || "root",
-    surrealPassword: process.env.SURREAL_PASSWORD || "root",
-    surrealToken: process.env.SURREAL_TOKEN || undefined, // For OAuth2 authentication
 
     // Cache settings
     redisUrl: process.env.REDIS_URL || undefined,

@@ -11,6 +11,10 @@ import { PostgreSQLManager } from "./features/database/PostgreSQLManager";
 import type { Command } from "./types";
 import { loadCommands } from "./utils/loadCommands";
 import { AIManager } from "./features/ai-assistant/AIManager";
+import { DatabaseHealer } from "./features/guild-sync/DatabaseHealer";
+import { LiveSyncWatcher } from "./features/guild-sync/LiveSyncWatcher";
+import { RelationshipNetworkManager } from "./features/relationship-network/NetworkManager";
+import { ConversationManager } from "./features/relationship-network/ConversationManager";
 import {
   getSessionByRepliedMessageId,
   appendUserTurn,
@@ -25,6 +29,10 @@ export class Bot {
   public client: Client;
   public commands = new Collection<string, Command>();
   public postgresManager: PostgreSQLManager;
+  private databaseHealer?: DatabaseHealer;
+  private liveSyncWatcher?: LiveSyncWatcher;
+  private relationshipManager?: RelationshipNetworkManager;
+  private conversationManager?: ConversationManager;
 
   constructor() {
     this.client = new Client({
@@ -61,9 +69,36 @@ export class Bot {
   private setupEventHandlers() {
     // Ready event
     this.client.once("ready", async () => {
-      console.log("🔹 Bot is ready");
       console.log(`🔹 Logged in as ${this.client.user?.tag}`);
-      console.log(`🔹 Serving ${this.client.guilds.cache.size} guilds`);
+
+      // Initialize realtime sync components
+      this.relationshipManager = new RelationshipNetworkManager(
+        this.postgresManager
+      );
+      this.conversationManager = new ConversationManager(this.postgresManager);
+
+
+
+      // Start database healer and maintenance
+      this.databaseHealer = new DatabaseHealer(
+        this.client,
+        this.postgresManager,
+        this.relationshipManager,
+        false // Set to true for verbose logging
+      );
+      this.databaseHealer.startMaintenance();
+
+      // Start live sync watcher
+      this.liveSyncWatcher = new LiveSyncWatcher(
+        this.client,
+        this.postgresManager,
+        this.relationshipManager,
+        this.conversationManager
+      );
+      this.liveSyncWatcher.start();
+
+      // Run initial healing pass (after main functionality is started)
+      await this.databaseHealer.runOnce();
     });
 
     // Interaction event for slash commands

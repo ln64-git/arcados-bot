@@ -579,4 +579,222 @@ export class RelationshipNetworkManager {
     const score = Math.min(100, Math.log10(points + 1) * 25);
     return Math.round(score * 100) / 100; // Round to 2 decimal places
   }
+
+  // ============================================================================
+  // Incremental Realtime Methods
+  // ============================================================================
+
+  /**
+   * Record a single interaction event (O(1) update)
+   */
+  async recordInteraction(
+    guildId: string,
+    authorId: string,
+    otherId: string,
+    kind: "message" | "mention" | "reply" | "reaction",
+    direction: "a_to_b" | "b_to_a",
+    timestamp: Date
+  ): Promise<DatabaseResult<void>> {
+    try {
+      const delta: any = {
+        total: 1,
+      };
+
+      if (kind === "message") {
+        if (direction === "a_to_b") {
+          delta.msg_a_to_b = 1;
+        } else {
+          delta.msg_b_to_a = 1;
+        }
+      } else if (kind === "mention") {
+        delta.mentions = 1;
+      } else if (kind === "reply") {
+        delta.replies = 1;
+      } else if (kind === "reaction") {
+        delta.reactions = 1;
+      }
+
+      const result = await this.db.upsertEdgeCounters(
+        guildId,
+        authorId,
+        otherId,
+        delta
+      );
+
+      if (!result.success) {
+        throw new Error(`Failed to record interaction: ${result.error}`);
+      }
+
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  }
+
+  /**
+   * Roll up edges to member's relationship_network JSONB (top-N format)
+   */
+  async rollupEdgesToMemberNetwork(
+    userId: string,
+    guildId: string,
+    limit: number = 50
+  ): Promise<DatabaseResult<void>> {
+    try {
+      const edgesResult = await this.db.getEdgesForUser(guildId, userId, limit * 2);
+      if (!edgesResult.success || !edgesResult.data) {
+        throw new Error(`Failed to get edges: ${edgesResult.error}`);
+      }
+
+      const edges = edgesResult.data;
+      const totalInteractions = edges.reduce((sum, e) => sum + (e.total || 0), 0);
+
+      const relationships: RelationshipEntry[] = [];
+
+      for (const edge of edges) {
+        const otherUserId = edge.user_a === userId ? edge.user_b : edge.user_a;
+        
+        if (otherUserId === userId) continue; // Skip self
+
+        const relevancePercentage =
+          totalInteractions > 0
+            ? ((edge.total || 0) / totalInteractions) * 100
+            : 0;
+
+        const interactionCount =
+          (edge.user_a === userId ? edge.msg_a_to_b : edge.msg_b_to_a) +
+          (edge.mentions || 0) +
+          (edge.replies || 0);
+
+        const relationship: RelationshipEntry = {
+          user_id: otherUserId,
+          affinity_percentage: Math.round(relevancePercentage * 100) / 100,
+          interaction_count: interactionCount,
+          last_interaction: new Date(edge.last_interaction),
+          raw_points: edge.total || 0,
+          total_messages: interactionCount,
+        };
+
+        relationships.push(relationship);
+      }
+
+      relationships.sort(
+        (a, b) => b.affinity_percentage - a.affinity_percentage
+      );
+      const topRelationships = relationships.slice(0, limit);
+
+      const memberId = `${guildId}_${userId}`;
+      const updateResult = await this.db.updateMemberRelationshipNetwork(
+        memberId,
+        topRelationships
+      );
+
+      if (!updateResult.success) {
+        throw new Error(`Failed to update network: ${updateResult.error}`);
+      }
+
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  }
+
+  /**
+   * Get dyad summary (both directions) for two users
+   */
+  async getDyadSummary(
+    userA: string,
+    userB: string,
+    guildId: string
+  ): Promise<DatabaseResult<{
+    a_to_b: RelationshipEntry | null;
+    b_to_a: RelationshipEntry | null;
+  }>> {
+    try {
+      const [edgeAB, edgeBA] = await Promise.all([
+        this.db.getEdgeForPair(guildId, userA, userB),
+        this.db.getEdgeForPair(guildId, userB, userA),
+      ]);
+
+      const aToB = edgeAB.success && edgeAB.data
+        ? {
+            user_id: userB,
+            affinity_percentage: 0,
+            interaction_count: (edgeAB.data.msg_a_to_b || 0) + (edgeAB.data.mentions || 0) + (edgeAB.data.replies || 0),
+            last_interaction: new Date(edgeAB.data.last_interaction),
+            raw_points: edgeAB.data.total || 0,
+          }
+        : null;
+
+      const bToA = edgeBA.success && edgeBA.data
+        ? {
+            user_id: userA,
+            affinity_percentage: 0,
+            interaction_count: (edgeBA.data.msg_b_to_a || 0) + (edgeBA.data.mentions || 0) + (edgeBA.data.replies || 0),
+            last_interaction: new Date(edgeBA.data.last_interaction),
+            raw_points: edgeBA.data.total || 0,
+          }
+        : null;
+
+      return {
+        success: true,
+        data: { a_to_b: aToB, b_to_a: bToA },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  }
+
+  /**
+   * Get peer matrix - relationships between multiple users in conversation
+   */
+  async getPeerMatrix(
+    participantIds: string[],
+    guildId: string
+  ): Promise<DatabaseResult<Record<string, RelationshipEntry>>> {
+    try {
+      const matrix: Record<string, RelationshipEntry> = {};
+
+      for (let i = 0; i < participantIds.length; i++) {
+        for (let j = i + 1; j < participantIds.length; j++) {
+          const userA = participantIds[i];
+          const userB = participantIds[j];
+
+          const edgesResult = await this.db.getEdgesForUser(guildId, userA, 100);
+          if (!edgesResult.success || !edgesResult.data) continue;
+
+          const edge = edgesResult.data.find(
+            (e) => e.user_a === userA && e.user_b === userB ||
+                   e.user_a === userB && e.user_b === userA
+          );
+
+          if (edge) {
+            const key = `${userA}:${userB}`;
+            matrix[key] = {
+              user_id: userB,
+              affinity_percentage: 0,
+              interaction_count: (edge.msg_a_to_b || 0) + (edge.msg_b_to_a || 0) + (edge.mentions || 0) + (edge.replies || 0),
+              last_interaction: new Date(edge.last_interaction),
+              raw_points: edge.total || 0,
+            };
+          }
+        }
+      }
+
+      return { success: true, data: matrix };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  }
 }

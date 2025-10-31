@@ -120,6 +120,7 @@ export interface MessageData {
   edited_at?: Date;
   attachments?: string[];
   embeds?: string[];
+  referenced_message_id?: string;
   active: boolean;
 }
 
@@ -155,7 +156,6 @@ export class PostgreSQLManager {
       client.release();
 
       this.isConnectedFlag = true;
-      console.log("🔹 Connected to PostgreSQL database");
 
       // Initialize schema
       await this.initializeSchema();
@@ -296,8 +296,83 @@ export class PostgreSQLManager {
 					edited_at TIMESTAMP WITH TIME ZONE,
 					attachments TEXT[],
 					embeds TEXT[],
+					referenced_message_id VARCHAR(20) REFERENCES messages(id) ON DELETE SET NULL,
 					active BOOLEAN DEFAULT true
 				)
+			`);
+
+      // Add referenced_message_id column if it doesn't exist (migration for existing databases)
+      await client.query(`
+        DO $$ 
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns 
+            WHERE table_name = 'messages' AND column_name = 'referenced_message_id'
+          ) THEN
+            ALTER TABLE messages ADD COLUMN referenced_message_id VARCHAR(20) REFERENCES messages(id) ON DELETE SET NULL;
+          END IF;
+        END $$;
+      `);
+
+      // Relationship edges - directed dyads for realtime updates
+      await client.query(`
+				CREATE TABLE IF NOT EXISTS relationship_edges (
+					guild_id VARCHAR(20) NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+					user_a VARCHAR(20) NOT NULL,
+					user_b VARCHAR(20) NOT NULL,
+					last_interaction TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					msg_a_to_b INTEGER DEFAULT 0,
+					msg_b_to_a INTEGER DEFAULT 0,
+					mentions INTEGER DEFAULT 0,
+					replies INTEGER DEFAULT 0,
+					reactions INTEGER DEFAULT 0,
+					rolling_7d INTEGER DEFAULT 0,
+					rolling_30d INTEGER DEFAULT 0,
+					total INTEGER DEFAULT 0,
+					created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					PRIMARY KEY (guild_id, user_a, user_b)
+				)
+			`);
+
+      // Conversation segments - multi-participant conversations
+      await client.query(`
+				CREATE TABLE IF NOT EXISTS conversation_segments (
+					id VARCHAR(50) PRIMARY KEY,
+					guild_id VARCHAR(20) NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+					channel_id VARCHAR(20) NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+					participants TEXT[] NOT NULL,
+					start_time TIMESTAMP WITH TIME ZONE NOT NULL,
+					end_time TIMESTAMP WITH TIME ZONE NOT NULL,
+					message_ids TEXT[] NOT NULL,
+					message_count INTEGER NOT NULL,
+					features JSONB DEFAULT '{}',
+					summary TEXT,
+					created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+				)
+			`);
+
+      // Relationship pairs - optional cache for quick undirected reads
+      await client.query(`
+				CREATE TABLE IF NOT EXISTS relationship_pairs (
+					guild_id VARCHAR(20) NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+					u_min VARCHAR(20) NOT NULL,
+					u_max VARCHAR(20) NOT NULL,
+					last_interaction TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					total_interactions INTEGER DEFAULT 0,
+					segment_ids TEXT[] DEFAULT '{}',
+					created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					PRIMARY KEY (guild_id, u_min, u_max),
+					CHECK (u_min < u_max)
+				)
+			`);
+
+      // Add last_message_id to channels for watermark tracking
+      await client.query(`
+				ALTER TABLE channels
+				ADD COLUMN IF NOT EXISTS last_message_id VARCHAR(20),
+				ADD COLUMN IF NOT EXISTS last_message_sync TIMESTAMP WITH TIME ZONE
 			`);
 
       // Create indexes for better performance
@@ -310,9 +385,17 @@ export class PostgreSQLManager {
 				CREATE INDEX IF NOT EXISTS idx_messages_channel_id ON messages(channel_id);
 				CREATE INDEX IF NOT EXISTS idx_messages_author_id ON messages(author_id);
 				CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
+				CREATE INDEX IF NOT EXISTS idx_relationship_edges_guild ON relationship_edges(guild_id);
+				CREATE INDEX IF NOT EXISTS idx_relationship_edges_user_a ON relationship_edges(user_a);
+				CREATE INDEX IF NOT EXISTS idx_relationship_edges_user_b ON relationship_edges(user_b);
+				CREATE INDEX IF NOT EXISTS idx_relationship_edges_last_interaction ON relationship_edges(last_interaction);
+				CREATE INDEX IF NOT EXISTS idx_conversation_segments_guild ON conversation_segments(guild_id);
+				CREATE INDEX IF NOT EXISTS idx_conversation_segments_channel ON conversation_segments(channel_id);
+				CREATE INDEX IF NOT EXISTS idx_conversation_segments_participants ON conversation_segments USING GIN(participants);
+				CREATE INDEX IF NOT EXISTS idx_conversation_segments_start_time ON conversation_segments(start_time);
+				CREATE INDEX IF NOT EXISTS idx_relationship_pairs_guild ON relationship_pairs(guild_id);
+				CREATE INDEX IF NOT EXISTS idx_relationship_pairs_users ON relationship_pairs(u_min, u_max);
 			`);
-
-      console.log("🔹 PostgreSQL schema initialized");
     } catch (error) {
       console.error("🔸 Failed to initialize PostgreSQL schema:", error);
     } finally {
@@ -569,14 +652,29 @@ export class PostgreSQLManager {
 
     const client = await this.pool!.connect();
     try {
+      // If referenced_message_id is provided, verify it exists in the database
+      // If it doesn't exist, set it to NULL to avoid foreign key constraint violations
+      let referencedMessageId = messageData.referenced_message_id || null;
+      if (referencedMessageId) {
+        const checkResult = await client.query(
+          "SELECT id FROM messages WHERE id = $1",
+          [referencedMessageId]
+        );
+        if (!checkResult.rows || checkResult.rows.length === 0) {
+          // Referenced message doesn't exist yet, set to NULL
+          referencedMessageId = null;
+        }
+      }
+
       const query = `
-				INSERT INTO messages (id, guild_id, channel_id, author_id, content, created_at, edited_at, attachments, embeds, active)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+				INSERT INTO messages (id, guild_id, channel_id, author_id, content, created_at, edited_at, attachments, embeds, referenced_message_id, active)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 				ON CONFLICT (id) DO UPDATE SET
 					content = EXCLUDED.content,
 					edited_at = EXCLUDED.edited_at,
 					attachments = EXCLUDED.attachments,
 					embeds = EXCLUDED.embeds,
+					referenced_message_id = EXCLUDED.referenced_message_id,
 					active = EXCLUDED.active
 				RETURNING *
 			`;
@@ -591,6 +689,7 @@ export class PostgreSQLManager {
         messageData.edited_at,
         messageData.attachments,
         messageData.embeds,
+        referencedMessageId,
         messageData.active,
       ];
 
@@ -608,7 +707,7 @@ export class PostgreSQLManager {
   }
 
   // Query operations
-  async query(text: string, params?: any[]): Promise<DatabaseResult<any[]>> {
+  async query(text: string, params?: any[]): Promise<DatabaseResult<any[] & { rowCount?: number }>> {
     if (!this.isConnected()) {
       return { success: false, error: "Database not connected" };
     }
@@ -616,7 +715,17 @@ export class PostgreSQLManager {
     const client = await this.pool!.connect();
     try {
       const result = await client.query(text, params);
-      return { success: true, data: result.rows };
+      // Include rowCount for DELETE/UPDATE queries by attaching it to the array
+      const data = result.rows as any[];
+      if (data && Array.isArray(data)) {
+        Object.defineProperty(data, 'rowCount', {
+          value: result.rowCount,
+          writable: false,
+          enumerable: false,
+          configurable: false
+        });
+      }
+      return { success: true, data };
     } catch (error) {
       console.error("🔸 Query failed:", error);
       return {
@@ -996,6 +1105,503 @@ export class PostgreSQLManager {
       return { success: true, data: Array.from(names) };
     } catch (error) {
       console.error("🔸 Failed to get user names:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  // ============================================================================
+  // Relationship Edges - Realtime Incremental Updates
+  // ============================================================================
+
+  /**
+   * Upsert relationship edge counters (O(1) update for realtime)
+   */
+  async upsertEdgeCounters(
+    guildId: string,
+    userA: string,
+    userB: string,
+    delta: {
+      msg_a_to_b?: number;
+      msg_b_to_a?: number;
+      mentions?: number;
+      replies?: number;
+      reactions?: number;
+      total?: number;
+    }
+  ): Promise<DatabaseResult<void>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        INSERT INTO relationship_edges (
+          guild_id, user_a, user_b, 
+          last_interaction, msg_a_to_b, msg_b_to_a, mentions, replies, reactions, total
+        )
+        VALUES ($1, $2, $3, NOW(), $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (guild_id, user_a, user_b) DO UPDATE SET
+          msg_a_to_b = relationship_edges.msg_a_to_b + EXCLUDED.msg_a_to_b,
+          msg_b_to_a = relationship_edges.msg_b_to_a + EXCLUDED.msg_b_to_a,
+          mentions = relationship_edges.mentions + EXCLUDED.mentions,
+          replies = relationship_edges.replies + EXCLUDED.replies,
+          reactions = relationship_edges.reactions + EXCLUDED.reactions,
+          total = relationship_edges.total + EXCLUDED.total,
+          last_interaction = GREATEST(relationship_edges.last_interaction, EXCLUDED.last_interaction),
+          updated_at = NOW()
+      `;
+
+      const values = [
+        guildId,
+        userA,
+        userB,
+        delta.msg_a_to_b || 0,
+        delta.msg_b_to_a || 0,
+        delta.mentions || 0,
+        delta.replies || 0,
+        delta.reactions || 0,
+        delta.total || 0,
+      ];
+
+      await client.query(query, values);
+      return { success: true };
+    } catch (error) {
+      console.error("🔸 Failed to upsert edge counters:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get edge for a specific pair
+   */
+  async getEdgeForPair(
+    guildId: string,
+    userA: string,
+    userB: string
+  ): Promise<DatabaseResult<any>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        SELECT * FROM relationship_edges
+        WHERE guild_id = $1 AND user_a = $2 AND user_b = $3
+      `;
+      const result = await client.query(query, [guildId, userA, userB]);
+      return {
+        success: true,
+        data: result.rows[0] || null,
+      };
+    } catch (error) {
+      console.error("🔸 Failed to get edge:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get all edges for a user (both directions)
+   */
+  async getEdgesForUser(
+    guildId: string,
+    userId: string,
+    limit: number = 50
+  ): Promise<DatabaseResult<any[]>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        SELECT * FROM relationship_edges
+        WHERE guild_id = $1 AND (user_a = $2 OR user_b = $2)
+        ORDER BY last_interaction DESC, total DESC
+        LIMIT $3
+      `;
+      const result = await client.query(query, [guildId, userId, limit]);
+      return { success: true, data: result.rows };
+    } catch (error) {
+      console.error("🔸 Failed to get edges for user:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Update rolling windows (7d, 30d) for edges
+   */
+  async updateEdgeRollingWindows(
+    guildId: string,
+    cutoff7d: Date,
+    cutoff30d: Date
+  ): Promise<DatabaseResult<void>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      // Reset rolling windows and recalculate from interactions in the windows
+      const query = `
+        UPDATE relationship_edges
+        SET 
+          rolling_7d = CASE 
+            WHEN last_interaction >= $2 THEN total
+            ELSE 0
+          END,
+          rolling_30d = CASE
+            WHEN last_interaction >= $3 THEN total
+            ELSE 0
+          END,
+          updated_at = NOW()
+        WHERE guild_id = $1
+      `;
+      await client.query(query, [guildId, cutoff7d, cutoff30d]);
+      return { success: true };
+    } catch (error) {
+      console.error("🔸 Failed to update rolling windows:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  // ============================================================================
+  // Conversation Segments - Multi-participant Conversations
+  // ============================================================================
+
+  /**
+   * Upsert conversation segment
+   */
+  async upsertConversationSegment(segment: {
+    id: string;
+    guildId: string;
+    channelId: string;
+    participants: string[];
+    startTime: Date;
+    endTime: Date;
+    messageIds: string[];
+    messageCount: number;
+    features?: Record<string, any>;
+    summary?: string;
+  }): Promise<DatabaseResult<void>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        INSERT INTO conversation_segments (
+          id, guild_id, channel_id, participants, start_time, end_time,
+          message_ids, message_count, features, summary
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (id) DO UPDATE SET
+          end_time = EXCLUDED.end_time,
+          message_ids = EXCLUDED.message_ids,
+          message_count = EXCLUDED.message_count,
+          features = EXCLUDED.features,
+          summary = EXCLUDED.summary
+      `;
+
+      const values = [
+        segment.id,
+        segment.guildId,
+        segment.channelId,
+        segment.participants,
+        segment.startTime,
+        segment.endTime,
+        segment.messageIds,
+        segment.messageCount,
+        JSON.stringify(segment.features || {}),
+        segment.summary || null,
+      ];
+
+      await client.query(query, values);
+      return { success: true };
+    } catch (error) {
+      console.error("🔸 Failed to upsert conversation segment:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get segments for participants (overlapping or exact match)
+   */
+  async getSegmentsForParticipants(
+    guildId: string,
+    participantIds: string[],
+    limit: number = 10,
+    since?: Date
+  ): Promise<DatabaseResult<any[]>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      // Find segments where participants array contains any of the given participant IDs
+      const query = `
+        SELECT * FROM conversation_segments
+        WHERE guild_id = $1
+          AND participants && $2::TEXT[]
+          ${since ? "AND start_time >= $4" : ""}
+        ORDER BY start_time DESC
+        LIMIT $3
+      `;
+      const params: any[] = [guildId, participantIds, limit];
+      if (since) params.push(since);
+
+      const result = await client.query(query, params);
+      return { success: true, data: result.rows };
+    } catch (error) {
+      console.error("🔸 Failed to get segments for participants:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get segments for a channel
+   */
+  async getSegmentsForChannel(
+    guildId: string,
+    channelId: string,
+    limit: number = 20
+  ): Promise<DatabaseResult<any[]>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        SELECT * FROM conversation_segments
+        WHERE guild_id = $1 AND channel_id = $2
+        ORDER BY start_time DESC
+        LIMIT $3
+      `;
+      const result = await client.query(query, [guildId, channelId, limit]);
+      return { success: true, data: result.rows };
+    } catch (error) {
+      console.error("🔸 Failed to get segments for channel:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  // ============================================================================
+  // Relationship Pairs - Undirected Cache
+  // ============================================================================
+
+  /**
+   * Upsert relationship pair (undirected, cached for quick reads)
+   */
+  async upsertPair(
+    guildId: string,
+    user1: string,
+    user2: string,
+    segmentId?: string
+  ): Promise<DatabaseResult<void>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const [uMin, uMax] = user1 < user2 ? [user1, user2] : [user2, user1];
+
+      const query = segmentId
+        ? `
+          INSERT INTO relationship_pairs (
+            guild_id, u_min, u_max, last_interaction, total_interactions, segment_ids
+          )
+          VALUES ($1, $2, $3, NOW(), 1, ARRAY[$4]::TEXT[])
+          ON CONFLICT (guild_id, u_min, u_max) DO UPDATE SET
+            last_interaction = NOW(),
+            total_interactions = relationship_pairs.total_interactions + 1,
+            segment_ids = (
+              SELECT array_agg(elem)
+              FROM (
+                SELECT DISTINCT elem
+                FROM unnest(relationship_pairs.segment_ids || ARRAY[$4]::TEXT[]) AS elem
+                ORDER BY elem DESC
+                LIMIT 20
+              ) subq
+            ),
+            updated_at = NOW()
+        `
+        : `
+          INSERT INTO relationship_pairs (
+            guild_id, u_min, u_max, last_interaction, total_interactions
+          )
+          VALUES ($1, $2, $3, NOW(), 1)
+          ON CONFLICT (guild_id, u_min, u_max) DO UPDATE SET
+            last_interaction = NOW(),
+            total_interactions = relationship_pairs.total_interactions + 1,
+            updated_at = NOW()
+        `;
+
+      const params = segmentId
+        ? [guildId, uMin, uMax, segmentId]
+        : [guildId, uMin, uMax];
+
+      await client.query(query, params);
+      return { success: true };
+    } catch (error) {
+      console.error("🔸 Failed to upsert pair:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get pairs for a user
+   */
+  async getPairsForUser(
+    guildId: string,
+    userId: string,
+    limit: number = 50
+  ): Promise<DatabaseResult<any[]>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        SELECT * FROM relationship_pairs
+        WHERE guild_id = $1 AND (u_min = $2 OR u_max = $2)
+        ORDER BY last_interaction DESC, total_interactions DESC
+        LIMIT $3
+      `;
+      const result = await client.query(query, [guildId, userId, limit]);
+      return { success: true, data: result.rows };
+    } catch (error) {
+      console.error("🔸 Failed to get pairs for user:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  // ============================================================================
+  // Channel Watermark Tracking
+  // ============================================================================
+
+  /**
+   * Update channel's last message watermark
+   */
+  async updateChannelLastMessage(
+    channelId: string,
+    messageId: string | null
+  ): Promise<DatabaseResult<void>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = messageId
+        ? `
+          UPDATE channels
+          SET last_message_id = $1, last_message_sync = NOW()
+          WHERE id = $2
+        `
+        : `
+          UPDATE channels
+          SET last_message_id = NULL, last_message_sync = NULL
+          WHERE id = $1
+        `;
+      await client.query(query, messageId ? [messageId, channelId] : [channelId]);
+      return { success: true };
+    } catch (error) {
+      console.error("🔸 Failed to update channel last message:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get channel watermark
+   */
+  async getChannelWatermark(channelId: string): Promise<
+    DatabaseResult<{
+      last_message_id: string | null;
+      last_message_sync: Date | null;
+    }>
+  > {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        SELECT last_message_id, last_message_sync
+        FROM channels
+        WHERE id = $1
+      `;
+      const result = await client.query(query, [channelId]);
+      return {
+        success: true,
+        data: result.rows[0] || {
+          last_message_id: null,
+          last_message_sync: null,
+        },
+      };
+    } catch (error) {
+      console.error("🔸 Failed to get channel watermark:", error);
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",

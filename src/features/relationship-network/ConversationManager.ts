@@ -2,8 +2,25 @@ import type { PostgreSQLManager } from "../database/PostgreSQLManager";
 import type { DatabaseResult } from "../database/PostgreSQLManager";
 import type { ConversationEntry } from "./types";
 
+interface ChannelBuffer {
+  messages: Array<{
+    id: string;
+    author_id: string;
+    content: string;
+    created_at: Date;
+  }>;
+  startTime: Date;
+  lastActivity: Date;
+  timeoutHandle?: NodeJS.Timeout;
+  guildId: string;
+  channelId: string;
+}
+
 export class ConversationManager {
   private db: PostgreSQLManager;
+  private channelBuffers: Map<string, ChannelBuffer> = new Map();
+  private readonly INACTIVITY_MS = 5 * 60 * 1000; // 5 minutes
+  private readonly MIN_MESSAGES = 3;
 
   // Pre-compile regex patterns for better performance
   private readonly mentionPattern = /<@!?(\d+)>/g;
@@ -336,5 +353,148 @@ export class ConversationManager {
       },
       has_name_usage: hasNameUsage, // Add flag for actual name usage
     };
+  }
+
+  // ============================================================================
+  // Streaming Mode - Realtime Conversation Detection
+  // ============================================================================
+
+  /**
+   * Add message to streaming buffer (realtime)
+   */
+  async addMessageToStream(
+    message: {
+      id: string;
+      author_id: string;
+      content: string;
+      created_at: Date;
+      guild_id: string;
+      channel_id: string;
+    }
+  ): Promise<void> {
+    const key = `${message.guild_id}:${message.channel_id}`;
+    let buffer = this.channelBuffers.get(key);
+
+    if (!buffer) {
+      buffer = {
+        messages: [],
+        startTime: message.created_at,
+        lastActivity: message.created_at,
+        guildId: message.guild_id,
+        channelId: message.channel_id,
+      };
+      this.channelBuffers.set(key, buffer);
+    }
+
+    buffer.messages.push({
+      id: message.id,
+      author_id: message.author_id,
+      content: message.content,
+      created_at: message.created_at,
+    });
+    buffer.lastActivity = message.created_at;
+
+    if (buffer.timeoutHandle) {
+      clearTimeout(buffer.timeoutHandle);
+    }
+
+    buffer.timeoutHandle = setTimeout(() => {
+      this.finalizeSegment(key);
+    }, this.INACTIVITY_MS);
+  }
+
+  /**
+   * Finalize a conversation segment and write to DB
+   */
+  private async finalizeSegment(bufferKey: string): Promise<void> {
+    const buffer = this.channelBuffers.get(bufferKey);
+    if (!buffer) return;
+
+    this.channelBuffers.delete(bufferKey);
+    if (buffer.timeoutHandle) {
+      clearTimeout(buffer.timeoutHandle);
+    }
+
+    if (buffer.messages.length < this.MIN_MESSAGES) {
+      return; // Not enough messages
+    }
+
+    const participants = Array.from(
+      new Set(buffer.messages.map((m) => m.author_id))
+    ).sort();
+
+    if (participants.length < 2) {
+      return; // Need at least 2 participants
+    }
+
+    const segmentId = `seg_${buffer.messages[0].id}_${Date.now()}`;
+    const endTime =
+      buffer.messages.length > 0
+        ? buffer.messages[buffer.messages.length - 1].created_at
+        : new Date();
+
+    const features: Record<string, any> = {
+      mention_count: buffer.messages.filter((m) =>
+        this.mentionPattern.test(m.content || "")
+      ).length,
+      reply_count: buffer.messages.filter((m) =>
+        this.replyPatterns.some((p) => p.test(m.content?.trim() || ""))
+      ).length,
+    };
+
+    const summary = this.generateSegmentSummary(
+      buffer.messages,
+      participants
+    );
+
+    await this.db.upsertConversationSegment({
+      id: segmentId,
+      guildId: buffer.guildId,
+      channelId: buffer.channelId,
+      participants,
+      startTime: buffer.startTime,
+      endTime,
+      messageIds: buffer.messages.map((m) => m.id),
+      messageCount: buffer.messages.length,
+      features,
+      summary,
+    });
+
+    for (let i = 0; i < participants.length; i++) {
+      for (let j = i + 1; j < participants.length; j++) {
+        await this.db.upsertPair(
+          buffer.guildId,
+          participants[i],
+          participants[j],
+          segmentId
+        );
+      }
+    }
+  }
+
+  /**
+   * Generate a short summary for a conversation segment
+   */
+  private generateSegmentSummary(
+    messages: Array<{ content: string; author_id: string }>,
+    participants: string[]
+  ): string {
+    const contents = messages
+      .map((m) => m.content)
+      .filter((c) => c && c.length > 0)
+      .slice(0, 5)
+      .join(" ")
+      .substring(0, 200);
+    return `${participants.length} users: ${contents}...`;
+  }
+
+  /**
+   * Manually finalize all active segments (for shutdown/cleanup)
+   */
+  async finalizeAllSegments(): Promise<void> {
+    const keys = Array.from(this.channelBuffers.keys());
+    for (const key of keys) {
+      await this.finalizeSegment(key);
+    }
   }
 }
