@@ -229,17 +229,39 @@ export class Bot {
             if (remaining.length) chunks.push(remaining);
             let lastMessage = message as any;
             const sentParts: string[] = [];
-            for (const chunk of chunks) {
-              lastMessage = await lastMessage.reply({
-                content: sanitizeEveryone(chunk),
-                allowedMentions: {
-                  parse: ["users", "roles"],
-                  repliedUser: false,
-                },
-              });
-              sentParts.push(
-                (lastMessage as any).content || sanitizeEveryone(chunk)
-              );
+            for (let i = 0; i < chunks.length; i++) {
+              const chunk = chunks[i];
+              try {
+                if (i === 0) {
+                  // First chunk: reply to the user's message to start the thread
+                  lastMessage = await lastMessage.reply({
+                    content: sanitizeEveryone(chunk),
+                    allowedMentions: {
+                      parse: ["users", "roles"],
+                      repliedUser: false,
+                    },
+                  });
+                } else {
+                  // Subsequent chunks: send to channel to avoid stale message_reference errors
+                  lastMessage = await (message.channel as any).send({
+                    content: sanitizeEveryone(chunk),
+                    allowedMentions: {
+                      parse: ["users", "roles"],
+                      repliedUser: false,
+                    },
+                  });
+                }
+              } catch (err: any) {
+                // Fallback: if replying failed due to unknown message reference, send to channel
+                lastMessage = await (message.channel as any).send({
+                  content: sanitizeEveryone(chunk),
+                  allowedMentions: {
+                    parse: ["users", "roles"],
+                    repliedUser: false,
+                  },
+                });
+              }
+              sentParts.push((lastMessage as any).content || sanitizeEveryone(chunk));
             }
             return { message: lastMessage, sentText: sentParts.join("\n\n") };
           };

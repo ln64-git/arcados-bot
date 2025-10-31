@@ -17,6 +17,8 @@ import { relationshipTools } from "./tools/RelationshipTools";
 import { conversationTools } from "./tools/ConversationTools";
 import { messageTools } from "./tools/MessageTools";
 import { serverTools } from "./tools/ServerTools";
+import { contextTools } from "./tools/ContextTools";
+import { analysisTools } from "./tools/AnalysisTools";
 import type { PostgreSQLManager } from "../database/PostgreSQLManager";
 import { computeResponsePolicy } from "./utils/ResponseLengthPolicy";
 
@@ -69,6 +71,8 @@ export class AIManager {
     this.databaseTools.registerTools(conversationTools);
     this.databaseTools.registerTools(messageTools);
     this.databaseTools.registerTools(serverTools);
+    this.databaseTools.registerTools(contextTools);
+    this.databaseTools.registerTools(analysisTools);
   }
 
   /**
@@ -611,10 +615,7 @@ export class AIManager {
     const useFormatting = options?.useDiscordFormatting !== false;
     const formatting = useFormatting ? `${this.DISCORD_FORMATTING}\n\n` : "";
 
-    // Tool guidance - casual for chat (no formatting), neutral for structured
-    const toolGuide = !useFormatting
-      ? `Tool guidance:\n- Keep responses casual and direct - like texting, not writing essays.\n- When asked about a user, call getUserInfo but be selective. 1-2 sentences max.\n- If the message refers to the speaker (e.g., "who am I?", "tell me about me"), use the current user's ID (context.userId) with getUserInfo.\n- NO formal language, NO philosophical rambling, NO fancy metaphors, NO academic tone.\n- Just answer the question simply. \n- \n- Be human: "yeah", "probably", "kinda", "pretty much" - use casual speech.\n- If input has <@123>, call getUserInfo with that userId.`
-      : `Tool guidance:\n- Use tools to access database information when needed.\n- Provide accurate, well-structured responses using available context.\n- If input has <@123>, call getUserInfo with that userId.`;
+    // Tool guidance removed to allow the model to respond without rigid constraints
 
     // Build method prompt with adaptive policy (no rigid rules)
     const initialPolicy = computeResponsePolicy({
@@ -622,12 +623,12 @@ export class AIManager {
       historyCount: options?.history?.length || 0,
       toolContextBytes: 0,
     });
-    const fullMethodPrompt = `${formatting}${methodPrompt}\n\n${toolGuide}\n\n${initialPolicy.guidance}`;
+    const fullMethodPrompt = `${formatting}${methodPrompt}\n\n${initialPolicy.guidance}`;
     const systemPrompt = this.buildSystemPrompt(fullMethodPrompt, personaKey);
 
     // Override with custom persona if provided
     const finalSystemPrompt = options?.persona
-      ? `${persona.base}\n\n${formatting}${methodPrompt}\n\nCustom Persona: ${options.persona}\n\n${toolGuide}`
+      ? `${persona.base}\n\n${formatting}${methodPrompt}\n\nCustom Persona: ${options.persona}`
       : systemPrompt;
 
     // Convert tools to provider format (start with Grok-compatible schema)
@@ -650,6 +651,46 @@ export class AIManager {
             )
             .join("\n");
           composedUser = `${historyText}\n\nUser: ${userPrompt}\n\nGuidance: ${initialPolicy.guidance}`;
+        }
+
+        // Prefetch holistic user context when a mention or self is present (first iteration only)
+        if (iteration === 0) {
+          try {
+            // Prefer explicit mention in the input
+            const mentionMatch = userPrompt.match(/<@!?([0-9]+)>/);
+            let targetUserId: string | null = mentionMatch?.[1] ?? null;
+            if (!targetUserId) {
+              // Fall back to self-query detection handled earlier; if it matched, target is the requester
+              const selfRegex =
+                /(who\s+am\s+i\b|whoami\b|tell\s+me\s+about\s+me\b|what\s+do\s+you\s+know\s+about\s+me\b|who\s+is\s+me\b)/i;
+              if (selfRegex.test(userPrompt)) {
+                targetUserId = userId;
+              }
+            }
+
+            if (targetUserId) {
+              const context: ToolContext = { userId, guildId, db };
+              const holistic = await this.databaseTools.executeTool(
+                "getHolisticUserContext",
+                {
+                  userId: targetUserId as string,
+                  lookbackDays: 14,
+                  messageLimit: 25,
+                  relationshipsLimit: 5,
+                },
+                context
+              );
+              const formatted =
+                typeof holistic === "object"
+                  ? holistic.data?.formatted || holistic.summary || ""
+                  : String(holistic);
+              if (formatted) {
+                composedUser = `Context (user ${targetUserId}):\n\n${formatted}\n\nUser: ${userPrompt}`;
+              }
+            }
+          } catch (prefetchErr) {
+            // Non-fatal: continue without prefetch context
+          }
         }
 
         const response = await provider.callTextAPIWithTools!(
