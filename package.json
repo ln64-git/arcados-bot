@@ -46,7 +46,10 @@
 		"repair:channel-replies": "npx tsx src/scripts/repair-channel-replies.ts",
 		"sync:channel": "npx tsx src/scripts/sync-single-channel.ts",
 		"backfill:replies": "npx tsx src/scripts/backfill-reply-references.ts",
-		"clear:messages": "npx tsx src/scripts/clear-guild-messages.ts"
+		"clear:messages": "npx tsx src/scripts/clear-guild-messages.ts",
+		"view:recent": "npx tsx src/scripts/view-recent-activity.ts",
+		"consolidate:segments": "npx tsx src/scripts/consolidate-segments.ts",
+		"clean:segments": "npx tsx src/scripts/clean-segments-bot-commands.ts"
 	},
 	"keywords": ["discord", "bot", "template", "typescript"],
 	"author": "",

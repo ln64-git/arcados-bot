@@ -77,8 +77,6 @@ export class Bot {
       );
       this.conversationManager = new ConversationManager(this.postgresManager);
 
-
-
       // Start database healer and maintenance
       this.databaseHealer = new DatabaseHealer(
         this.client,
@@ -161,11 +159,6 @@ export class Bot {
           !message.reference;
 
         // Debug logging (can be removed later)
-        if (isBotMentionedInUsers || isBotMentionedInContent) {
-          console.log(
-            `🔹 Bot mention detected: users=${isBotMentionedInUsers}, content=${isBotMentionedInContent}, isReply=${!!message.reference}, willHandle=${isBotMentioned}`
-          );
-        }
 
         // Prevent mass-mention pings from bot output (usable in all branches)
         const sanitizeEveryone = (input: string | undefined | null): string => {
@@ -261,7 +254,9 @@ export class Bot {
                   },
                 });
               }
-              sentParts.push((lastMessage as any).content || sanitizeEveryone(chunk));
+              sentParts.push(
+                (lastMessage as any).content || sanitizeEveryone(chunk)
+              );
             }
             return { message: lastMessage, sentText: sentParts.join("\n\n") };
           };

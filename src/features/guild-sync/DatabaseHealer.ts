@@ -951,12 +951,18 @@ export class DatabaseHealer {
    */
   private async runMaintenance(): Promise<void> {
     try {
-      console.log("🔹 Running periodic maintenance...");
+      // Only log if verbose or on errors
+      if (this.verbose) {
+        console.log("🔹 Running periodic maintenance...");
+      }
 
       await this.compactSegments();
       await this.updateRollingWindows();
+      await this.consolidateOverlappingSegments();
 
-      console.log("✅ Periodic maintenance completed");
+      if (this.verbose) {
+        console.log("✅ Periodic maintenance completed");
+      }
     } catch (error) {
       console.error("🔸 Error during maintenance:", error);
     }
@@ -976,8 +982,11 @@ export class DatabaseHealer {
       [cutoffDate]
     );
 
-    if (result.success) {
-      console.log(`🔹 Compacted old segments`);
+    if (result.success && this.verbose) {
+      const deleted = (result.data as any)?.rowCount || 0;
+      if (deleted > 0) {
+        console.log(`🔹 Compacted ${deleted} old segments`);
+      }
     }
   }
 
@@ -994,6 +1003,156 @@ export class DatabaseHealer {
     const guilds = this.client.guilds.cache;
     for (const [, guild] of guilds) {
       await this.db.updateEdgeRollingWindows(guild.id, cutoff7d, cutoff30d);
+    }
+  }
+
+  /**
+   * Consolidate overlapping segments in the same channel
+   */
+  private async consolidateOverlappingSegments(): Promise<void> {
+    try {
+      const guilds = this.client.guilds.cache;
+      let consolidated = 0;
+
+      for (const [, guild] of guilds) {
+        // Find segments in the same channel that overlap in time with shared participants
+        const segmentsResult = await this.db.query(
+          `SELECT id, channel_id, participants, start_time, end_time, message_ids, message_count
+           FROM conversation_segments
+           WHERE guild_id = $1
+           ORDER BY channel_id, start_time ASC`,
+          [guild.id]
+        );
+
+        if (!segmentsResult.success || !segmentsResult.data) continue;
+
+        const segments = segmentsResult.data;
+        const processed = new Set<string>();
+        const toDelete = new Set<string>();
+
+        for (let i = 0; i < segments.length; i++) {
+          const seg1 = segments[i];
+          if (processed.has(seg1.id) || toDelete.has(seg1.id)) continue;
+
+          const seg1Participants = Array.isArray(seg1.participants)
+            ? new Set(seg1.participants)
+            : new Set();
+
+          // Look for nearby segments to merge (within 30 minutes)
+          const seg1Start = new Date(seg1.start_time).getTime();
+          const seg1End = new Date(seg1.end_time).getTime();
+          const mergeWindow = 30 * 60 * 1000; // 30 minutes
+
+          const toMerge: any[] = [seg1];
+
+          for (let j = i + 1; j < segments.length; j++) {
+            const seg2 = segments[j];
+            if (seg1.channel_id !== seg2.channel_id) break; // Different channel
+
+            if (processed.has(seg2.id) || toDelete.has(seg2.id)) continue;
+
+            const seg2Start = new Date(seg2.start_time).getTime();
+            const seg2End = new Date(seg2.end_time).getTime();
+
+            // Check if segments are within merge window
+            const timeGap = Math.min(
+              Math.abs(seg2Start - seg1End),
+              Math.abs(seg2End - seg1Start)
+            );
+
+            if (timeGap > mergeWindow) continue;
+
+            // Check for participant overlap
+            const seg2Participants = Array.isArray(seg2.participants)
+              ? new Set(seg2.participants)
+              : new Set();
+
+            const hasOverlap = Array.from(seg1Participants).some((p) =>
+              seg2Participants.has(p)
+            );
+
+            if (hasOverlap) {
+              toMerge.push(seg2);
+            }
+          }
+
+          // Merge if we found segments to combine
+          if (toMerge.length > 1) {
+            const allParticipants = new Set<string>();
+            const allMessageIds = new Set<string>();
+            let earliestStart = Infinity;
+            let latestEnd = -Infinity;
+
+            for (const seg of toMerge) {
+              const participants = Array.isArray(seg.participants)
+                ? seg.participants
+                : [];
+              participants.forEach((p: string) => allParticipants.add(p));
+
+              const msgIds = Array.isArray(seg.message_ids)
+                ? seg.message_ids
+                : [];
+              msgIds.forEach((id: string) => allMessageIds.add(id));
+
+              const start = new Date(seg.start_time).getTime();
+              const end = new Date(seg.end_time).getTime();
+              earliestStart = Math.min(earliestStart, start);
+              latestEnd = Math.max(latestEnd, end);
+            }
+
+            const mergedParticipants = Array.from(allParticipants).sort();
+            const mergedMessageIds = Array.from(allMessageIds);
+
+            // Use the first segment's ID as the merged segment ID
+            const keepId = toMerge[0].id;
+
+            // Update the kept segment
+            await this.db.query(
+              `UPDATE conversation_segments
+               SET participants = $1::TEXT[],
+                   message_ids = $2::TEXT[],
+                   message_count = $3,
+                   start_time = $4,
+                   end_time = $5
+               WHERE id = $6`,
+              [
+                mergedParticipants,
+                mergedMessageIds,
+                mergedMessageIds.length,
+                new Date(earliestStart),
+                new Date(latestEnd),
+                keepId,
+              ]
+            );
+
+            // Mark others for deletion
+            for (let k = 1; k < toMerge.length; k++) {
+              toDelete.add(toMerge[k].id);
+              processed.add(toMerge[k].id);
+            }
+
+            consolidated += toMerge.length - 1;
+            processed.add(keepId);
+          } else {
+            processed.add(seg1.id);
+          }
+        }
+
+        // Delete merged segments
+        if (toDelete.size > 0) {
+          const deleteIds = Array.from(toDelete);
+          await this.db.query(
+            `DELETE FROM conversation_segments WHERE id = ANY($1::TEXT[])`,
+            [deleteIds]
+          );
+        }
+      }
+
+      if (consolidated > 0 && this.verbose) {
+        console.log(`🔹 Consolidated ${consolidated} overlapping segments`);
+      }
+    } catch (error) {
+      // Silently fail - consolidation is optional
     }
   }
 

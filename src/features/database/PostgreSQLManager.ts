@@ -147,7 +147,9 @@ export class PostgreSQLManager {
         connectionString: config.postgresUrl,
         max: 20,
         idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 2000,
+        connectionTimeoutMillis: 10000, // Increased from 2s to 10s
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 10000,
       });
 
       // Test the connection
@@ -712,29 +714,68 @@ export class PostgreSQLManager {
       return { success: false, error: "Database not connected" };
     }
 
-    const client = await this.pool!.connect();
-    try {
-      const result = await client.query(text, params);
-      // Include rowCount for DELETE/UPDATE queries by attaching it to the array
-      const data = result.rows as any[];
-      if (data && Array.isArray(data)) {
-        Object.defineProperty(data, 'rowCount', {
-          value: result.rowCount,
-          writable: false,
-          enumerable: false,
-          configurable: false
-        });
+    let retries = 3;
+    let lastError: Error | null = null;
+
+    while (retries > 0) {
+      const client = await this.pool!.connect().catch((err) => {
+        lastError = err;
+        return null;
+      });
+
+      if (!client) {
+        retries--;
+        if (retries > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 1000 * (4 - retries))); // Exponential backoff
+          continue;
+        }
+        return {
+          success: false,
+          error: lastError?.message || "Failed to acquire connection",
+        };
       }
-      return { success: true, data };
-    } catch (error) {
-      console.error("🔸 Query failed:", error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      };
-    } finally {
-      client.release();
+
+      try {
+        const result = await client.query(text, params);
+        // Include rowCount for DELETE/UPDATE queries by attaching it to the array
+        const data = result.rows as any[];
+        if (data && Array.isArray(data)) {
+          Object.defineProperty(data, 'rowCount', {
+            value: result.rowCount,
+            writable: false,
+            enumerable: false,
+            configurable: false
+          });
+        }
+        return { success: true, data };
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        const isConnectionError = 
+          lastError.message.includes("Connection terminated") ||
+          lastError.message.includes("timeout") ||
+          lastError.message.includes("ECONNRESET");
+
+        if (isConnectionError && retries > 1) {
+          retries--;
+          await new Promise((resolve) => setTimeout(resolve, 1000 * (4 - retries)));
+          continue;
+        }
+
+        // Non-retryable error or out of retries
+        console.error("🔸 Query failed:", lastError.message);
+        return {
+          success: false,
+          error: lastError.message,
+        };
+      } finally {
+        client.release();
+      }
     }
+
+    return {
+      success: false,
+      error: lastError?.message || "Query failed after retries",
+    };
   }
 
   // Get guild statistics
@@ -885,9 +926,7 @@ export class PostgreSQLManager {
         };
       }
 
-      console.log(
-        `🔹 Updating member ${memberId} with ${relationships.length} relationships`
-      );
+
 
       const query = `
 				UPDATE members 

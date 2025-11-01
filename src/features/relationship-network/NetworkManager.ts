@@ -595,6 +595,11 @@ export class RelationshipNetworkManager {
     direction: "a_to_b" | "b_to_a",
     timestamp: Date
   ): Promise<DatabaseResult<void>> {
+    // Skip self-interactions
+    if (authorId === otherId) {
+      return { success: true };
+    }
+
     try {
       const delta: any = {
         total: 1,
@@ -643,6 +648,20 @@ export class RelationshipNetworkManager {
     limit: number = 50
   ): Promise<DatabaseResult<void>> {
     try {
+      // Skip bots entirely
+      const botCheck = await this.db.query(
+        "SELECT bot FROM members WHERE guild_id = $1 AND user_id = $2 AND active = true",
+        [guildId, userId]
+      );
+      if (
+        botCheck.success &&
+        botCheck.data &&
+        botCheck.data.length > 0 &&
+        botCheck.data[0].bot
+      ) {
+        return { success: true };
+      }
+
       const edgesResult = await this.db.getEdgesForUser(guildId, userId, limit * 2);
       if (!edgesResult.success || !edgesResult.data) {
         throw new Error(`Failed to get edges: ${edgesResult.error}`);

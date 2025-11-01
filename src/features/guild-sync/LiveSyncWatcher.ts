@@ -138,6 +138,10 @@ export class LiveSyncWatcher {
       return;
     }
 
+    const mentionedUsers = Array.from(message.mentions.users.values())
+      .filter((u) => !u.bot && u.id !== authorId)
+      .map((u) => u.id);
+
     await this.conversationManager.addMessageToStream({
       id: message.id,
       author_id: authorId,
@@ -145,11 +149,9 @@ export class LiveSyncWatcher {
       created_at: timestamp,
       guild_id: guildId,
       channel_id: message.channel.id,
+      referenced_message_id: message.reference?.messageId || undefined,
+      mentioned_user_ids: mentionedUsers,
     });
-
-    const mentionedUsers = Array.from(message.mentions.users.values())
-      .filter((u) => !u.bot && u.id !== authorId)
-      .map((u) => u.id);
 
     for (const mentionedId of mentionedUsers) {
       await this.relationshipManager.recordInteraction(
@@ -256,24 +258,41 @@ export class LiveSyncWatcher {
     reaction: MessageReaction,
     user: User
   ): Promise<void> {
-    if (reaction.message.guildId && !user.bot && reaction.message.author) {
-      const guildId = reaction.message.guildId;
-      const authorId = reaction.message.author.id;
-      const reactorId = user.id;
+    if (!reaction.message.guildId || user.bot) return;
 
-      if (authorId !== reactorId) {
-        await this.relationshipManager.recordInteraction(
-          guildId,
-          reactorId,
-          authorId,
-          "reaction",
-          "a_to_b",
-          new Date()
-        );
-        this.queueRollup(reactorId, guildId);
-        this.queueRollup(authorId, guildId);
+    let authorId: string | null = null;
+
+    // Try to get author from cached message
+    if (reaction.message.author) {
+      authorId = reaction.message.author.id;
+    } else {
+      // Message not in cache, fetch it
+      try {
+        const message = await reaction.message.fetch();
+        if (message.author) {
+          authorId = message.author.id;
+        }
+      } catch (err) {
+        // Message might not exist or be inaccessible
+        return;
       }
     }
+
+    if (!authorId || authorId === user.id) return;
+
+    const guildId = reaction.message.guildId;
+    const reactorId = user.id;
+
+    await this.relationshipManager.recordInteraction(
+      guildId,
+      reactorId,
+      authorId,
+      "reaction",
+      "a_to_b",
+      new Date()
+    );
+    this.queueRollup(reactorId, guildId);
+    this.queueRollup(authorId, guildId);
   }
 
   /**
