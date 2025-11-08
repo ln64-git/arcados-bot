@@ -32,35 +32,36 @@ export const getUserRelationshipsTool: DatabaseTool = {
     required: ["userId"],
   },
   execute: async (
-    params: { userId: string; limit?: number; minAffinity?: number },
+    params: Record<string, any>,
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
+    const { userId, limit, minAffinity } = params as { userId: string; limit?: number; minAffinity?: number };
     try {
       const result = await context.db.getMemberRelationshipNetwork(
-        params.userId,
+        userId,
         context.guildId
       );
 
       if (!result.success || !result.data) {
         return {
           success: false,
-          error: `Failed to get relationships for user ${params.userId}`,
+          error: `Failed to get relationships for user ${userId}`,
         };
       }
 
       let relationships = result.data;
 
       // Filter by minimum affinity
-      if (params.minAffinity !== undefined) {
+      if (minAffinity !== undefined) {
         relationships = relationships.filter(
-          (r) => r.affinity_percentage >= params.minAffinity!
+          (r) => r.affinity_percentage >= minAffinity
         );
       }
 
       // Sort by affinity and limit
       relationships = relationships
         .sort((a, b) => b.affinity_percentage - a.affinity_percentage)
-        .slice(0, params.limit || 20);
+        .slice(0, limit || 20);
 
       // Get display names for relationships
       const userIds = relationships.map((r) => r.user_id);
@@ -132,38 +133,39 @@ export const getRelationshipBetweenTool: DatabaseTool = {
     required: ["user1Id", "user2Id"],
   },
   execute: async (
-    params: { user1Id: string; user2Id: string },
+    params: Record<string, any>,
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
+    const { user1Id, user2Id } = params as { user1Id: string; user2Id: string };
     try {
       // Get user1's relationship network
       const result = await context.db.getMemberRelationshipNetwork(
-        params.user1Id,
+        user1Id,
         context.guildId
       );
 
       if (!result.success || !result.data) {
         return {
           success: false,
-          error: `Failed to get relationships for user ${params.user1Id}`,
+          error: `Failed to get relationships for user ${user1Id}`,
         };
       }
 
       const relationship = result.data.find(
-        (r) => r.user_id === params.user2Id
+        (r) => r.user_id === user2Id
       );
 
       if (!relationship) {
         // Try reverse relationship
         const reverseResult = await context.db.getMemberRelationshipNetwork(
-          params.user2Id,
+          user2Id,
           context.guildId
         );
 
         if (
           reverseResult.success &&
           reverseResult.data &&
-          reverseResult.data.find((r) => r.user_id === params.user1Id)
+          reverseResult.data.find((r) => r.user_id === user1Id)
         ) {
           return {
             success: true,
@@ -179,23 +181,23 @@ export const getRelationshipBetweenTool: DatabaseTool = {
 
         return {
           success: false,
-          error: `No relationship found between ${params.user1Id} and ${params.user2Id}`,
+          error: `No relationship found between ${user1Id} and ${user2Id}`,
         };
       }
 
       // Get display names
       const namesResult = await context.db.query(
-        `SELECT user_id, display_name, username 
-         FROM members 
+        `SELECT user_id, display_name, username
+         FROM members
          WHERE user_id IN ($1, $2) AND guild_id = $3 AND active = true`,
-        [params.user1Id, params.user2Id, context.guildId]
+        [user1Id, user2Id, context.guildId]
       );
 
       if (namesResult.success && namesResult.data) {
         const nameMap = new Map(
           namesResult.data.map((m: any) => [m.user_id, m])
         );
-        const user2Member = nameMap.get(params.user2Id);
+        const user2Member = nameMap.get(user2Id);
         if (user2Member) {
           relationship.display_name = user2Member.display_name;
           relationship.username = user2Member.username;
@@ -260,25 +262,26 @@ export const getTopRelationshipsTool: DatabaseTool = {
     required: ["userId"],
   },
   execute: async (
-    params: { userId: string; limit?: number },
+    params: Record<string, any>,
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
+    const { userId, limit } = params as { userId: string; limit?: number };
     try {
       const result = await context.db.getMemberRelationshipNetwork(
-        params.userId,
+        userId,
         context.guildId
       );
 
       if (!result.success || !result.data) {
         return {
           success: false,
-          error: `Failed to get relationships for user ${params.userId}`,
+          error: `Failed to get relationships for user ${userId}`,
         };
       }
 
       const topRelationships = result.data
         .sort((a, b) => b.affinity_percentage - a.affinity_percentage)
-        .slice(0, params.limit || 10);
+        .slice(0, limit || 10);
 
       // Get display names
       const userIds = topRelationships.map((r) => r.user_id);
@@ -359,18 +362,19 @@ export const getMutualConnectionsTool: DatabaseTool = {
     required: ["user1Id", "user2Id"],
   },
   execute: async (
-    params: { user1Id: string; user2Id: string },
+    params: Record<string, any>,
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
+    const { user1Id, user2Id } = params as { user1Id: string; user2Id: string };
     try {
       // Get both users' relationship networks
       const [result1, result2] = await Promise.all([
         context.db.getMemberRelationshipNetwork(
-          params.user1Id,
+          user1Id,
           context.guildId
         ),
         context.db.getMemberRelationshipNetwork(
-          params.user2Id,
+          user2Id,
           context.guildId
         ),
       ]);
@@ -485,13 +489,14 @@ export const analyzeRelationshipTool: DatabaseTool = {
     required: ["user1Id", "user2Id"],
   },
   execute: async (
-    params: { user1Id: string; user2Id: string },
+    params: Record<string, any>,
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
+    const { user1Id, user2Id } = params as { user1Id: string; user2Id: string };
     try {
       // Get relationship
       const networkResult = await context.db.getMemberRelationshipNetwork(
-        params.user1Id,
+        user1Id,
         context.guildId
       );
 
@@ -503,7 +508,7 @@ export const analyzeRelationshipTool: DatabaseTool = {
       }
 
       const relationship = networkResult.data.find(
-        (r) => r.user_id === params.user2Id
+        (r) => r.user_id === user2Id
       );
 
       if (!relationship) {

@@ -4,6 +4,7 @@ import { RelationshipNetworkManager } from "../features/relationship-network/Net
 
 interface UserNameMap {
   [userId: string]: {
+    user_id: string;
     display_name: string;
     username: string;
   };
@@ -27,6 +28,7 @@ async function getUserNames(
   if (result.success && result.data) {
     for (const member of result.data as any[]) {
       nameMap[member.user_id] = {
+        user_id: member.user_id,
         display_name: member.display_name || member.username || member.user_id,
         username: member.username || member.user_id,
       };
@@ -37,6 +39,7 @@ async function getUserNames(
   for (const userId of userIds) {
     if (!nameMap[userId]) {
       nameMap[userId] = {
+        user_id: userId,
         display_name: userId,
         username: userId,
       };
@@ -235,6 +238,7 @@ async function testRelationships() {
 
         for (let i = 0; i < Math.min(network.length, 20); i++) {
           const rel = network[i];
+          if (!rel) continue;
           const date = new Date(rel.last_interaction).toLocaleDateString();
           const relatedName = formatUserName(relatedNameMap, rel.user_id);
 
@@ -253,41 +257,44 @@ async function testRelationships() {
         // Get dyad summary for top relationship
         if (network.length > 0) {
           const topRel = network[0];
-          const topRelName = formatUserName(relatedNameMap, topRel.user_id);
+          if (!topRel) {
+            console.log("\nNo top relationship found");
+          } else {
+            const topRelName = formatUserName(relatedNameMap, topRel.user_id);
 
-          console.log(`\n🔍 Dyad Analysis: ${userDisplayName} ↔ ${topRelName}`);
-          console.log("──────────────────────────────────────────────────────────");
+            console.log(`\n🔍 Dyad Analysis: ${userDisplayName} ↔ ${topRelName}`);
+            console.log("──────────────────────────────────────────────────────────");
 
-          const dyadResult = await relationshipManager.getDyadSummary(
-            userId,
-            topRel.user_id,
-            guildId
-          );
-
-          if (dyadResult.success && dyadResult.data) {
-            if (dyadResult.data.a_to_b) {
-              console.log(
-                `\n   ${userDisplayName} → ${topRelName}: ${dyadResult.data.a_to_b.interaction_count.toLocaleString()} interactions`
-              );
-            }
-            if (dyadResult.data.b_to_a) {
-              console.log(
-                `   ${topRelName} → ${userDisplayName}: ${dyadResult.data.b_to_a.interaction_count.toLocaleString()} interactions`
-              );
-            }
-
-            // Get conversation segments for this pair
-            const segmentsResult = await db.getSegmentsForParticipants(
-              guildId,
-              [userId, topRel.user_id],
-              5
+            const dyadResult = await relationshipManager.getDyadSummary(
+              userId,
+              topRel.user_id,
+              guildId
             );
 
-            if (
-              segmentsResult.success &&
-              segmentsResult.data &&
-              segmentsResult.data.length > 0
-            ) {
+            if (dyadResult.success && dyadResult.data) {
+              if (dyadResult.data.a_to_b) {
+                console.log(
+                  `\n   ${userDisplayName} → ${topRelName}: ${dyadResult.data.a_to_b.interaction_count.toLocaleString()} interactions`
+                );
+              }
+              if (dyadResult.data.b_to_a) {
+                console.log(
+                  `   ${topRelName} → ${userDisplayName}: ${dyadResult.data.b_to_a.interaction_count.toLocaleString()} interactions`
+                );
+              }
+
+              // Get conversation segments for this pair
+              const segmentsResult = await db.getSegmentsForParticipants(
+                guildId,
+                [userId, topRel.user_id],
+                5
+              );
+
+              if (
+                segmentsResult.success &&
+                segmentsResult.data &&
+                segmentsResult.data.length > 0
+              ) {
               // Get channel names
               const segChannelIds = new Set(
                 (segmentsResult.data as any[]).map((s) => s.channel_id)
@@ -321,6 +328,7 @@ async function testRelationships() {
               }
             }
           }
+        }
         }
       } else {
         const userNameMap = await getUserNames(db, [userId], guildId);

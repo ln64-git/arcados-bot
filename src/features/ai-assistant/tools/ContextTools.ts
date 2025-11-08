@@ -342,15 +342,15 @@ export const getHolisticUserContextTool: DatabaseTool = {
     required: ["userId"],
   },
   execute: async (
-    params: { userId: string; lookbackDays?: number; messageLimit?: number; relationshipsLimit?: number },
+    params: Record<string, any>,
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
+    const { userId, lookbackDays: lookbackDaysParam, messageLimit: messageLimitParam, relationshipsLimit: relationshipsLimitParam } = params as { userId: string; lookbackDays?: number; messageLimit?: number; relationshipsLimit?: number };
     try {
-      const userId = params.userId;
-      const lookbackDays = Math.max(1, Math.min(params.lookbackDays || 14, 90));
+      const lookbackDays = Math.max(1, Math.min(lookbackDaysParam || 14, 90));
       const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
-      const messageLimit = Math.max(5, Math.min(params.messageLimit || 25, 100));
-      const relationshipsLimit = Math.max(1, Math.min(params.relationshipsLimit || 5, 15));
+      const messageLimit = Math.max(5, Math.min(messageLimitParam || 25, 100));
+      const relationshipsLimit = Math.max(1, Math.min(relationshipsLimitParam || 5, 15));
 
       // Member profile
       const memberResult = await context.db.query(

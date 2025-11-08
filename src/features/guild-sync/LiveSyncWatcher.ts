@@ -15,8 +15,14 @@ export class LiveSyncWatcher {
   private db: PostgreSQLManager;
   private relationshipManager: RelationshipNetworkManager;
   private conversationManager: ConversationManager;
-  private rollupQueue: Set<string> = new Set();
+  private rollupQueue: Map<string, number> = new Map(); // userId:guildId -> interaction count
   private rollupTimer?: NodeJS.Timeout;
+  private recentMessageIds: Map<string, number> = new Map(); // messageId -> timestamp
+  private readonly MESSAGE_DEDUP_WINDOW = 5000; // 5 seconds
+  private readonly MAX_RECENT_MESSAGES = 1000; // Prevent unbounded growth
+  private readonly ROLLUP_SIZE_THRESHOLD = 50; // Process when this many unique users queued
+  private readonly ROLLUP_TIME_THRESHOLD = 30 * 1000; // Or every 30 seconds
+  private lastRollupTime = Date.now();
 
   constructor(
     client: Client,
@@ -89,13 +95,58 @@ export class LiveSyncWatcher {
   }
 
   /**
+   * Check if message was already processed (deduplication)
+   */
+  private isMessageDuplicate(messageId: string): boolean {
+    const now = Date.now();
+    const lastSeen = this.recentMessageIds.get(messageId);
+
+    if (!lastSeen) {
+      // First time seeing this message
+      this.recentMessageIds.set(messageId, now);
+      this.cleanupOldMessages(now);
+      return false;
+    }
+
+    // If we've seen it recently, it's a duplicate
+    if (now - lastSeen < this.MESSAGE_DEDUP_WINDOW) {
+      return true;
+    }
+
+    // Outside dedup window, treat as new
+    this.recentMessageIds.set(messageId, now);
+    return false;
+  }
+
+  /**
+   * Clean up old message IDs to prevent unbounded memory growth
+   */
+  private cleanupOldMessages(now: number): void {
+    // If we've accumulated too many, remove oldest entries
+    if (this.recentMessageIds.size > this.MAX_RECENT_MESSAGES) {
+      const entriesToRemove = this.recentMessageIds.size - this.MAX_RECENT_MESSAGES;
+      let removed = 0;
+
+      for (const [messageId, timestamp] of this.recentMessageIds.entries()) {
+        if (now - timestamp > this.MESSAGE_DEDUP_WINDOW) {
+          this.recentMessageIds.delete(messageId);
+          removed++;
+          if (removed >= entriesToRemove) break;
+        }
+      }
+    }
+  }
+
+  /**
    * Handle new message
    */
   private async handleMessageCreate(message: Message): Promise<void> {
-    // Debug logging
+    // Check for duplicate messages (Discord sometimes resends)
+    if (this.isMessageDuplicate(message.id)) {
+      return;
+    }
 
     if (!message.guildId) {
-      console.log(`   ⏭️ Skipping: no guildId`);
       return;
     }
 
@@ -166,6 +217,7 @@ export class LiveSyncWatcher {
       this.queueRollup(mentionedId, guildId);
     }
 
+    // Handle reply interactions and track reply chain context
     if (message.reference?.messageId) {
       try {
         const referencedMessage = await message.channel.messages.fetch(
@@ -174,6 +226,7 @@ export class LiveSyncWatcher {
         const repliedToId = referencedMessage.author.id;
 
         if (repliedToId !== authorId) {
+          // Direct reply interaction
           await this.relationshipManager.recordInteraction(
             guildId,
             authorId,
@@ -184,6 +237,39 @@ export class LiveSyncWatcher {
           );
           this.queueRollup(authorId, guildId);
           this.queueRollup(repliedToId, guildId);
+
+          // If the replied-to message is itself a reply, also record interaction with the original author
+          // This captures extended conversation threads
+          if (
+            referencedMessage.reference?.messageId &&
+            referencedMessage.reference.messageId !== message.reference.messageId
+          ) {
+            try {
+              const originalMessage = await message.channel.messages.fetch(
+                referencedMessage.reference.messageId
+              );
+              const originalAuthorId = originalMessage.author.id;
+
+              if (
+                originalAuthorId !== authorId &&
+                originalAuthorId !== repliedToId
+              ) {
+                // Record indirect interaction with original author (weaker signal: "message" instead of "reply")
+                await this.relationshipManager.recordInteraction(
+                  guildId,
+                  authorId,
+                  originalAuthorId,
+                  "message",
+                  "a_to_b",
+                  timestamp
+                );
+                this.queueRollup(authorId, guildId);
+                this.queueRollup(originalAuthorId, guildId);
+              }
+            } catch {
+              // Original message may not be accessible
+            }
+          }
         }
       } catch (err) {
         // Referenced message may not exist
@@ -421,42 +507,66 @@ export class LiveSyncWatcher {
   }
 
   /**
-   * Queue a user for relationship network rollup
+   * Queue a user for relationship network rollup with adaptive batching
    */
   private queueRollup(userId: string, guildId: string): void {
     const key = `${guildId}:${userId}`;
-    this.rollupQueue.add(key);
+    this.rollupQueue.set(key, (this.rollupQueue.get(key) ?? 0) + 1);
+
+    // Early trigger if we've accumulated many users or enough time passed
+    const now = Date.now();
+    const timeSinceLastRollup = now - this.lastRollupTime;
+
+    if (
+      this.rollupQueue.size >= this.ROLLUP_SIZE_THRESHOLD ||
+      timeSinceLastRollup > this.ROLLUP_TIME_THRESHOLD
+    ) {
+      this.processRollupQueue().catch((err) =>
+        console.error("🔸 Error processing rollup queue:", err)
+      );
+    }
   }
 
   /**
-   * Start periodic rollup timer (every 2 minutes)
+   * Start periodic rollup timer (fallback: every 30 seconds)
    */
   private startRollupTimer(): void {
     this.rollupTimer = setInterval(async () => {
       await this.processRollupQueue();
-    }, 2 * 60 * 1000);
+    }, this.ROLLUP_TIME_THRESHOLD);
   }
 
   /**
-   * Process queued rollups
+   * Process queued rollups (adaptive batching)
    */
   private async processRollupQueue(): Promise<void> {
     if (this.rollupQueue.size === 0) return;
 
-    const keys = Array.from(this.rollupQueue);
+    const entries = Array.from(this.rollupQueue.entries());
     this.rollupQueue.clear();
+    this.lastRollupTime = Date.now();
 
-    for (const key of keys) {
-      const [guildId, userId] = key.split(":");
-      if (!guildId || !userId) continue;
-      try {
-        await this.relationshipManager.rollupEdgesToMemberNetwork(
-          userId,
-          guildId
-        );
-      } catch (err) {
-        console.error(`🔸 Failed to rollup for ${key}:`, err);
-      }
+    // Process all queued users concurrently (up to 10 at a time)
+    const batchSize = 10;
+    for (let i = 0; i < entries.length; i += batchSize) {
+      const batch = entries.slice(i, i + batchSize);
+      await Promise.all(
+        batch.map(async ([key]) => {
+          const [guildId, userId] = key.split(":");
+          if (!guildId || !userId) return;
+
+          try {
+            await this.relationshipManager.rollupEdgesToMemberNetwork(
+              userId,
+              guildId
+            );
+          } catch (err) {
+            console.error(`🔸 Failed to rollup for ${key}:`, err);
+            // Re-queue on failure for retry on next cycle
+            this.queueRollup(userId, guildId);
+          }
+        })
+      );
     }
   }
 

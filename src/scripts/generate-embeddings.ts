@@ -62,12 +62,12 @@ async function generateEmbeddings() {
 
 				const updates = messages.map((msg, idx) => ({
 					messageId: msg.id,
-					embedding: embeddings[idx],
-				}));
+					embedding: embeddings[idx]!,
+				})).filter(u => u.embedding !== undefined);
 
 				console.log(`🔹 Updating database with ${updates.length} embeddings...`);
 
-				const updateResult = await db.updateMessageEmbeddingsBatch(updates);
+				const updateResult = await db.updateMessageEmbeddingsBatch(updates as { messageId: string; embedding: number[]; }[]);
 
 				if (!updateResult.success) {
 					console.error(

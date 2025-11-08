@@ -128,7 +128,7 @@ async function generateRelationshipsFromHistory() {
         mentionPattern.lastIndex = 0;
         while ((match = mentionPattern.exec(message.content || "")) !== null) {
           const mentionedId = match[1];
-          if (mentionedId === authorId) continue;
+          if (!mentionedId || mentionedId === authorId) continue;
           // Verify this user exists in the guild and is not a bot
           const memberCheck = await db.query(
             "SELECT bot FROM members WHERE user_id = $1 AND guild_id = $2 AND active = true",
@@ -148,7 +148,7 @@ async function generateRelationshipsFromHistory() {
         for (const mentionedId of mentions) {
           await relationshipManager.recordInteraction(
             guildId,
-            authorId,
+            authorId || "",
             mentionedId,
             "mention",
             "a_to_b",
@@ -288,20 +288,20 @@ async function generateRelationshipsFromHistory() {
           // Save segments to database
           for (const conv of convResult.data) {
             await db.upsertConversationSegment({
-              id: conv.conversation_id,
+              id: conv.conversation_id || conv.segment_id,
               guildId: guildId,
               channelId: conv.channel_id,
               participants: [pair.u_min, pair.u_max],
               startTime: conv.start_time,
               endTime: conv.end_time,
-              messageIds: conv.message_ids,
+              messageIds: conv.message_ids || [],
               messageCount: conv.message_count,
               features: {
                 duration_minutes: conv.duration_minutes,
                 has_mentions: conv.interaction_types?.includes("mention") || false,
                 has_name_usage: conv.has_name_usage || false,
               },
-              summary: conv.summary,
+              summary: undefined,
             });
 
             segmentsCreated++;

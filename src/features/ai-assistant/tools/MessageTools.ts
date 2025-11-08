@@ -30,22 +30,23 @@ export const getUserMessagesTool: DatabaseTool = {
     required: ["userId"],
   },
   execute: async (
-    params: { userId: string; limit?: number; channelId?: string },
+    params: Record<string, any>,
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
+    const { userId, limit, channelId } = params as { userId: string; limit?: number; channelId?: string };
     try {
       let query = `SELECT id, channel_id, content, created_at, edited_at
-                   FROM messages 
+                   FROM messages
                    WHERE author_id = $1 AND guild_id = $2 AND active = true`;
-      const queryParams: any[] = [params.userId, context.guildId];
+      const queryParams: any[] = [userId, context.guildId];
 
-      if (params.channelId) {
+      if (channelId) {
         query += ` AND channel_id = $3`;
-        queryParams.push(params.channelId);
+        queryParams.push(channelId);
       }
 
       query += ` ORDER BY created_at DESC LIMIT $${queryParams.length + 1}`;
-      queryParams.push(params.limit || 50);
+      queryParams.push(limit || 50);
 
       const result = await context.db.query(query, queryParams);
 
@@ -132,32 +133,33 @@ export const searchMessagesTool: DatabaseTool = {
     required: ["query"],
   },
   execute: async (
-    params: { query: string; authorId?: string; limit?: number },
+    params: Record<string, any>,
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
+    const { query, authorId, limit } = params as { query: string; authorId?: string; limit?: number };
     try {
       let searchQuery = `SELECT m.id, m.channel_id, m.author_id, m.content, m.created_at,
                                 mem.display_name, mem.username
                          FROM messages m
                          JOIN members mem ON m.author_id = mem.user_id AND m.guild_id = mem.guild_id
-                         WHERE m.guild_id = $1 
+                         WHERE m.guild_id = $1
                            AND m.active = true
                            AND LOWER(m.content) LIKE $2`;
 
       const queryParams: any[] = [
         context.guildId,
-        `%${params.query.toLowerCase()}%`,
+        `%${query.toLowerCase()}%`,
       ];
 
-      if (params.authorId) {
+      if (authorId) {
         searchQuery += ` AND m.author_id = $3`;
-        queryParams.push(params.authorId);
+        queryParams.push(authorId);
       }
 
       searchQuery += ` ORDER BY m.created_at DESC LIMIT $${
         queryParams.length + 1
       }`;
-      queryParams.push(params.limit || 20);
+      queryParams.push(limit || 20);
 
       const result = await context.db.query(searchQuery, queryParams);
 
@@ -173,7 +175,7 @@ export const searchMessagesTool: DatabaseTool = {
       if (messages.length === 0) {
         return {
           success: true,
-          summary: `No messages found matching "${params.query}"`,
+          summary: `No messages found matching "${query}"`,
           data: {
             formatted: "No matching messages found",
             messages: [],
@@ -195,7 +197,7 @@ export const searchMessagesTool: DatabaseTool = {
 
       return {
         success: true,
-        summary: `Found ${messages.length} message(s) matching "${params.query}"`,
+        summary: `Found ${messages.length} message(s) matching "${query}"`,
         data: {
           formatted,
           messages,
@@ -235,31 +237,32 @@ export const getMessageInteractionsTool: DatabaseTool = {
     required: ["userId"],
   },
   execute: async (
-    params: { userId: string; timeWindow?: number },
+    params: Record<string, any>,
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
+    const { userId, timeWindow } = params as { userId: string; timeWindow?: number };
     try {
-      const timeWindowMinutes = params.timeWindow || 60;
+      const timeWindowMinutes = timeWindow || 60;
       const since = new Date();
       since.setMinutes(since.getMinutes() - timeWindowMinutes);
 
       // Get messages that mention the user
       const mentionsResult = await context.db.query(
-        `SELECT DISTINCT m.author_id, m.channel_id, m.created_at, 
+        `SELECT DISTINCT m.author_id, m.channel_id, m.created_at,
                 mem.display_name, mem.username
          FROM messages m
          JOIN members mem ON m.author_id = mem.user_id AND m.guild_id = mem.guild_id
-         WHERE m.guild_id = $1 
+         WHERE m.guild_id = $1
            AND m.active = true
            AND m.created_at >= $2
            AND m.content LIKE $3`,
-        [context.guildId, since, `%<@${params.userId}>%`]
+        [context.guildId, since, `%<@${userId}>%`]
       );
 
       // Get messages from nearby interactions (same channel within time window)
       const interactionsResult = await context.db.getMessageInteractions(
-        params.userId,
-        params.userId, // This will find interactions in same channels
+        userId,
+        userId, // This will find interactions in same channels
         context.guildId,
         timeWindowMinutes
       );

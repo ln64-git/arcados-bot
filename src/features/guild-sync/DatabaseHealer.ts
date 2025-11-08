@@ -156,30 +156,64 @@ export class DatabaseHealer {
           const watermarkResult = await this.db.getChannelWatermark(channel.id);
           if (watermarkResult.success && watermarkResult.data) {
             const lastMessageId = watermarkResult.data.last_message_id;
-            if (lastMessageId && channel.isTextBased()) {
-              // Quick check: fetch latest message to see if there's anything new
-              try {
-                const textChannel = channel as any;
-                const latestMessages = await textChannel.messages.fetch({
-                  limit: 1,
-                });
-                const latestMessage = latestMessages.first();
 
-                // If latest message ID matches watermark, channel is up to date
-                if (latestMessage && latestMessage.id === lastMessageId) {
-                  return { success: true };
-                }
-              } catch {
-                return { success: false, skipped: true };
+            if (!channel.isTextBased()) {
+              return { success: true };
+            }
+
+            const textChannel = channel as any;
+            const channelName = `#${textChannel.name || channel.id}`;
+
+            // If no watermark ID (e.g., messages were cleared), do a full backfill
+            if (!lastMessageId) {
+              await this.backfillMessagesFromWatermark(
+                guild.id,
+                channel.id,
+                "",
+                channelName
+              );
+              return { success: true };
+            }
+
+            // Quick check: fetch latest message to see if there's anything new
+            try {
+              const latestMessages = await textChannel.messages.fetch({
+                limit: 50, // Fetch more to handle bot-heavy channels
+              });
+
+              if (latestMessages.size === 0) {
+                return { success: true }; // No messages in channel
               }
 
-              const channelName = `#${(channel as any).name || channel.id}`;
+              // Find latest non-bot message
+              const latestNonBot = Array.from(latestMessages.values()).find(
+                (m: any) => !m.author?.bot
+              ) as any;
+
+              // If latest message ID matches watermark, channel is up to date
+              if (latestNonBot && latestNonBot.id === lastMessageId) {
+                return { success: true };
+              }
+
+              // Otherwise backfill from watermark
               await this.backfillMessagesFromWatermark(
                 guild.id,
                 channel.id,
                 lastMessageId,
                 channelName
               );
+            } catch (err: any) {
+              // Check for permission errors
+              if (err.code === 50001) {
+                // Missing Access
+                return { success: true, skipped: true };
+              }
+              // For other errors, log but don't fail the healing pass
+              console.error(
+                `🔸 Error checking watermark for ${channelName}:`,
+                err
+              );
+              return { success: false, skipped: true };
             }
           }
 

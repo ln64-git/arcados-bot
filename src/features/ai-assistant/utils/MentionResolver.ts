@@ -42,16 +42,17 @@ export async function resolveMentionsInText(
           member.display_name ||
           member.global_name ||
           member.nick ||
-          member.username;
-        resolvedMentions.set(userId, name);
+          member.username ||
+          `user${userId?.slice(-4) || ""}`;
+        resolvedMentions.set(userId || "", name);
       } else {
         // Fallback: try inactive members
         const fallbackResult = await db.query(
           `SELECT display_name, username, global_name, nick
-           FROM members 
+           FROM members
            WHERE user_id = $1 AND guild_id = $2 AND active = false
            LIMIT 1`,
-          [userId, guildId]
+          [userId || "", guildId]
         );
 
         if (
@@ -64,23 +65,24 @@ export async function resolveMentionsInText(
             member.display_name ||
             member.global_name ||
             member.nick ||
-            member.username;
-          resolvedMentions.set(userId, name);
+            member.username ||
+            `user${userId?.slice(-4) || ""}`;
+          resolvedMentions.set(userId || "", name);
         } else {
           // If user not found, keep the mention or use user ID
-          resolvedMentions.set(userId, `@user${userId.slice(-4)}`);
+          resolvedMentions.set(userId || "", `user${userId?.slice(-4) || ""}`);
         }
       }
     } catch (error) {
-      console.error(`🔸 Error resolving mention for user ${userId}:`, error);
-      resolvedMentions.set(userId, `@user${userId.slice(-4)}`);
+      console.error(`🔸 Error resolving mention for user ${userId || "unknown"}:`, error);
+      resolvedMentions.set(userId || "", `user${userId?.slice(-4) || ""}`);
     }
   }
 
   // Replace all mentions with resolved names
   for (const match of mentions) {
     const userId = match[1];
-    const name = resolvedMentions.get(userId) || `@user${userId.slice(-4)}`;
+    const name = resolvedMentions.get(userId || "") || `user${userId?.slice(-4) || ""}`;
     resolved = resolved.replace(match[0], `@${name}`);
   }
 

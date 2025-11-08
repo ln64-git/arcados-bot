@@ -43,19 +43,32 @@ export interface AffinityScoreResult {
   relevance_percentage: number; // Percentage of total interaction time/attention
 }
 
-// Conversation tracking data
+// Conversation tracking data (lightweight reference to segment)
 export interface ConversationEntry {
-  conversation_id: string;
+  segment_id: string; // Reference to conversation_segments table
+  // Legacy fields for backward compatibility
+  conversation_id?: string; // Alias for segment_id
+  message_ids?: string[]; // Optional message IDs for legacy code
   start_time: Date;
   end_time: Date;
   message_count: number;
   channel_id: string;
-  message_ids: string[];
   interaction_types: string[]; // Types of interactions in this conversation
   duration_minutes: number;
-  user_names: {
-    user1: string[]; // All names used for user1 during this conversation period
-    user2: string[]; // All names used for user2 during this conversation period
+  participant_count: number; // Number of participants in segment
+  user_names?: {
+    user1: string[];
+    user2: string[];
   };
-  has_name_usage: boolean; // Whether names were actually used in messages
+  has_name_usage?: boolean; // Optional for legacy code
+}
+
+// Legacy type for backward compatibility - can be removed after full migration
+export interface ConversationEntryFull extends ConversationEntry {
+  message_ids?: string[];
+  user_names?: {
+    user1: string[];
+    user2: string[];
+  };
+  has_name_usage?: boolean;
 }

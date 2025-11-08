@@ -369,8 +369,17 @@ export class PostgreSQLManager {
 					message_count INTEGER NOT NULL,
 					features JSONB DEFAULT '{}',
 					summary TEXT,
+					status VARCHAR(20) DEFAULT 'finalized',
+					last_activity_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
 					created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 				)
+			`);
+
+      // Add status and last_activity_at columns if they don't exist (migration)
+      await client.query(`
+				ALTER TABLE conversation_segments
+				ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'finalized',
+				ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 			`);
 
       // Relationship pairs - optional cache for quick undirected reads
@@ -414,9 +423,12 @@ export class PostgreSQLManager {
 				CREATE INDEX IF NOT EXISTS idx_conversation_segments_channel ON conversation_segments(channel_id);
 				CREATE INDEX IF NOT EXISTS idx_conversation_segments_participants ON conversation_segments USING GIN(participants);
 				CREATE INDEX IF NOT EXISTS idx_conversation_segments_start_time ON conversation_segments(start_time);
+				CREATE INDEX IF NOT EXISTS idx_conversation_segments_status ON conversation_segments(status);
+				CREATE INDEX IF NOT EXISTS idx_conversation_segments_last_activity ON conversation_segments(last_activity_at DESC);
+				CREATE INDEX IF NOT EXISTS idx_conversation_segments_active_users ON conversation_segments(guild_id, status) WHERE status = 'active';
 				CREATE INDEX IF NOT EXISTS idx_relationship_pairs_guild ON relationship_pairs(guild_id);
 				CREATE INDEX IF NOT EXISTS idx_relationship_pairs_users ON relationship_pairs(u_min, u_max);
-				CREATE INDEX IF NOT EXISTS messages_embedding_idx 
+				CREATE INDEX IF NOT EXISTS messages_embedding_idx
 					ON messages USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
 					WHERE embedding IS NOT NULL;
 			`);
@@ -1382,6 +1394,7 @@ export class PostgreSQLManager {
     messageCount: number;
     features?: Record<string, any>;
     summary?: string;
+    status?: "active" | "paused" | "finalized";
   }): Promise<DatabaseResult<void>> {
     if (!this.isConnected()) {
       return { success: false, error: "Database not connected" };
@@ -1392,15 +1405,17 @@ export class PostgreSQLManager {
       const query = `
         INSERT INTO conversation_segments (
           id, guild_id, channel_id, participants, start_time, end_time,
-          message_ids, message_count, features, summary
+          message_ids, message_count, features, summary, status, last_activity_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         ON CONFLICT (id) DO UPDATE SET
           end_time = EXCLUDED.end_time,
           message_ids = EXCLUDED.message_ids,
           message_count = EXCLUDED.message_count,
           features = EXCLUDED.features,
-          summary = EXCLUDED.summary
+          summary = EXCLUDED.summary,
+          status = EXCLUDED.status,
+          last_activity_at = EXCLUDED.last_activity_at
       `;
 
       const values = [
@@ -1414,6 +1429,8 @@ export class PostgreSQLManager {
         segment.messageCount,
         JSON.stringify(segment.features || {}),
         segment.summary || null,
+        segment.status || "finalized",
+        segment.endTime,
       ];
 
       await client.query(query, values);
@@ -1493,6 +1510,171 @@ export class PostgreSQLManager {
       return { success: true, data: result.rows };
     } catch (error) {
       console.error("🔸 Failed to get segments for channel:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get active conversations for a user (real-time)
+   */
+  async getActiveConversationsForUser(
+    userId: string,
+    guildId: string,
+    limit: number = 20
+  ): Promise<DatabaseResult<any[]>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        SELECT * FROM conversation_segments
+        WHERE guild_id = $1
+          AND participants @> $2::TEXT[]
+          AND status = 'active'
+        ORDER BY last_activity_at DESC
+        LIMIT $3
+      `;
+      const result = await client.query(query, [guildId, [userId], limit]);
+      return { success: true, data: result.rows };
+    } catch (error) {
+      console.error("🔸 Failed to get active conversations for user:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get active conversations in a channel (real-time)
+   */
+  async getActiveConversationsInChannel(
+    channelId: string,
+    guildId: string,
+    limit: number = 20
+  ): Promise<DatabaseResult<any[]>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        SELECT * FROM conversation_segments
+        WHERE guild_id = $1 AND channel_id = $2
+          AND status = 'active'
+        ORDER BY last_activity_at DESC
+        LIMIT $3
+      `;
+      const result = await client.query(query, [guildId, channelId, limit]);
+      return { success: true, data: result.rows };
+    } catch (error) {
+      console.error("🔸 Failed to get active conversations in channel:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get conversation history for a user with pagination
+   */
+  async getUserConversationHistory(
+    userId: string,
+    guildId: string,
+    limit: number = 50,
+    offset: number = 0
+  ): Promise<DatabaseResult<any[]>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        SELECT * FROM conversation_segments
+        WHERE guild_id = $1
+          AND participants @> $2::TEXT[]
+        ORDER BY last_activity_at DESC
+        LIMIT $3 OFFSET $4
+      `;
+      const result = await client.query(query, [guildId, [userId], limit, offset]);
+      return { success: true, data: result.rows };
+    } catch (error) {
+      console.error("🔸 Failed to get user conversation history:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Update conversation status (active/paused/finalized)
+   */
+  async updateConversationStatus(
+    segmentId: string,
+    status: "active" | "paused" | "finalized"
+  ): Promise<DatabaseResult<void>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        UPDATE conversation_segments
+        SET status = $1, last_activity_at = NOW()
+        WHERE id = $2
+      `;
+      await client.query(query, [status, segmentId]);
+      return { success: true };
+    } catch (error) {
+      console.error("🔸 Failed to update conversation status:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Load active conversations from database (called on bot startup)
+   */
+  async loadActiveConversations(
+    guildId: string
+  ): Promise<DatabaseResult<any[]>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        SELECT * FROM conversation_segments
+        WHERE guild_id = $1 AND status = 'active'
+        ORDER BY last_activity_at DESC
+      `;
+      const result = await client.query(query, [guildId]);
+      return { success: true, data: result.rows };
+    } catch (error) {
+      console.error("🔸 Failed to load active conversations:", error);
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",

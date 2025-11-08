@@ -1,11 +1,11 @@
-import { pipeline, Pipeline, RawTextInput } from "@xenova/transformers";
+import { pipeline, Pipeline } from "@xenova/transformers";
 
 /**
  * Service for generating text embeddings using local transformers
  */
 export class EmbeddingService {
 	private static instance: EmbeddingService | null = null;
-	private model: Pipeline | null = null;
+	private model: any | null = null;
 	private modelName = "Xenova/all-mpnet-base-v2";
 	private isInitializing = false;
 	private initPromise: Promise<void> | null = null;
@@ -78,7 +78,7 @@ export class EmbeddingService {
 				: Array.from(output.data);
 
 			// Ensure it's a flat array of numbers
-			return embedding.map((v) => typeof v === "number" ? v : Number(v));
+			return embedding.map((v: any) => typeof v === "number" ? v : Number(v));
 		} catch (error) {
 			console.error("🔸 Failed to generate embedding:", error);
 			throw error;

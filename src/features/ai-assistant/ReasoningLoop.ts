@@ -96,7 +96,7 @@ export class ReasoningLoop {
           });
           continue;
         }
-        let observation = { ok: false, error: "unknown" };
+        let observation: { ok: boolean; error?: string; data?: any } = { ok: false, error: "unknown" };
         try {
           observation = await tool(plan.next.args || {});
         } catch (e: any) {

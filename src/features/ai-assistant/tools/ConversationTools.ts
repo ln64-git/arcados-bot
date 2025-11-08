@@ -34,14 +34,15 @@ export const getConversationsBetweenTool: DatabaseTool = {
     required: ["user1Id", "user2Id"],
   },
   execute: async (
-    params: { user1Id: string; user2Id: string; limit?: number },
+    params: Record<string, any>,
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
+    const { user1Id, user2Id, limit } = params as { user1Id: string; user2Id: string; limit?: number };
     try {
       const conversationManager = new ConversationManager(context.db);
       const result = await conversationManager.detectConversations(
-        params.user1Id,
-        params.user2Id,
+        user1Id,
+        user2Id,
         context.guildId,
         5
       );
@@ -54,8 +55,8 @@ export const getConversationsBetweenTool: DatabaseTool = {
       }
 
       let conversations = result.data;
-      if (params.limit) {
-        conversations = conversations.slice(0, params.limit);
+      if (limit) {
+        conversations = conversations.slice(0, limit);
       }
 
       // Sort by most recent
@@ -125,18 +126,19 @@ export const getConversationDetailsTool: DatabaseTool = {
     required: ["conversationId", "user1Id", "user2Id"],
   },
   execute: async (
-    params: {
+    params: Record<string, any>,
+    context: ToolContext
+  ): Promise<string | DatabaseToolResult> => {
+    const { conversationId, user1Id, user2Id } = params as {
       conversationId: string;
       user1Id: string;
       user2Id: string;
-    },
-    context: ToolContext
-  ): Promise<string | DatabaseToolResult> => {
+    };
     try {
       const conversationManager = new ConversationManager(context.db);
       const result = await conversationManager.detectConversations(
-        params.user1Id,
-        params.user2Id,
+        user1Id,
+        user2Id,
         context.guildId,
         5
       );
@@ -149,13 +151,13 @@ export const getConversationDetailsTool: DatabaseTool = {
       }
 
       const conversation = result.data.find(
-        (conv) => conv.conversation_id === params.conversationId
+        (conv) => conv.conversation_id === conversationId
       );
 
       if (!conversation) {
         return {
           success: false,
-          error: `Conversation ${params.conversationId} not found`,
+          error: `Conversation ${conversationId} not found`,
         };
       }
 
@@ -204,13 +206,14 @@ export const getRecentConversationsTool: DatabaseTool = {
     required: ["userId"],
   },
   execute: async (
-    params: { userId: string; limit?: number },
+    params: Record<string, any>,
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
+    const { userId, limit } = params as { userId: string; limit?: number };
     try {
       // Get user's relationship network
       const networkResult = await context.db.getMemberRelationshipNetwork(
-        params.userId,
+        userId,
         context.guildId
       );
 
@@ -250,7 +253,7 @@ export const getRecentConversationsTool: DatabaseTool = {
       // Get display names
       const userIds = [
         ...new Set(allConversations.map((c) => c.otherUserId)),
-      ].slice(0, params.limit || 10);
+      ].slice(0, limit || 10);
 
       const namesResult = await context.db.query(
         `SELECT user_id, display_name, username 
@@ -267,7 +270,7 @@ export const getRecentConversationsTool: DatabaseTool = {
       }
 
       // Format conversations
-      const limited = allConversations.slice(0, params.limit || 10);
+      const limited = allConversations.slice(0, limit || 10);
       const formatted = limited
         .map((item, idx) => {
           const member = nameMap.get(item.otherUserId);
@@ -333,20 +336,21 @@ export const getConversationMessagesTool: DatabaseTool = {
     required: ["conversationId", "user1Id", "user2Id"],
   },
   execute: async (
-    params: {
+    params: Record<string, any>,
+    context: ToolContext
+  ): Promise<string | DatabaseToolResult> => {
+    const { conversationId, user1Id, user2Id, limit } = params as {
       conversationId: string;
       user1Id: string;
       user2Id: string;
       limit?: number;
-    },
-    context: ToolContext
-  ): Promise<string | DatabaseToolResult> => {
+    };
     try {
       // First get the conversation to find message IDs
       const conversationManager = new ConversationManager(context.db);
       const convResult = await conversationManager.detectConversations(
-        params.user1Id,
-        params.user2Id,
+        user1Id,
+        user2Id,
         context.guildId,
         5
       );
@@ -359,18 +363,18 @@ export const getConversationMessagesTool: DatabaseTool = {
       }
 
       const conversation = convResult.data.find(
-        (conv) => conv.conversation_id === params.conversationId
+        (conv) => conv.conversation_id === conversationId
       );
 
       if (!conversation) {
         return {
           success: false,
-          error: `Conversation ${params.conversationId} not found`,
+          error: `Conversation ${conversationId} not found`,
         };
       }
 
       // Get messages by IDs
-      const messageIds = conversation.message_ids.slice(0, params.limit || 50);
+      const messageIds = conversation.message_ids?.slice(0, limit || 50) || [];
 
       if (messageIds.length === 0) {
         return {
@@ -399,7 +403,7 @@ export const getConversationMessagesTool: DatabaseTool = {
       }
 
       // Get user display names
-      const userIds = [...new Set([params.user1Id, params.user2Id])];
+      const userIds = [...new Set([user1Id, user2Id])];
       const namesResult = await context.db.query(
         `SELECT user_id, display_name, username 
          FROM members 
@@ -468,14 +472,15 @@ export const analyzeConversationPatternsTool: DatabaseTool = {
     required: ["user1Id", "user2Id"],
   },
   execute: async (
-    params: { user1Id: string; user2Id: string },
+    params: Record<string, any>,
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
+    const { user1Id, user2Id } = params as { user1Id: string; user2Id: string };
     try {
       const conversationManager = new ConversationManager(context.db);
       const result = await conversationManager.detectConversations(
-        params.user1Id,
-        params.user2Id,
+        user1Id,
+        user2Id,
         context.guildId,
         5
       );
@@ -539,10 +544,11 @@ export const analyzeConversationPatternsTool: DatabaseTool = {
       );
       const firstConversation = sortedByTime[0];
       const lastConversation = sortedByTime[sortedByTime.length - 1];
-      const dateRange =
-        new Date(firstConversation.start_time).toLocaleDateString() +
-        " to " +
-        new Date(lastConversation.end_time).toLocaleDateString();
+      const dateRange = firstConversation && lastConversation
+        ? new Date(firstConversation.start_time).toLocaleDateString() +
+          " to " +
+          new Date(lastConversation.end_time).toLocaleDateString()
+        : "Unknown";
 
       const parts: string[] = [];
       parts.push(`Conversation Pattern Analysis:`);

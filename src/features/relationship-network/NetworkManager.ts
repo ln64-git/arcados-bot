@@ -180,13 +180,13 @@ export class RelationshipNetworkManager {
       const relationships: RelationshipEntry[] = [];
 
       for (const raw of rawInteractions) {
-        // Get conversations for this relationship
+        // Get lightweight conversation segment references (optimized for storage)
         const conversationsResult =
-          await this.conversationManager.detectConversations(
+          await this.conversationManager.getConversationSegmentsForUsers(
             userId,
             raw.user_id,
             guildId,
-            5 // 5 minute time window
+            20 // Top 20 recent conversations
           );
 
         const conversations = conversationsResult.success
@@ -211,7 +211,7 @@ export class RelationshipNetworkManager {
           affinity_percentage: relevancePercentage, // This is now the relevance percentage
           interaction_count: raw.interaction_count,
           last_interaction: raw.last_interaction,
-          conversations: conversations,
+          conversations: conversations, // Now lightweight segment references
           display_name: member?.display_name,
           username: member?.username,
           raw_points: raw.points,
@@ -787,7 +787,7 @@ export class RelationshipNetworkManager {
           const userA = participantIds[i];
           const userB = participantIds[j];
 
-          const edgesResult = await this.db.getEdgesForUser(guildId, userA, 100);
+          const edgesResult = await this.db.getEdgesForUser(guildId, userA || "", 100);
           if (!edgesResult.success || !edgesResult.data) continue;
 
           const edge = edgesResult.data.find(
@@ -795,10 +795,10 @@ export class RelationshipNetworkManager {
                    e.user_a === userB && e.user_b === userA
           );
 
-          if (edge) {
+          if (edge && edge.last_interaction) {
             const key = `${userA}:${userB}`;
             matrix[key] = {
-              user_id: userB,
+              user_id: userB || "",
               affinity_percentage: 0,
               interaction_count: (edge.msg_a_to_b || 0) + (edge.msg_b_to_a || 0) + (edge.mentions || 0) + (edge.replies || 0),
               last_interaction: new Date(edge.last_interaction),

@@ -95,6 +95,26 @@ export class Bot {
       );
       this.liveSyncWatcher.start();
 
+      // Load active conversations for all guilds
+      const guilds = this.client.guilds.cache;
+      for (const [, guild] of guilds) {
+        await this.conversationManager!.loadActiveConversations(guild.id);
+      }
+
+      // Start periodic cleanup of stale conversations (every 15 minutes)
+      setInterval(async () => {
+        for (const [, guild] of guilds) {
+          await this.conversationManager!.cleanupStaleConversations(guild.id);
+        }
+      }, 15 * 60 * 1000);
+
+      // Start periodic semantic merging of related conversations (every hour)
+      setInterval(async () => {
+        for (const [, guild] of guilds) {
+          await this.conversationManager!.runSemanticMergingForGuild(guild.id);
+        }
+      }, 60 * 60 * 1000);
+
       // Run initial healing pass (after main functionality is started)
       await this.databaseHealer.runOnce();
     });
@@ -428,6 +448,16 @@ export class Bot {
 
   async shutdown(): Promise<void> {
     // Silent shutdown - no console output to prevent lingering logs
+
+    // Finalize all active conversations
+    if (this.conversationManager) {
+      await this.conversationManager.finalizeAllSegments();
+    }
+
+    // Stop live sync watcher
+    if (this.liveSyncWatcher) {
+      await this.liveSyncWatcher.stop();
+    }
 
     // Immediately destroy Discord client to stop all Discord operations
     this.client.destroy();

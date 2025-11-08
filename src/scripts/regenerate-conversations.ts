@@ -97,8 +97,11 @@ async function regenerateConversations() {
 		for (const message of messages) {
 			const mentionedUsers: string[] = [];
 			let match;
-			while ((match = mentionRegex.exec(message.content)) !== null) {
-				mentionedUsers.push(match[1]);
+			while ((match = mentionRegex.exec(message.content || "")) !== null) {
+				const mentionedId = match[1];
+				if (mentionedId) {
+					mentionedUsers.push(mentionedId);
+				}
 			}
 
 			// Parse embedding from database
@@ -110,7 +113,8 @@ async function regenerateConversations() {
 				} else if (typeof message.embedding === 'string') {
 					// Parse PostgreSQL array format: "{1,2,3}" or JSON array format: "[1,2,3]"
 					try {
-						let cleaned = message.embedding.trim();
+						const embeddingStr: string = message.embedding;
+						let cleaned: string = embeddingStr.trim();
 						// Convert PostgreSQL array format {1,2,3} to JSON array format [1,2,3]
 						if (cleaned.startsWith('{') && cleaned.endsWith('}')) {
 							cleaned = '[' + cleaned.slice(1, -1) + ']';

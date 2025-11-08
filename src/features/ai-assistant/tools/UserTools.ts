@@ -314,12 +314,13 @@ export const searchUsersTool: DatabaseTool = {
     required: ["query"],
   },
   execute: async (
-    params: { query: string; limit?: number },
+    params: Record<string, any>,
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
+    const { query, limit: limitParam } = params as { query: string; limit?: number };
     try {
-      const limit = params.limit || 10;
-      const searchTerm = `%${params.query.toLowerCase()}%`;
+      const limit = limitParam || 10;
+      const searchTerm = `%${query.toLowerCase()}%`;
 
       const result = await context.db.query(
         `SELECT user_id, display_name, username, global_name, nick, summary, keywords
