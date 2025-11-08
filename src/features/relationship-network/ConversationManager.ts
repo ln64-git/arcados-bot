@@ -2,6 +2,13 @@ import type { PostgreSQLManager } from "../database/PostgreSQLManager";
 import type { DatabaseResult } from "../database/PostgreSQLManager";
 import type { ConversationEntry } from "./types";
 
+interface ActiveConversation {
+  participants: Set<string>;
+  messageIds: Set<string>;
+  lastActivity: Date;
+  topicEmbedding?: number[]; // Semantic center of conversation
+}
+
 interface ChannelBuffer {
   messages: Array<{
     id: string;
@@ -16,6 +23,7 @@ interface ChannelBuffer {
   timeoutHandle?: NodeJS.Timeout;
   guildId: string;
   channelId: string;
+  activeConversations: ActiveConversation[];
 }
 
 export class ConversationManager {
@@ -432,6 +440,121 @@ export class ConversationManager {
   }
 
   /**
+   * Get relationship score between author and participants (normalized 0-1)
+   */
+  private async getRelationshipScore(
+    authorId: string,
+    participants: Set<string>,
+    guildId: string
+  ): Promise<number> {
+    if (participants.size === 0) return 0;
+
+    let maxScore = 0;
+
+    for (const participantId of participants) {
+      if (participantId === authorId) continue;
+
+      // Check both directions (A->B and B->A)
+      const edgeAtoB = await this.db.getEdgeForPair(
+        guildId,
+        authorId,
+        participantId
+      );
+      const edgeBtoA = await this.db.getEdgeForPair(
+        guildId,
+        participantId,
+        authorId
+      );
+
+      // Get total interaction count (bidirectional)
+      let totalInteractions = 0;
+      if (edgeAtoB.success && edgeAtoB.data) {
+        totalInteractions += edgeAtoB.data.total || 0;
+      }
+      if (edgeBtoA.success && edgeBtoA.data) {
+        totalInteractions += edgeBtoA.data.total || 0;
+      }
+
+      // Normalize: divide by 100 (can be adjusted based on typical interaction counts)
+      // Cap at 1.0
+      const normalizedScore = Math.min(totalInteractions / 100, 1.0);
+      maxScore = Math.max(maxScore, normalizedScore);
+    }
+
+    return maxScore;
+  }
+
+  /**
+   * Score a message against active conversations
+   * Returns sorted array of { conversation, score }
+   */
+  private async scoreMessageAgainstConversations(
+    message: {
+      id: string;
+      author_id: string;
+      content: string;
+      created_at: Date;
+      embedding?: number[];
+    },
+    conversations: ActiveConversation[],
+    guildId: string
+  ): Promise<Array<{ conversation: ActiveConversation; score: number }>> {
+    const scores: Array<{ conversation: ActiveConversation; score: number }> =
+      [];
+
+    for (const conversation of conversations) {
+      // Relationship score (0-1): Max affinity between author and participants
+      const relationshipScore = await this.getRelationshipScore(
+        message.author_id,
+        conversation.participants,
+        guildId
+      );
+
+      // Semantic score (0-1): Cosine similarity if embeddings exist
+      let semanticScore = 0;
+      if (
+        message.embedding &&
+        conversation.topicEmbedding &&
+        message.embedding.length === conversation.topicEmbedding.length
+      ) {
+        // Cosine similarity
+        let dotProduct = 0;
+        let normA = 0;
+        let normB = 0;
+        for (let i = 0; i < message.embedding.length; i++) {
+          dotProduct += message.embedding[i] * conversation.topicEmbedding[i];
+          normA += message.embedding[i] * message.embedding[i];
+          normB += conversation.topicEmbedding[i] * conversation.topicEmbedding[i];
+        }
+        const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+        if (denominator > 0) {
+          semanticScore = dotProduct / denominator;
+          // Normalize to 0-1 (cosine similarity is -1 to 1)
+          semanticScore = (semanticScore + 1) / 2;
+        }
+      }
+
+      // Time score (0-1): Within 10 minute window
+      const timeDiff =
+        message.created_at.getTime() - conversation.lastActivity.getTime();
+      const timeWindowMs = 10 * 60 * 1000; // 10 minutes
+      const timeScore =
+        timeDiff >= 0 && timeDiff <= timeWindowMs
+          ? 1 - timeDiff / timeWindowMs
+          : 0;
+
+      // Weighted combination: relationship (0.5) + semantic (0.3) + time (0.2)
+      const combinedScore =
+        relationshipScore * 0.5 + semanticScore * 0.3 + timeScore * 0.2;
+
+      scores.push({ conversation, score: combinedScore });
+    }
+
+    // Sort by score descending
+    return scores.sort((a, b) => b.score - a.score);
+  }
+
+  /**
    * Add message to streaming buffer (realtime)
    */
   async addMessageToStream(message: {
@@ -443,6 +566,7 @@ export class ConversationManager {
     channel_id: string;
     referenced_message_id?: string;
     mentioned_user_ids?: string[];
+    embedding?: number[];
   }): Promise<void> {
     // Skip bot commands
     if (this.isBotCommand(message.content)) {
@@ -459,10 +583,43 @@ export class ConversationManager {
         lastActivity: message.created_at,
         guildId: message.guild_id,
         channelId: message.channel_id,
+        activeConversations: [],
       };
       this.channelBuffers.set(key, buffer);
     }
 
+    // Check if message has direct signal (reply or mention)
+    const hasDirectSignal =
+      message.referenced_message_id ||
+      (message.mentioned_user_ids && message.mentioned_user_ids.length > 0);
+
+    // If no direct signal, try to route to existing conversation
+    if (!hasDirectSignal && buffer.activeConversations.length > 0) {
+      const scoredMatches = await this.scoreMessageAgainstConversations(
+        {
+          id: message.id,
+          author_id: message.author_id,
+          content: message.content,
+          created_at: message.created_at,
+          embedding: message.embedding,
+        },
+        buffer.activeConversations,
+        message.guild_id
+      );
+
+      if (scoredMatches.length > 0 && scoredMatches[0].score > 0.5) {
+        // Route to best matching conversation
+        const bestMatch = scoredMatches[0].conversation;
+        bestMatch.participants.add(message.author_id);
+        bestMatch.messageIds.add(message.id);
+        bestMatch.lastActivity = message.created_at;
+
+        // Update topic embedding (lazy average calculation)
+        // For now, we'll calculate it when needed during finalization
+      }
+    }
+
+    // Add message to buffer
     buffer.messages.push({
       id: message.id,
       author_id: message.author_id,
@@ -472,6 +629,53 @@ export class ConversationManager {
       mentioned_user_ids: message.mentioned_user_ids,
     });
     buffer.lastActivity = message.created_at;
+
+    // Update or create active conversation
+    if (hasDirectSignal) {
+      // Find or create conversation for this interaction
+      let activeConv: ActiveConversation | undefined = buffer.activeConversations.find(
+        (conv) => {
+          // Check if this message connects to this conversation
+          if (message.referenced_message_id) {
+            return conv.messageIds.has(message.referenced_message_id);
+          }
+          if (message.mentioned_user_ids) {
+            return message.mentioned_user_ids.some((id) =>
+              conv.participants.has(id)
+            );
+          }
+          return false;
+        }
+      );
+
+      if (!activeConv) {
+        // Create new active conversation
+        activeConv = {
+          participants: new Set([message.author_id]),
+          messageIds: new Set([message.id]),
+          lastActivity: message.created_at,
+        };
+        if (message.mentioned_user_ids) {
+          message.mentioned_user_ids.forEach((id) =>
+            activeConv!.participants.add(id)
+          );
+        }
+        if (message.referenced_message_id) {
+          activeConv.messageIds.add(message.referenced_message_id);
+        }
+        buffer.activeConversations.push(activeConv);
+      } else {
+        // Update existing conversation
+        activeConv.participants.add(message.author_id);
+        activeConv.messageIds.add(message.id);
+        activeConv.lastActivity = message.created_at;
+        if (message.mentioned_user_ids) {
+          message.mentioned_user_ids.forEach((id) =>
+            activeConv!.participants.add(id)
+          );
+        }
+      }
+    }
 
     // Check if this message is a reply or has mentions - if so, use longer timeout
     const hasReplyOrMention =
@@ -510,8 +714,9 @@ export class ConversationManager {
   /**
    * Group messages by reply chains and mentions
    * Messages that reply to each other or mention each other are grouped together
+   * Enhanced with relationship affinity weighting
    */
-  private groupByReplyChainsAndMentions(
+  private async groupByReplyChainsAndMentions(
     messages: Array<{
       id: string;
       author_id: string;
@@ -519,8 +724,10 @@ export class ConversationManager {
       created_at: Date;
       referenced_message_id?: string;
       mentioned_user_ids?: string[];
-    }>
-  ): Array<{ messages: typeof messages }> {
+      embedding?: number[];
+    }>,
+    guildId: string
+  ): Promise<Array<{ messages: typeof messages }>> {
     if (messages.length === 0) return [];
 
     // Build a map of message ID to message
@@ -651,6 +858,99 @@ export class ConversationManager {
       }
     }
 
+    // Merge groups that share participants or messages
+    // This ensures multi-participant conversations are unified early
+    for (let i = 0; i < allGroups.length; i++) {
+      for (let j = i + 1; j < allGroups.length; j++) {
+        const groupA = allGroups[i];
+        const groupB = allGroups[j];
+        if (!groupA || !groupB) continue;
+
+        // Check if groups share messages (strongest signal - always merge)
+        const sharesMessages = Array.from(groupA).some((id) => groupB.has(id));
+        if (sharesMessages) {
+          groupB.forEach((id) => groupA.add(id));
+          allGroups.splice(j, 1);
+          j--; // Adjust index after removal
+          continue;
+        }
+
+        // Get participants for each group
+        const participantsA = new Set(
+          Array.from(groupA)
+            .map((id) => messageMap.get(id))
+            .filter(Boolean)
+            .map((m) => m!.author_id)
+        );
+        const participantsB = new Set(
+          Array.from(groupB)
+            .map((id) => messageMap.get(id))
+            .filter(Boolean)
+            .map((m) => m!.author_id)
+        );
+
+        // Check if groups share participants (merge to create multi-participant conversations)
+        const sharesParticipants = Array.from(participantsA).some((p) =>
+          participantsB.has(p)
+        );
+
+        if (sharesParticipants) {
+          // Also check time overlap to avoid merging unrelated conversations
+          const messagesA = Array.from(groupA)
+            .map((id) => messageMap.get(id))
+            .filter(Boolean);
+          const messagesB = Array.from(groupB)
+            .map((id) => messageMap.get(id))
+            .filter(Boolean);
+
+          if (messagesA.length > 0 && messagesB.length > 0) {
+            const timeA = {
+              min: Math.min(...messagesA.map((m) => m!.created_at.getTime())),
+              max: Math.max(...messagesA.map((m) => m!.created_at.getTime())),
+            };
+            const timeB = {
+              min: Math.min(...messagesB.map((m) => m!.created_at.getTime())),
+              max: Math.max(...messagesB.map((m) => m!.created_at.getTime())),
+            };
+
+            // Allow 15 minute gap for overlapping participants
+            const timeGap = 15 * 60 * 1000;
+            const timeOverlap =
+              timeA.max >= timeB.min - timeGap &&
+              timeA.min <= timeB.max + timeGap;
+
+            if (timeOverlap) {
+              groupB.forEach((id) => groupA.add(id));
+              allGroups.splice(j, 1);
+              j--; // Adjust index after removal
+              continue;
+            }
+          }
+        }
+
+        // Also check relationship strength for additional merging
+        let maxRelationshipScore = 0;
+        for (const participantA of participantsA) {
+          for (const participantB of participantsB) {
+            if (participantA === participantB) continue;
+            const relationshipScore = await this.getRelationshipScore(
+              participantA,
+              new Set([participantB]),
+              guildId
+            );
+            maxRelationshipScore = Math.max(maxRelationshipScore, relationshipScore);
+          }
+        }
+
+        // If relationship score is high (>0.3), merge the groups
+        if (maxRelationshipScore > 0.3) {
+          groupB.forEach((id) => groupA.add(id));
+          allGroups.splice(j, 1);
+          j--; // Adjust index after removal
+        }
+      }
+    }
+
     // Add unconnected messages that don't have replies/mentions
     // Only if they're part of an ongoing conversation (within 5 minutes AND author is already a participant)
     const unprocessedMessages = messages.filter(
@@ -658,8 +958,12 @@ export class ConversationManager {
     );
     const TIME_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
+    // Score unprocessed messages against existing groups
+    // Use relationship + semantic + time scoring (same as real-time routing)
     for (const msg of unprocessedMessages) {
-      let added = false;
+      let bestScore = 0;
+      let bestGroup: Set<string> | null = null;
+
       for (const group of allGroups) {
         const groupMessages = Array.from(group)
           .map((id) => messageMap.get(id))
@@ -672,26 +976,75 @@ export class ConversationManager {
           groupMessages.map((m) => m!.author_id)
         );
 
-        // Check if:
-        // 1. Message author is already a participant in this conversation
-        // 2. Message is within time window of the conversation
-        const isParticipant = groupParticipants.has(msg.author_id);
+        // Relationship score (0-1)
+        const relationshipScore = await this.getRelationshipScore(
+          msg.author_id,
+          groupParticipants,
+          guildId
+        );
+
+        // Semantic score (0-1): Cosine similarity if embeddings exist
+        let semanticScore = 0;
+        if (msg.embedding) {
+          // Calculate average embedding for the group
+          const groupEmbeddings = groupMessages
+            .map((m) => m!.embedding)
+            .filter((emb): emb is number[] => emb !== undefined);
+          if (groupEmbeddings.length > 0) {
+            const avgEmbedding = new Array(msg.embedding.length).fill(0);
+            for (const emb of groupEmbeddings) {
+              for (let i = 0; i < emb.length && i < avgEmbedding.length; i++) {
+                avgEmbedding[i] += emb[i];
+              }
+            }
+            for (let i = 0; i < avgEmbedding.length; i++) {
+              avgEmbedding[i] /= groupEmbeddings.length;
+            }
+
+            // Cosine similarity
+            let dotProduct = 0;
+            let normA = 0;
+            let normB = 0;
+            for (let i = 0; i < msg.embedding.length && i < avgEmbedding.length; i++) {
+              dotProduct += msg.embedding[i] * avgEmbedding[i];
+              normA += msg.embedding[i] * msg.embedding[i];
+              normB += avgEmbedding[i] * avgEmbedding[i];
+            }
+            const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+            if (denominator > 0) {
+              semanticScore = dotProduct / denominator;
+              semanticScore = (semanticScore + 1) / 2; // Normalize to 0-1
+            }
+          }
+        }
+
+        // Time score (0-1): Within 5 minute window
         const timeRange = {
           min: Math.min(...groupMessages.map((m) => m!.created_at.getTime())),
           max: Math.max(...groupMessages.map((m) => m!.created_at.getTime())),
         };
         const msgTime = msg.created_at.getTime();
-        const isWithinTimeWindow =
-          msgTime >= timeRange.min - TIME_WINDOW_MS &&
-          msgTime <= timeRange.max + TIME_WINDOW_MS;
+        const timeDiff = Math.min(
+          Math.abs(msgTime - timeRange.min),
+          Math.abs(msgTime - timeRange.max)
+        );
+        const timeScore =
+          timeDiff <= TIME_WINDOW_MS ? 1 - timeDiff / TIME_WINDOW_MS : 0;
 
-        if (isParticipant && isWithinTimeWindow) {
-          // This message is part of an ongoing conversation
-          group.add(msg.id);
-          processedMessages.add(msg.id);
-          added = true;
-          break;
+        // Weighted combination: relationship (0.5) + semantic (0.3) + time (0.2)
+        const combinedScore =
+          relationshipScore * 0.5 + semanticScore * 0.3 + timeScore * 0.2;
+
+        if (combinedScore > bestScore) {
+          bestScore = combinedScore;
+          bestGroup = group;
         }
+      }
+
+      // Only add if score meets threshold (0.5)
+      if (bestScore > 0.5 && bestGroup) {
+        bestGroup.add(msg.id);
+        processedMessages.add(msg.id);
       }
       // Don't create new groups for messages without replies/mentions
       // They're just one-off messages, not part of actual conversations
@@ -727,6 +1080,138 @@ export class ConversationManager {
     // Don't fallback - if no valid conversation groups found, return empty
     // This filters out noise (one-off messages without actual conversations)
     return result;
+  }
+
+  /**
+   * Merge overlapping conversation groups into unified multi-participant conversations
+   * Groups are merged if they:
+   * 1. Share messages (same message IDs)
+   * 2. Have overlapping participants AND overlapping time windows
+   */
+  private mergeOverlappingGroups(
+    groups: Array<{ messages: Array<{ id: string; author_id: string; created_at: Date }> }>
+  ): Array<{ messages: typeof groups[0]["messages"] }> {
+    if (groups.length <= 1) return groups;
+
+    // Use iterative approach to handle transitive merges
+    let currentGroups = [...groups];
+    let changed = true;
+
+    // Keep merging until no more changes occur
+    while (changed) {
+      changed = false;
+      const newGroups: typeof currentGroups = [];
+      const processed = new Set<number>();
+
+      for (let i = 0; i < currentGroups.length; i++) {
+        if (processed.has(i)) continue;
+
+        const currentGroup = currentGroups[i];
+        if (!currentGroup) continue;
+
+        const currentMessages = new Set(currentGroup.messages.map((m) => m.id));
+        const currentParticipants = new Set(
+          currentGroup.messages.map((m) => m.author_id)
+        );
+        const currentTimeRange = {
+          min: Math.min(...currentGroup.messages.map((m) => m.created_at.getTime())),
+          max: Math.max(...currentGroup.messages.map((m) => m.created_at.getTime())),
+        };
+
+        // Collect all groups that should be merged with this one
+        const toMerge = [currentGroup];
+        processed.add(i);
+
+        // Look for overlapping groups - iterate until no more merges found
+        let foundMerge = true;
+        while (foundMerge) {
+          foundMerge = false;
+          for (let j = 0; j < currentGroups.length; j++) {
+            if (processed.has(j) || i === j) continue;
+
+            const otherGroup = currentGroups[j];
+            if (!otherGroup) continue;
+
+            const otherMessages = new Set(otherGroup.messages.map((m) => m.id));
+            const otherParticipants = new Set(
+              otherGroup.messages.map((m) => m.author_id)
+            );
+            const otherTimeRange = {
+              min: Math.min(...otherGroup.messages.map((m) => m.created_at.getTime())),
+              max: Math.max(...otherGroup.messages.map((m) => m.created_at.getTime())),
+            };
+
+            // Check for overlap:
+            // 1. Share messages (intersection) - strongest signal - ALWAYS merge
+            const messageOverlap =
+              Array.from(currentMessages).some((id) => otherMessages.has(id));
+
+            // 2. Have overlapping participants
+            const participantOverlap =
+              Array.from(currentParticipants).some((p) => otherParticipants.has(p));
+            
+            // 3. Time window check - more lenient for participant overlap
+            // If participants overlap, allow larger time gaps (15 minutes)
+            // If no participant overlap, require tight time windows (5 minutes)
+            const timeGap = participantOverlap
+              ? 15 * 60 * 1000 // 15 minutes for overlapping participants
+              : 5 * 60 * 1000;  // 5 minutes for non-overlapping participants
+            const timeOverlap =
+              (currentTimeRange.max >= otherTimeRange.min - timeGap &&
+               currentTimeRange.min <= otherTimeRange.max + timeGap);
+
+            // Merge if:
+            // - Groups share messages (always merge)
+            // - Groups share participants AND time windows overlap (even loosely)
+            // - Groups are very close in time (within 5 min) even without participant overlap
+            const shouldMerge = messageOverlap || 
+              (participantOverlap && timeOverlap) ||
+              (!participantOverlap && timeOverlap && 
+               Math.abs(currentTimeRange.max - otherTimeRange.min) <= 5 * 60 * 1000 &&
+               Math.abs(currentTimeRange.min - otherTimeRange.max) <= 5 * 60 * 1000);
+
+            if (shouldMerge) {
+              // Merge: combine message sets and participant sets
+              toMerge.push(otherGroup);
+              processed.add(j);
+              foundMerge = true;
+              changed = true;
+
+              // Update current sets for next iteration
+              otherMessages.forEach((id) => currentMessages.add(id));
+              otherParticipants.forEach((p) => currentParticipants.add(p));
+              currentTimeRange.min = Math.min(
+                currentTimeRange.min,
+                otherTimeRange.min
+              );
+              currentTimeRange.max = Math.max(
+                currentTimeRange.max,
+                otherTimeRange.max
+              );
+            }
+          }
+        }
+
+        // Combine all messages from merged groups
+        const mergedMessagesMap = new Map<
+          string,
+          (typeof groups[0]["messages"])[0]
+        >();
+        for (const group of toMerge) {
+          for (const msg of group.messages) {
+            mergedMessagesMap.set(msg.id, msg);
+          }
+        }
+
+        newGroups.push({
+          messages: Array.from(mergedMessagesMap.values()),
+        });
+      }
+
+      currentGroups = newGroups;
+    }
+
+    return currentGroups;
   }
 
   /**
@@ -877,56 +1362,121 @@ export class ConversationManager {
 
     // Group messages by reply chains and mentions before determining participants
     // This ensures messages that reply to each other stay together
-    const groupedMessages = this.groupByReplyChainsAndMentions(validMessages);
+    const groupedMessages = await this.groupByReplyChainsAndMentions(
+      validMessages,
+      buffer.guildId
+    );
 
     if (groupedMessages.length === 0) {
       return; // No valid conversation groups found - filter out noise
     }
 
-    // Use the largest group (most interconnected conversation)
-    // This represents the main conversation thread among all detected groups
-    let largestGroup = groupedMessages.reduce((a, b) =>
-      b.messages.length > a.messages.length ? b : a
-    );
+    // Merge overlapping groups into a single multi-participant conversation
+    // Groups overlap if they share messages or have overlapping participants in the same time window
+    const mergedGroups = this.mergeOverlappingGroups(groupedMessages);
 
-    // Fetch and include any referenced messages that aren't already in the group
-    // If the first message in a conversation is a reply, we should include what it's replying to
-    largestGroup = await this.includeReferencedMessages(largestGroup, buffer);
-
-    // Sort messages chronologically after adding referenced messages
-    largestGroup.messages.sort(
-      (a, b) => a.created_at.getTime() - b.created_at.getTime()
-    );
-
-    const participants = Array.from(
-      new Set(largestGroup.messages.map((m) => m.author_id))
-    )
-      .filter((id) => id && id.trim().length > 0)
-      .sort();
-
-    if (participants.length < 2) {
-      return; // Need at least 2 participants
+    // Check for existing segments that might overlap with these messages
+    // to avoid creating duplicate segments
+    const messageIdsInGroups = new Set<string>();
+    for (const group of mergedGroups) {
+      for (const msg of group.messages) {
+        messageIdsInGroups.add(msg.id);
+      }
     }
 
-    // Use the grouped messages for this segment (already sorted chronologically)
-    const segmentMessages = largestGroup.messages;
+    // Query for existing segments that contain any of these messages
+    const existingSegmentsResult = await this.db.query(
+      `
+      SELECT id, message_ids, participants
+      FROM conversation_segments
+      WHERE guild_id = $1 AND channel_id = $2
+        AND message_ids && $3::TEXT[]
+    `,
+      [
+        buffer.guildId,
+        buffer.channelId,
+        Array.from(messageIdsInGroups),
+      ]
+    );
 
-    // segmentMessages is guaranteed to have at least MIN_MESSAGES items at this point
-    const segmentId = `seg_${segmentMessages[0]!.id}_${Date.now()}`;
-    const endTime = segmentMessages[segmentMessages.length - 1]!.created_at;
+    const existingMessageIds = new Set<string>();
+    if (existingSegmentsResult.success && existingSegmentsResult.data) {
+      for (const segment of existingSegmentsResult.data) {
+        if (segment.message_ids && Array.isArray(segment.message_ids)) {
+          segment.message_ids.forEach((id: string) =>
+            existingMessageIds.add(id)
+          );
+        }
+      }
+    }
+
+    // Filter out messages that are already in existing segments
+    const filteredMergedGroups = mergedGroups.map((group) => ({
+      messages: group.messages.filter((msg) => !existingMessageIds.has(msg.id)),
+    })).filter((group) => group.messages.length >= this.MIN_MESSAGES);
+
+    if (filteredMergedGroups.length === 0) {
+      return; // All messages already in segments
+    }
+
+    // Merge again after filtering to ensure groups that share remaining messages are combined
+    // This prevents creating duplicate segments from groups that had overlapping messages
+    const finalMergedGroups = this.mergeOverlappingGroups(filteredMergedGroups);
+
+    // Process all merged groups (not just the largest)
+    // This creates one unified multi-participant conversation instead of multiple pairwise ones
+    for (const group of finalMergedGroups) {
+      // Deduplicate messages within the group (in case merging combined duplicates)
+      const uniqueMessages = new Map<string, typeof group.messages[0]>();
+      for (const msg of group.messages) {
+        if (!uniqueMessages.has(msg.id)) {
+          uniqueMessages.set(msg.id, msg);
+        }
+      }
+      const deduplicatedGroup = {
+        messages: Array.from(uniqueMessages.values()),
+      };
+
+      if (deduplicatedGroup.messages.length < this.MIN_MESSAGES) {
+        continue; // Skip if not enough messages after deduplication
+      }
+      // Fetch and include any referenced messages that aren't already in the group
+      let processedGroup = await this.includeReferencedMessages(deduplicatedGroup, buffer);
+
+      // Sort messages chronologically after adding referenced messages
+      processedGroup.messages.sort(
+        (a, b) => a.created_at.getTime() - b.created_at.getTime()
+      );
+
+      const participants = Array.from(
+        new Set(processedGroup.messages.map((m) => m.author_id))
+      )
+        .filter((id) => id && id.trim().length > 0)
+        .sort();
+
+      if (participants.length < 2) {
+        continue; // Need at least 2 participants
+      }
+
+      // Use the grouped messages for this segment (already sorted chronologically)
+      const segmentMessages = processedGroup.messages;
+
+      // segmentMessages is guaranteed to have at least MIN_MESSAGES items at this point
+      const segmentId = `seg_${segmentMessages[0]!.id}_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      const endTime = segmentMessages[segmentMessages.length - 1]!.created_at;
 
     const features: Record<string, any> = {
-      mention_count: segmentMessages.filter(
-        (m) => m.mentioned_user_ids && m.mentioned_user_ids.length > 0
+        mention_count: segmentMessages.filter(
+          (m) => m.mentioned_user_ids && m.mentioned_user_ids.length > 0
       ).length,
-      reply_count: segmentMessages.filter(
-        (m) =>
-          m.referenced_message_id !== undefined &&
-          m.referenced_message_id !== null
+        reply_count: segmentMessages.filter(
+          (m) =>
+            m.referenced_message_id !== undefined &&
+            m.referenced_message_id !== null
       ).length,
     };
 
-    const summary = this.generateSegmentSummary(segmentMessages, participants);
+      const summary = this.generateSegmentSummary(segmentMessages, participants);
 
     await this.db.upsertConversationSegment({
       id: segmentId,
@@ -935,11 +1485,16 @@ export class ConversationManager {
       participants,
       startTime: buffer.startTime,
       endTime,
-      messageIds: segmentMessages.map((m) => m.id),
-      messageCount: segmentMessages.length,
+        messageIds: segmentMessages.map((m) => m.id),
+        messageCount: segmentMessages.length,
       features,
       summary,
     });
+
+      // Clear finalized conversations from activeConversations
+      buffer.activeConversations = buffer.activeConversations.filter(
+        (conv) => !Array.from(conv.messageIds).every((id) => segmentMessages.some((m) => m.id === id))
+      );
 
     // Only create pairs for distinct users (skip self-interactions)
     for (let i = 0; i < participants.length; i++) {
@@ -963,6 +1518,7 @@ export class ConversationManager {
       buffer.startTime,
       endTime
     );
+    }
   }
 
   /**

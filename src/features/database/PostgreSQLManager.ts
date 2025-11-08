@@ -121,6 +121,7 @@ export interface MessageData {
   attachments?: string[];
   embeds?: string[];
   referenced_message_id?: string;
+  embedding?: number[];
   active: boolean;
 }
 
@@ -188,6 +189,11 @@ export class PostgreSQLManager {
 
     const client = await this.pool!.connect();
     try {
+      // Enable pgvector extension for embeddings
+      await client.query(`
+        CREATE EXTENSION IF NOT EXISTS vector;
+      `);
+
       // Create tables if they don't exist
       await client.query(`
 				CREATE TABLE IF NOT EXISTS guilds (
@@ -316,6 +322,19 @@ export class PostgreSQLManager {
         END $$;
       `);
 
+      // Add embedding column if it doesn't exist (migration for existing databases)
+      await client.query(`
+        DO $$ 
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns 
+            WHERE table_name = 'messages' AND column_name = 'embedding'
+          ) THEN
+            ALTER TABLE messages ADD COLUMN embedding vector(768);
+          END IF;
+        END $$;
+      `);
+
       // Relationship edges - directed dyads for realtime updates
       await client.query(`
 				CREATE TABLE IF NOT EXISTS relationship_edges (
@@ -397,6 +416,9 @@ export class PostgreSQLManager {
 				CREATE INDEX IF NOT EXISTS idx_conversation_segments_start_time ON conversation_segments(start_time);
 				CREATE INDEX IF NOT EXISTS idx_relationship_pairs_guild ON relationship_pairs(guild_id);
 				CREATE INDEX IF NOT EXISTS idx_relationship_pairs_users ON relationship_pairs(u_min, u_max);
+				CREATE INDEX IF NOT EXISTS messages_embedding_idx 
+					ON messages USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
+					WHERE embedding IS NOT NULL;
 			`);
     } catch (error) {
       console.error("🔸 Failed to initialize PostgreSQL schema:", error);
@@ -669,17 +691,23 @@ export class PostgreSQLManager {
       }
 
       const query = `
-				INSERT INTO messages (id, guild_id, channel_id, author_id, content, created_at, edited_at, attachments, embeds, referenced_message_id, active)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+				INSERT INTO messages (id, guild_id, channel_id, author_id, content, created_at, edited_at, attachments, embeds, referenced_message_id, embedding, active)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector, $12)
 				ON CONFLICT (id) DO UPDATE SET
 					content = EXCLUDED.content,
 					edited_at = EXCLUDED.edited_at,
 					attachments = EXCLUDED.attachments,
 					embeds = EXCLUDED.embeds,
 					referenced_message_id = EXCLUDED.referenced_message_id,
+					embedding = EXCLUDED.embedding,
 					active = EXCLUDED.active
 				RETURNING *
 			`;
+
+      // Format embedding as string for pgvector: '[1,2,3]'
+      const embeddingValue = messageData.embedding
+        ? `[${messageData.embedding.join(",")}]`
+        : null;
 
       const values = [
         messageData.id,
@@ -692,6 +720,7 @@ export class PostgreSQLManager {
         messageData.attachments,
         messageData.embeds,
         referencedMessageId,
+        embeddingValue,
         messageData.active,
       ];
 
@@ -709,7 +738,10 @@ export class PostgreSQLManager {
   }
 
   // Query operations
-  async query(text: string, params?: any[]): Promise<DatabaseResult<any[] & { rowCount?: number }>> {
+  async query(
+    text: string,
+    params?: any[]
+  ): Promise<DatabaseResult<any[] & { rowCount?: number }>> {
     if (!this.isConnected()) {
       return { success: false, error: "Database not connected" };
     }
@@ -726,7 +758,9 @@ export class PostgreSQLManager {
       if (!client) {
         retries--;
         if (retries > 0) {
-          await new Promise((resolve) => setTimeout(resolve, 1000 * (4 - retries))); // Exponential backoff
+          await new Promise((resolve) =>
+            setTimeout(resolve, 1000 * (4 - retries))
+          ); // Exponential backoff
           continue;
         }
         return {
@@ -740,24 +774,26 @@ export class PostgreSQLManager {
         // Include rowCount for DELETE/UPDATE queries by attaching it to the array
         const data = result.rows as any[];
         if (data && Array.isArray(data)) {
-          Object.defineProperty(data, 'rowCount', {
+          Object.defineProperty(data, "rowCount", {
             value: result.rowCount,
             writable: false,
             enumerable: false,
-            configurable: false
+            configurable: false,
           });
         }
         return { success: true, data };
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
-        const isConnectionError = 
+        const isConnectionError =
           lastError.message.includes("Connection terminated") ||
           lastError.message.includes("timeout") ||
           lastError.message.includes("ECONNRESET");
 
         if (isConnectionError && retries > 1) {
           retries--;
-          await new Promise((resolve) => setTimeout(resolve, 1000 * (4 - retries)));
+          await new Promise((resolve) =>
+            setTimeout(resolve, 1000 * (4 - retries))
+          );
           continue;
         }
 
@@ -925,8 +961,6 @@ export class PostgreSQLManager {
           error: `Member not found: ${memberId}`,
         };
       }
-
-
 
       const query = `
 				UPDATE members 
@@ -1598,7 +1632,10 @@ export class PostgreSQLManager {
           SET last_message_id = NULL, last_message_sync = NULL
           WHERE id = $1
         `;
-      await client.query(query, messageId ? [messageId, channelId] : [channelId]);
+      await client.query(
+        query,
+        messageId ? [messageId, channelId] : [channelId]
+      );
       return { success: true };
     } catch (error) {
       console.error("🔸 Failed to update channel last message:", error);
@@ -1641,6 +1678,191 @@ export class PostgreSQLManager {
       };
     } catch (error) {
       console.error("🔸 Failed to get channel watermark:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  // ============================================================================
+  // Embedding Operations
+  // ============================================================================
+
+  /**
+   * Get messages without embeddings for batch processing
+   */
+  async getMessagesForEmbedding(
+    guildId: string,
+    limit: number = 100,
+    offset: number = 0
+  ): Promise<
+    DatabaseResult<
+      Array<{
+        id: string;
+        content: string;
+        created_at: Date;
+      }>
+    >
+  > {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        SELECT id, content, created_at
+        FROM messages
+        WHERE guild_id = $1
+          AND active = true
+          AND embedding IS NULL
+          AND content IS NOT NULL
+          AND content != ''
+          AND LENGTH(content) >= 3
+        ORDER BY created_at ASC
+        LIMIT $2 OFFSET $3
+      `;
+
+      const result = await client.query(query, [guildId, limit, offset]);
+      return {
+        success: true,
+        data: result.rows.map((row) => ({
+          id: row.id,
+          content: row.content,
+          created_at: new Date(row.created_at),
+        })),
+      };
+    } catch (error) {
+      console.error("🔸 Failed to get messages for embedding:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Update single message embedding
+   */
+  async updateMessageEmbedding(
+    messageId: string,
+    embedding: number[]
+  ): Promise<DatabaseResult<void>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const embeddingStr = `[${embedding.join(",")}]`;
+      const query = `
+        UPDATE messages
+        SET embedding = $1::vector
+        WHERE id = $2
+      `;
+
+      await client.query(query, [embeddingStr, messageId]);
+      return { success: true };
+    } catch (error) {
+      console.error("🔸 Failed to update message embedding:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Batch update multiple message embeddings
+   */
+  async updateMessageEmbeddingsBatch(
+    updates: Array<{ messageId: string; embedding: number[] }>
+  ): Promise<DatabaseResult<void>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    if (updates.length === 0) {
+      return { success: true };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      // Use a transaction for batch update
+      await client.query("BEGIN");
+
+      for (const update of updates) {
+        const embeddingStr = `[${update.embedding.join(",")}]`;
+        await client.query(
+          `
+          UPDATE messages
+          SET embedding = $1::vector
+          WHERE id = $2
+        `,
+          [embeddingStr, update.messageId]
+        );
+      }
+
+      await client.query("COMMIT");
+      return { success: true };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      console.error("🔸 Failed to batch update message embeddings:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Check if messages have embeddings
+   */
+  async checkEmbeddingsExist(
+    messageIds: string[]
+  ): Promise<DatabaseResult<Map<string, boolean>>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    if (messageIds.length === 0) {
+      return { success: true, data: new Map() };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        SELECT id, embedding IS NOT NULL as has_embedding
+        FROM messages
+        WHERE id = ANY($1::text[])
+      `;
+
+      const result = await client.query(query, [messageIds]);
+      const embeddingMap = new Map<string, boolean>();
+
+      for (const row of result.rows) {
+        embeddingMap.set(row.id, row.has_embedding);
+      }
+
+      // Ensure all requested IDs are in map (default to false)
+      for (const id of messageIds) {
+        if (!embeddingMap.has(id)) {
+          embeddingMap.set(id, false);
+        }
+      }
+
+      return { success: true, data: embeddingMap };
+    } catch (error) {
+      console.error("🔸 Failed to check embeddings exist:", error);
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",
