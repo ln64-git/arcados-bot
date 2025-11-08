@@ -41,6 +41,11 @@ export class ConversationManager {
   private readonly INACTIVITY_MS_WITH_REPLIES = 30 * 60 * 1000; // 30 minutes when there are active replies/mentions
   private readonly MIN_MESSAGES = 3;
 
+  // Time-based constraints to prevent unrealistic conversation grouping
+  private readonly MAX_REPLY_CHAIN_GAP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days - don't follow reply chains older than this
+  private readonly MAX_CONVERSATION_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours - conversations can't span more than a day
+  private readonly MAX_MESSAGE_GAP_MS = 4 * 60 * 60 * 1000; // 4 hours - max gap between consecutive messages in a conversation
+
   // Pre-compile regex patterns for better performance
   private readonly mentionPattern = /<@!?(\d+)>/g;
   private readonly replyPatterns = [/^re:/i, /^>/, /^@\w+/, /^responding to/i];
@@ -879,6 +884,14 @@ export class ConversationManager {
         // Check if we've hit a cycle (shouldn't happen, but safety check)
         if (chain.has(referencedMsg.id)) break;
 
+        // Check time gap - don't follow reply chains older than MAX_REPLY_CHAIN_GAP_MS
+        const timeDiff = Math.abs(
+          msg.created_at.getTime() - referencedMsg.created_at.getTime()
+        );
+        if (timeDiff > this.MAX_REPLY_CHAIN_GAP_MS) {
+          break; // Stop following old references - prevents grouping messages months apart
+        }
+
         chain.add(referencedMsg.id);
         currentMsg = referencedMsg;
       }
@@ -887,8 +900,19 @@ export class ConversationManager {
       const walkDown = (msgId: string, visited: Set<string>) => {
         if (visited.has(msgId)) return;
         visited.add(msgId);
+        const parentMsg = messageMap.get(msgId);
+        if (!parentMsg) return;
+
         for (const m of messages) {
           if (m.referenced_message_id === msgId) {
+            // Check time gap - don't follow reply chains with large time gaps
+            const timeDiff = Math.abs(
+              m.created_at.getTime() - parentMsg.created_at.getTime()
+            );
+            if (timeDiff > this.MAX_REPLY_CHAIN_GAP_MS) {
+              continue; // Skip replies that are too old
+            }
+
             chain.add(m.id);
             walkDown(m.id, visited);
           }
@@ -1045,6 +1069,13 @@ export class ConversationManager {
               timeA.min <= timeB.max + timeGap;
 
             if (timeOverlap) {
+              // Check if merged result would exceed maximum conversation duration
+              const mergedDuration = Math.max(timeA.max, timeB.max) - Math.min(timeA.min, timeB.min);
+              if (mergedDuration > this.MAX_CONVERSATION_DURATION_MS) {
+                // Skip merge - would create unrealistic conversation span
+                continue;
+              }
+
               groupB.forEach((id) => groupA.add(id));
               allGroups.splice(j, 1);
               j--; // Adjust index after removal
@@ -1069,6 +1100,31 @@ export class ConversationManager {
 
         // If relationship score is high (>0.3), merge the groups
         if (maxRelationshipScore > 0.3) {
+          // Check merged duration before allowing merge
+          const messagesA = Array.from(groupA)
+            .map((id) => messageMap.get(id))
+            .filter(Boolean);
+          const messagesB = Array.from(groupB)
+            .map((id) => messageMap.get(id))
+            .filter(Boolean);
+
+          if (messagesA.length > 0 && messagesB.length > 0) {
+            const timeA = {
+              min: Math.min(...messagesA.map((m) => m!.created_at.getTime())),
+              max: Math.max(...messagesA.map((m) => m!.created_at.getTime())),
+            };
+            const timeB = {
+              min: Math.min(...messagesB.map((m) => m!.created_at.getTime())),
+              max: Math.max(...messagesB.map((m) => m!.created_at.getTime())),
+            };
+
+            const mergedDuration = Math.max(timeA.max, timeB.max) - Math.min(timeA.min, timeB.min);
+            if (mergedDuration > this.MAX_CONVERSATION_DURATION_MS) {
+              // Skip merge - would create unrealistic conversation span
+              continue;
+            }
+          }
+
           groupB.forEach((id) => groupA.add(id));
           allGroups.splice(j, 1);
           j--; // Adjust index after removal
@@ -1186,6 +1242,36 @@ export class ConversationManager {
           .filter((m): m is (typeof messages)[0] => m !== undefined);
 
         if (groupMessages.length >= this.MIN_MESSAGES) {
+          // Sort chronologically for gap checking
+          groupMessages.sort((a, b) => a.created_at.getTime() - b.created_at.getTime());
+
+          // Check conversation duration
+          const lastMsg = groupMessages[groupMessages.length - 1];
+          const firstMsg = groupMessages[0];
+          if (lastMsg && firstMsg) {
+            const duration = lastMsg.created_at.getTime() - firstMsg.created_at.getTime();
+            if (duration > this.MAX_CONVERSATION_DURATION_MS) {
+              continue; // Skip - conversation spans too long (>24 hours)
+            }
+
+            // Check for large gaps between consecutive messages
+            let hasLargeGap = false;
+            for (let i = 1; i < groupMessages.length; i++) {
+              const currentMsg = groupMessages[i];
+              const prevMsg = groupMessages[i - 1];
+              if (currentMsg && prevMsg) {
+                const gap = currentMsg.created_at.getTime() - prevMsg.created_at.getTime();
+                if (gap > this.MAX_MESSAGE_GAP_MS) {
+                  hasLargeGap = true;
+                  break;
+                }
+              }
+            }
+            if (hasLargeGap) {
+              continue; // Skip - has unrealistic time gap (>4 hours)
+            }
+          }
+
           // Verify this group has actual conversation connections (replies or mentions)
           // Not just random messages grouped by time
           const hasReplyConnections = groupMessages.some(
@@ -1625,12 +1711,17 @@ export class ConversationManager {
 
       const summary = this.generateSegmentSummary(segmentMessages, participants);
 
+    // Calculate actual start time from the first message in the segment
+    const actualStartTime = segmentMessages.length > 0 && segmentMessages[0]
+      ? segmentMessages[0].created_at
+      : buffer.startTime;
+
     await this.db.upsertConversationSegment({
       id: segmentId,
       guildId: buffer.guildId,
       channelId: buffer.channelId,
       participants,
-      startTime: buffer.startTime,
+      startTime: actualStartTime,
       endTime,
       messageIds: segmentMessages.map((m) => m.id),
       messageCount: segmentMessages.length,
@@ -1781,6 +1872,13 @@ export class ConversationManager {
       const mergedEndTime = new Date(
         Math.max(...allEndTimes.map((d) => d.getTime()))
       );
+
+      // Check if merged result would exceed maximum conversation duration
+      const mergedDuration = mergedEndTime.getTime() - mergedStartTime.getTime();
+      if (mergedDuration > this.MAX_CONVERSATION_DURATION_MS) {
+        // Abort merge - would create unrealistic conversation span (>24 hours)
+        return;
+      }
 
       // Update the segment
       await this.db.query(

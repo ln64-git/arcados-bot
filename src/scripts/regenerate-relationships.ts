@@ -2,6 +2,19 @@ import "dotenv/config";
 import { PostgreSQLManager } from "../features/database/PostgreSQLManager.js";
 import { RelationshipNetworkManager } from "../features/relationship-network/NetworkManager.js";
 
+// Known bot user IDs to exclude from relationship generation
+const BOT_USER_IDS = [
+  "356268235697553409", // .fmbot
+  "1290873223944343714", // Arcados-bot
+  "235148962103951360", // Carl-bot
+  "949731498808979557", // Euphony
+  "411916947773587456", // Jockie Music
+  "439205512425504771", // NotSoBot
+  "678344927997853742", // Sapphire
+  "778719049143025664", // Spoticord Music
+  "617037497574359050", // tip.cc
+];
+
 async function regenerateRelationships() {
   const db = new PostgreSQLManager();
   const relationshipManager = new RelationshipNetworkManager(db);
@@ -55,16 +68,16 @@ async function regenerateRelationships() {
       console.log("✅ Cleared existing relationships\n");
     }
 
-    // Fetch all messages for the guild
-    console.log("🔹 Fetching messages...");
+    // Fetch all messages for the guild, excluding bot messages
+    console.log("🔹 Fetching messages (excluding bot messages)...");
     const messagesResult = await db.query(
       `
 			SELECT id, guild_id, channel_id, author_id, content, created_at, referenced_message_id
 			FROM messages
-			WHERE guild_id = $1 AND active = true
+			WHERE guild_id = $1 AND active = true AND author_id != ALL($2::TEXT[])
 			ORDER BY created_at ASC
 		`,
-      [guildId]
+      [guildId, BOT_USER_IDS]
     );
 
     if (!messagesResult.success || !messagesResult.data) {
@@ -152,11 +165,13 @@ async function regenerateRelationships() {
 
         // Extract mentions from content
         // Only create relationships for mentions within the same guild
+        // Exclude mentions of bots
         const mentionRegex = /<@!?(\d+)>/g;
+        const botUserIdSet = new Set(BOT_USER_IDS);
         let match;
         while ((match = mentionRegex.exec(message.content)) !== null) {
           const mentionedUserId = match[1];
-          if (mentionedUserId && mentionedUserId !== message.author_id) {
+          if (mentionedUserId && mentionedUserId !== message.author_id && !botUserIdSet.has(mentionedUserId)) {
             try {
               const result = await relationshipManager.recordInteraction(
                 guildId,

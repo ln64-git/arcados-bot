@@ -704,7 +704,7 @@ export class DatabaseHealer {
             if (firstNonBot) {
               // Compare with newest non-bot message in DB
               const newestNonBotInDb = await this.db.query(
-                `SELECT id FROM messages m
+                `SELECT m.id FROM messages m
                  JOIN members mb ON mb.user_id = m.author_id AND mb.guild_id = m.guild_id
                  WHERE m.channel_id = $1 AND m.active = true AND mb.bot = false
                  ORDER BY m.created_at DESC LIMIT 1`,

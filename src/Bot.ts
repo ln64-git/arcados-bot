@@ -82,7 +82,7 @@ export class Bot {
         this.client,
         this.postgresManager,
         this.relationshipManager,
-        false // Set to true for verbose logging
+        true // Set to true for verbose logging
       );
       this.databaseHealer.startMaintenance();
 

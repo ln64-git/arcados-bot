@@ -304,20 +304,20 @@ export class PostgreSQLManager {
 					edited_at TIMESTAMP WITH TIME ZONE,
 					attachments TEXT[],
 					embeds TEXT[],
-					referenced_message_id VARCHAR(20) REFERENCES messages(id) ON DELETE SET NULL,
+					referenced_message_id VARCHAR(20),
 					active BOOLEAN DEFAULT true
 				)
 			`);
 
       // Add referenced_message_id column if it doesn't exist (migration for existing databases)
       await client.query(`
-        DO $$ 
+        DO $$
         BEGIN
           IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns 
+            SELECT 1 FROM information_schema.columns
             WHERE table_name = 'messages' AND column_name = 'referenced_message_id'
           ) THEN
-            ALTER TABLE messages ADD COLUMN referenced_message_id VARCHAR(20) REFERENCES messages(id) ON DELETE SET NULL;
+            ALTER TABLE messages ADD COLUMN referenced_message_id VARCHAR(20);
           END IF;
         END $$;
       `);
@@ -688,19 +688,9 @@ export class PostgreSQLManager {
 
     const client = await this.pool!.connect();
     try {
-      // If referenced_message_id is provided, verify it exists in the database
-      // If it doesn't exist, set it to NULL to avoid foreign key constraint violations
-      let referencedMessageId = messageData.referenced_message_id || null;
-      if (referencedMessageId) {
-        const checkResult = await client.query(
-          "SELECT id FROM messages WHERE id = $1",
-          [referencedMessageId]
-        );
-        if (!checkResult.rows || checkResult.rows.length === 0) {
-          // Referenced message doesn't exist yet, set to NULL
-          referencedMessageId = null;
-        }
-      }
+      // Allow referenced_message_id to reference messages that don't exist yet
+      // This handles out-of-order message sync (reply synced before parent message)
+      const referencedMessageId = messageData.referenced_message_id || null;
 
       const query = `
 				INSERT INTO messages (id, guild_id, channel_id, author_id, content, created_at, edited_at, attachments, embeds, referenced_message_id, embedding, active)

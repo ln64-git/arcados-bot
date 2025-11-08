@@ -156,6 +156,37 @@ export class LiveSyncWatcher {
     const isBot = message.author.bot;
 
     try {
+      // Ensure guild exists before inserting message (foreign key constraint)
+      const guild = message.guild;
+      if (guild) {
+        await this.db.upsertGuild({
+          id: guild.id,
+          name: guild.name,
+          description: guild.description || undefined,
+          icon: guild.icon || undefined,
+          owner_id: guild.ownerId || "",
+          member_count: guild.memberCount,
+          active: true,
+          created_at: guild.createdAt || new Date(),
+        });
+      }
+
+      // Ensure channel exists before inserting message (foreign key constraint)
+      const channel = message.channel;
+      if (channel && "name" in channel) {
+        await this.db.upsertChannel({
+          id: channel.id,
+          guild_id: guildId,
+          name: (channel as any).name || "",
+          type: channel.type,
+          position: (channel as any).position || 0,
+          topic: (channel as any).topic || undefined,
+          nsfw: (channel as any).nsfw || false,
+          parent_id: (channel as any).parentId || undefined,
+          active: true,
+        });
+      }
+
       // Save ALL messages to database (including bots)
       const result = await this.db.upsertMessage({
         id: message.id,
@@ -307,22 +338,57 @@ export class LiveSyncWatcher {
   private async handleMessageUpdate(message: Message): Promise<void> {
     if (!message.guildId || message.author.bot) return;
 
-    // Update message in database
-    await this.db.upsertMessage({
-      id: message.id,
-      guild_id: message.guildId,
-      channel_id: message.channel.id,
-      author_id: message.author.id,
-      content: message.content || "",
-      created_at: message.createdAt,
-      edited_at: message.editedAt || undefined,
-      attachments: Array.from(message.attachments.values()).map(
-        (a: any) => a.url
-      ),
-      embeds: message.embeds.map((e: any) => JSON.stringify(e.toJSON())),
-      referenced_message_id: message.reference?.messageId || undefined,
-      active: true,
-    });
+    try {
+      // Ensure guild exists before updating message (foreign key constraint)
+      const guild = message.guild;
+      if (guild) {
+        await this.db.upsertGuild({
+          id: guild.id,
+          name: guild.name,
+          description: guild.description || undefined,
+          icon: guild.icon || undefined,
+          owner_id: guild.ownerId || "",
+          member_count: guild.memberCount,
+          active: true,
+          created_at: guild.createdAt || new Date(),
+        });
+      }
+
+      // Ensure channel exists before updating message (foreign key constraint)
+      const channel = message.channel;
+      if (channel && "name" in channel) {
+        await this.db.upsertChannel({
+          id: channel.id,
+          guild_id: message.guildId,
+          name: (channel as any).name || "",
+          type: channel.type,
+          position: (channel as any).position || 0,
+          topic: (channel as any).topic || undefined,
+          nsfw: (channel as any).nsfw || false,
+          parent_id: (channel as any).parentId || undefined,
+          active: true,
+        });
+      }
+
+      // Update message in database
+      await this.db.upsertMessage({
+        id: message.id,
+        guild_id: message.guildId,
+        channel_id: message.channel.id,
+        author_id: message.author.id,
+        content: message.content || "",
+        created_at: message.createdAt,
+        edited_at: message.editedAt || undefined,
+        attachments: Array.from(message.attachments.values()).map(
+          (a: any) => a.url
+        ),
+        embeds: message.embeds.map((e: any) => JSON.stringify(e.toJSON())),
+        referenced_message_id: message.reference?.messageId || undefined,
+        active: true,
+      });
+    } catch (error) {
+      console.error(`🔸 Exception updating message ${message.id}:`, error);
+    }
   }
 
   /**

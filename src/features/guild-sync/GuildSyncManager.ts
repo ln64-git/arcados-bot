@@ -373,6 +373,8 @@ export class GuildSyncManager {
       let channelMessageCount = 0;
       let batchCount = 0;
 
+      console.log(`🔹 Starting message backfill for channel ${channel.name} (${channel.id})`);
+
       while (true) {
         const fetchPromise = channel.messages.fetch({
           limit: batchSize,
@@ -383,16 +385,44 @@ export class GuildSyncManager {
           setTimeout(() => reject(new Error("Message fetch timeout")), 30000);
         });
 
-        const messages = await Promise.race([fetchPromise, timeoutPromise]);
-        if (messages.size === 0) break;
-
-        for (const [, message] of messages) {
-          await this.syncMessage(message, guild.id);
-          channelMessageCount++;
-          totalMessages++;
+        let messages;
+        try {
+          messages = await Promise.race([fetchPromise, timeoutPromise]);
+        } catch (error) {
+          console.error(`❌ Error fetching messages for ${channel.name}:`, error);
+          break;
         }
 
-        lastMessageId = messages.last()?.id;
+        console.log(`📦 Batch ${batchCount + 1}: Fetched ${messages.size} messages (before: ${lastMessageId || 'start'})`);
+
+        if (messages.size === 0) {
+          console.log(`✅ No more messages to fetch. Stopping at ${channelMessageCount} messages.`);
+          break;
+        }
+
+        let syncErrors = 0;
+        for (const [, message] of messages) {
+          try {
+            await this.syncMessage(message, guild.id);
+            channelMessageCount++;
+            totalMessages++;
+          } catch (error) {
+            syncErrors++;
+            console.error(`❌ Error syncing message ${message.id}:`, error);
+          }
+        }
+
+        if (syncErrors > 0) {
+          console.log(`⚠️  ${syncErrors} messages failed to sync in this batch`);
+        }
+
+        const newLastMessageId = messages.last()?.id;
+        if (newLastMessageId === lastMessageId) {
+          console.warn(`⚠️  WARNING: lastMessageId didn't change! Stopping to prevent infinite loop.`);
+          break;
+        }
+        lastMessageId = newLastMessageId;
+
         batchCount++;
         if (batchCount % 5 === 0) {
           console.log(
@@ -481,6 +511,7 @@ export class GuildSyncManager {
         message.embeds.length > 0
           ? message.embeds.map((embed) => JSON.stringify(embed))
           : undefined,
+      referenced_message_id: message.reference?.messageId || undefined,
       active: true,
     };
 

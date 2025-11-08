@@ -2,6 +2,19 @@ import "dotenv/config";
 import { PostgreSQLManager } from "../features/database/PostgreSQLManager.js";
 import { ConversationManager } from "../features/relationship-network/ConversationManager.js";
 
+// Known bot user IDs to exclude from conversation generation
+const BOT_USER_IDS = [
+	"356268235697553409", // .fmbot
+	"1290873223944343714", // Arcados-bot
+	"235148962103951360", // Carl-bot
+	"949731498808979557", // Euphony
+	"411916947773587456", // Jockie Music
+	"439205512425504771", // NotSoBot
+	"678344927997853742", // Sapphire
+	"778719049143025664", // Spoticord Music
+	"617037497574359050", // tip.cc
+];
+
 async function regenerateConversations() {
 	const db = new PostgreSQLManager();
 	const conversationManager = new ConversationManager(db);
@@ -48,15 +61,16 @@ async function regenerateConversations() {
 		}
 
 		// Fetch all messages for the guild with embeddings, ordered chronologically
-		console.log("🔹 Fetching messages with embeddings...");
+		// Exclude messages from known bots
+		console.log("🔹 Fetching messages with embeddings (excluding bot messages)...");
 		const messagesResult = await db.query(
 			`
 			SELECT id, guild_id, channel_id, author_id, content, created_at, referenced_message_id, embedding
 			FROM messages
-			WHERE guild_id = $1 AND active = true
+			WHERE guild_id = $1 AND active = true AND author_id != ALL($2::TEXT[])
 			ORDER BY created_at ASC
 		`,
-			[guildId]
+			[guildId, BOT_USER_IDS]
 		);
 
 		if (!messagesResult.success || !messagesResult.data) {
@@ -92,14 +106,17 @@ async function regenerateConversations() {
 		let processed = 0;
 
 		// Extract mentions from content for each message
+		// Exclude mentions of bots
 		const mentionRegex = /<@!?(\d+)>/g;
+		const botUserIdSet = new Set(BOT_USER_IDS);
 
 		for (const message of messages) {
 			const mentionedUsers: string[] = [];
 			let match;
 			while ((match = mentionRegex.exec(message.content || "")) !== null) {
 				const mentionedId = match[1];
-				if (mentionedId) {
+				// Skip if this mention is a bot
+				if (mentionedId && !botUserIdSet.has(mentionedId)) {
 					mentionedUsers.push(mentionedId);
 				}
 			}
