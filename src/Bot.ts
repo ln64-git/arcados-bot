@@ -19,7 +19,6 @@ import {
   getSessionByRepliedMessageId,
   appendUserTurn,
   appendAssistantTurnAndTrackMessage,
-  formatHistoryForPrompt,
   getSessionHistory,
   startSession,
 } from "./features/ai-assistant/ChatSessionManager";
@@ -44,7 +43,6 @@ export class Bot {
         GatewayIntentBits.GuildMembers,
       ],
     });
-
     // Initialize PostgreSQL manager
     this.postgresManager = new PostgreSQLManager();
   }
@@ -95,23 +93,59 @@ export class Bot {
       );
       this.liveSyncWatcher.start();
 
-      // Load active conversations for all guilds
+      // Load active conversations for guilds (filtered by config.guildId if set)
       const guilds = this.client.guilds.cache;
-      for (const [, guild] of guilds) {
-        await this.conversationManager!.loadActiveConversations(guild.id);
+      if (config.guildId) {
+        const targetGuild = guilds.get(config.guildId);
+        if (targetGuild) {
+          console.log(
+            `🔹 Limiting sync to guild: ${targetGuild.name} (${config.guildId})`
+          );
+          await this.conversationManager!.loadActiveConversations(
+            targetGuild.id
+          );
+        } else {
+          console.log(
+            `🔸 Warning: Guild ID ${config.guildId} not found in cache`
+          );
+        }
+      } else {
+        for (const [, guild] of guilds) {
+          await this.conversationManager!.loadActiveConversations(guild.id);
+        }
       }
 
       // Start periodic cleanup of stale conversations (every 15 minutes)
       setInterval(async () => {
-        for (const [, guild] of guilds) {
-          await this.conversationManager!.cleanupStaleConversations(guild.id);
+        if (config.guildId) {
+          const targetGuild = this.client.guilds.cache.get(config.guildId);
+          if (targetGuild) {
+            await this.conversationManager!.cleanupStaleConversations(
+              targetGuild.id
+            );
+          }
+        } else {
+          for (const [, guild] of this.client.guilds.cache) {
+            await this.conversationManager!.cleanupStaleConversations(guild.id);
+          }
         }
       }, 15 * 60 * 1000);
 
       // Start periodic semantic merging of related conversations (every hour)
       setInterval(async () => {
-        for (const [, guild] of guilds) {
-          await this.conversationManager!.runSemanticMergingForGuild(guild.id);
+        if (config.guildId) {
+          const targetGuild = this.client.guilds.cache.get(config.guildId);
+          if (targetGuild) {
+            await this.conversationManager!.runSemanticMergingForGuild(
+              targetGuild.id
+            );
+          }
+        } else {
+          for (const [, guild] of this.client.guilds.cache) {
+            await this.conversationManager!.runSemanticMergingForGuild(
+              guild.id
+            );
+          }
         }
       }, 60 * 60 * 1000);
 

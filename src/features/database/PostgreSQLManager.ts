@@ -974,9 +974,6 @@ export class PostgreSQLManager {
         JSON.stringify(relationships),
         memberId,
       ]);
-      console.log(
-        `✅ Update query executed, rows affected: ${result.rowCount}`
-      );
 
       if (result.rowCount === 0) {
         console.error(`🔸 Update affected 0 rows for id: ${memberId}`);

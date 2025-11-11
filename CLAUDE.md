@@ -40,6 +40,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Watch database changes:** `npm run watch-db`
 - **Watch user changes:** `npm run watch-users`
 - **Check recent activity:** `npm run view:recent`
+- **Inspect active conversations (24h):** `npm run inspect:conversations`
+- **Analyze conversation grouping accuracy:** `npm run analyze:conversation-accuracy` (uses Gemini AI to compare programmatic vs semantic conversation detection)
 
 ## Architecture Overview
 

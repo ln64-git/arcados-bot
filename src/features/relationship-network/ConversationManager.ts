@@ -37,7 +37,7 @@ export class ConversationManager {
   private finalizationLocks: Map<string, Promise<void>> = new Map();
   private edgeCache: Map<string, CachedEdgeData> = new Map(); // Cache for edge queries
   private readonly EDGE_CACHE_TTL = 5 * 60 * 1000; // 5 minute cache TTL
-  private readonly INACTIVITY_MS = 5 * 60 * 1000; // 5 minutes base inactivity
+  private readonly INACTIVITY_MS = 10 * 60 * 1000; // 10 minutes base inactivity (increased from 5 to reduce fragmentation)
   private readonly INACTIVITY_MS_WITH_REPLIES = 30 * 60 * 1000; // 30 minutes when there are active replies/mentions
   private readonly MIN_MESSAGES = 3;
 
@@ -236,6 +236,322 @@ export class ConversationManager {
         error: error instanceof Error ? error.message : "Unknown error",
       };
     }
+  }
+
+  /**
+   * Detect conversations in a channel using relationship-aware scoring
+   * Supports multi-party conversations and uses guild-wide relationship context
+   *
+   * @param channelId - Channel to analyze
+   * @param guildId - Guild ID for relationship context
+   * @param timeWindowHours - How far back to analyze (default: 24h)
+   * @param minMessages - Minimum messages to form a conversation (default: 3)
+   * @returns Array of conversation segments with participants and message IDs
+   */
+  async detectConversationsEnhanced(
+    channelId: string,
+    guildId: string,
+    timeWindowHours: number = 24,
+    minMessages: number = 3
+  ): Promise<DatabaseResult<ConversationEntry[]>> {
+    try {
+      const cutoffTime = new Date();
+      cutoffTime.setHours(cutoffTime.getHours() - timeWindowHours);
+
+      // Fetch messages from channel
+      const messagesResult = await this.db.query(
+        `SELECT
+          m.id, m.author_id, m.content, m.created_at, m.referenced_message_id,
+          u.display_name, u.username
+        FROM messages m
+        LEFT JOIN members u ON u.user_id = m.author_id AND u.guild_id = m.guild_id
+        WHERE m.channel_id = $1 AND m.guild_id = $2
+          AND m.created_at >= $3 AND m.active = true
+        ORDER BY m.created_at ASC`,
+        [channelId, guildId, cutoffTime]
+      );
+
+      if (!messagesResult.success || !messagesResult.data || messagesResult.data.length === 0) {
+        return { success: true, data: [] };
+      }
+
+      const messages = messagesResult.data;
+      const uniqueAuthors = new Set(messages.map((m: any) => m.author_id));
+
+      // Build relationship context for all participants
+      const relationshipContext = await this.buildRelationshipContextForChannel(
+        Array.from(uniqueAuthors),
+        guildId
+      );
+
+      // Group messages using relationship-aware scoring
+      const conversations = this.clusterMessagesWithRelationships(
+        messages,
+        relationshipContext,
+        guildId,
+        minMessages
+      );
+
+      return { success: true, data: conversations };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  }
+
+  /**
+   * Build relationship context for channel participants
+   */
+  private async buildRelationshipContextForChannel(
+    userIds: string[],
+    guildId: string
+  ): Promise<Map<string, Map<string, number>>> {
+    const affinityMatrix = new Map<string, Map<string, number>>();
+
+    // Get relationship data for all user pairs
+    for (let i = 0; i < userIds.length; i++) {
+      for (let j = i + 1; j < userIds.length; j++) {
+        const userA = userIds[i];
+        const userB = userIds[j];
+
+        if (!userA || !userB) continue;
+
+        // Get bidirectional edge data
+        const [edgeAB, edgeBA] = await Promise.all([
+          this.getCachedEdge(guildId, userA, userB),
+          this.getCachedEdge(guildId, userB, userA),
+        ]);
+
+        // Calculate combined interaction score
+        let totalInteractions = 0;
+        if (edgeAB?.success && edgeAB.data) {
+          totalInteractions += edgeAB.data.total || 0;
+        }
+        if (edgeBA?.success && edgeBA.data) {
+          totalInteractions += edgeBA.data.total || 0;
+        }
+
+        // Normalize using log scale
+        const affinityScore = totalInteractions > 0
+          ? Math.min(1.0, Math.log10(totalInteractions + 1) / 3)
+          : 0;
+
+        // Store bidirectionally
+        if (!affinityMatrix.has(userA)) {
+          affinityMatrix.set(userA, new Map());
+        }
+        if (!affinityMatrix.has(userB)) {
+          affinityMatrix.set(userB, new Map());
+        }
+
+        affinityMatrix.get(userA)!.set(userB, affinityScore);
+        affinityMatrix.get(userB)!.set(userA, affinityScore);
+      }
+    }
+
+    return affinityMatrix;
+  }
+
+  /**
+   * Cluster messages using relationship-aware scoring (similar to test script)
+   */
+  private clusterMessagesWithRelationships(
+    messages: any[],
+    affinityMatrix: Map<string, Map<string, number>>,
+    guildId: string,
+    minMessages: number
+  ): ConversationEntry[] {
+    interface TempConversation {
+      id: string;
+      participants: Set<string>;
+      messageIds: Set<string>;
+      messages: any[];
+      startTime: Date;
+      endTime: Date;
+      avgAffinity: number;
+    }
+
+    const conversations: TempConversation[] = [];
+    const processedMessages = new Set<string>();
+
+    // Phase 1: Group by explicit signals (replies, mentions)
+    for (const msg of messages) {
+      if (processedMessages.has(msg.id)) continue;
+
+      let targetConvo: TempConversation | undefined;
+
+      // Check for reply chains
+      if (msg.referenced_message_id) {
+        targetConvo = conversations.find((c) => c.messageIds.has(msg.referenced_message_id));
+      }
+
+      // Check for mentions
+      if (!targetConvo && msg.content) {
+        const mentionMatches = msg.content.match(this.mentionPattern);
+        if (mentionMatches) {
+          const mentionedIds = mentionMatches.map((m: string) =>
+            m.replace(/<@!?(\d+)>/, "$1")
+          );
+
+          // Find conversation with mentioned users
+          for (const convo of conversations) {
+            for (const mentionedId of mentionedIds) {
+              if (convo.participants.has(mentionedId)) {
+                const timeDelta = new Date(msg.created_at).getTime() - convo.endTime.getTime();
+                if (timeDelta <= 5 * 60 * 1000) {
+                  targetConvo = convo;
+                  break;
+                }
+              }
+            }
+            if (targetConvo) break;
+          }
+
+          // Create new conversation with mentioned user
+          if (!targetConvo && mentionedIds.length > 0) {
+            targetConvo = {
+              id: `conv_${msg.id}`,
+              participants: new Set([msg.author_id, ...mentionedIds]),
+              messageIds: new Set([msg.id]),
+              messages: [msg],
+              startTime: new Date(msg.created_at),
+              endTime: new Date(msg.created_at),
+              avgAffinity: 0,
+            };
+            conversations.push(targetConvo);
+            processedMessages.add(msg.id);
+            continue;
+          }
+        }
+      }
+
+      if (targetConvo) {
+        targetConvo.messageIds.add(msg.id);
+        targetConvo.participants.add(msg.author_id);
+        targetConvo.messages.push(msg);
+        targetConvo.endTime = new Date(msg.created_at);
+        processedMessages.add(msg.id);
+      }
+    }
+
+    // Phase 2: Score remaining messages against conversations
+    for (const msg of messages) {
+      if (processedMessages.has(msg.id)) continue;
+
+      let bestScore = 0;
+      let bestConvo: TempConversation | null = null;
+
+      for (const convo of conversations) {
+        const timeDelta = new Date(msg.created_at).getTime() - convo.endTime.getTime();
+        const timeSinceEndMin = timeDelta / (1000 * 60);
+
+        // Dynamic time window: base 45 min, extended for participant continuity
+        const isParticipant = convo.participants.has(msg.author_id);
+        const isSmallGroup = convo.participants.size <= 3;
+        const maxTimeWindow = (isParticipant && isSmallGroup) ? 45 * 60 * 1000 : 20 * 60 * 1000;
+
+        if (timeDelta > maxTimeWindow) continue; // Skip if too old
+
+        // Calculate max affinity to conversation participants
+        let maxAffinity = 0;
+        for (const participantId of convo.participants) {
+          if (participantId === msg.author_id) continue;
+          const affinity = affinityMatrix.get(msg.author_id)?.get(participantId) || 0;
+          if (affinity > maxAffinity) {
+            maxAffinity = affinity;
+          }
+        }
+
+        // Temporal score
+        const temporalScore = Math.max(0, 1 - timeDelta / maxTimeWindow);
+
+        // Combined score: relationship (60%) + temporal (40%)
+        let score = maxAffinity * 0.6 + temporalScore * 0.4;
+
+        // Participant continuity bonus: same small group within 45 min
+        if (isParticipant && isSmallGroup && timeSinceEndMin <= 45) {
+          score += 0.2;
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestConvo = convo;
+        }
+      }
+
+      // Assign if score > threshold
+      if (bestScore > 0.25 && bestConvo) {
+        bestConvo.messageIds.add(msg.id);
+        bestConvo.participants.add(msg.author_id);
+        bestConvo.messages.push(msg);
+        bestConvo.endTime = new Date(msg.created_at);
+        processedMessages.add(msg.id);
+      } else {
+        // Proximity fallback: Group if very close in time (2 min)
+        for (const convo of conversations) {
+          const timeDelta = Math.abs(
+            new Date(msg.created_at).getTime() - convo.endTime.getTime()
+          );
+          if (timeDelta <= 2 * 60 * 1000) {
+            convo.messageIds.add(msg.id);
+            convo.participants.add(msg.author_id);
+            convo.messages.push(msg);
+            convo.endTime = new Date(msg.created_at);
+            processedMessages.add(msg.id);
+            break;
+          }
+        }
+      }
+    }
+
+    // Calculate average affinity and convert to ConversationEntry
+    const result: ConversationEntry[] = [];
+
+    for (const convo of conversations) {
+      if (convo.messages.length < minMessages) continue;
+
+      // Calculate average affinity between all participant pairs
+      const participants = Array.from(convo.participants);
+      let totalAffinity = 0;
+      let pairCount = 0;
+
+      for (let i = 0; i < participants.length; i++) {
+        for (let j = i + 1; j < participants.length; j++) {
+          const affinity = affinityMatrix.get(participants[i]!)?.get(participants[j]!) || 0;
+          totalAffinity += affinity;
+          pairCount++;
+        }
+      }
+
+      convo.avgAffinity = pairCount > 0 ? totalAffinity / pairCount : 0;
+
+      // Get channel ID from first message
+      const channelId = convo.messages[0]?.channel_id || "";
+
+      // Check for mentions
+      const hasMentions = convo.messages.some(
+        (m) => m.content && m.content.includes("<@")
+      );
+
+      result.push({
+        segment_id: convo.id,
+        conversation_id: convo.id,
+        start_time: convo.startTime,
+        end_time: convo.endTime,
+        message_count: convo.messages.length,
+        participant_count: convo.participants.size,
+        channel_id: channelId,
+        message_ids: Array.from(convo.messageIds),
+        interaction_types: hasMentions ? ["mention"] : [],
+        duration_minutes: Math.round(
+          (convo.endTime.getTime() - convo.startTime.getTime()) / (1000 * 60)
+        ),
+      });
+    }
+
+    return result;
   }
 
   /**
@@ -533,13 +849,37 @@ export class ConversationManager {
 
   /**
    * Check if message is a bot command that should be excluded from conversations
+   * Enhanced to check full patterns rather than just prefixes
    */
   private isBotCommand(content: string): boolean {
     if (!content || content.trim().length === 0) return false;
     const trimmed = content.trim().toLowerCase();
-    // Filter messages starting with m! (music bot commands: m!p, m!stop, m!skip, etc.)
-    // or starting with . (bot commands: .spin, .play, etc.)
-    return trimmed.startsWith("m!") || trimmed.startsWith(".");
+
+    // Common bot command prefixes
+    const commandPrefixes = ["m!", ".", "!", "/", "?", "$", "-", "+", "~", ">"];
+
+    // Check if starts with any command prefix AND has a command-like pattern
+    for (const prefix of commandPrefixes) {
+      if (trimmed.startsWith(prefix)) {
+        // Extract what comes after the prefix
+        const afterPrefix = trimmed.substring(prefix.length).trim();
+
+        // It's a command if:
+        // 1. Has a recognizable command word (no spaces in first 20 chars)
+        // 2. Or is very short (likely just "!help" or ".ping")
+        const firstWord = afterPrefix.split(/\s+/)[0] || "";
+        if (firstWord.length > 0 && firstWord.length <= 20) {
+          return true;
+        }
+      }
+    }
+
+    // Also check for slash commands that might appear in message content
+    if (/^\/\w+/.test(trimmed)) {
+      return true;
+    }
+
+    return false;
   }
 
   /**
@@ -827,10 +1167,25 @@ export class ConversationManager {
           )
       );
 
-    const inactivityTimeout =
-      hasReplyOrMention || hasRecentReplyToParticipants
-        ? this.INACTIVITY_MS_WITH_REPLIES
-        : this.INACTIVITY_MS;
+    // Calculate conversation density (messages per minute)
+    let conversationDensity = 0;
+    if (bufferMessages.length > 1) {
+      const bufferDurationMs = message.created_at.getTime() - buffer.startTime.getTime();
+      const bufferDurationMin = bufferDurationMs / (1000 * 60);
+      if (bufferDurationMin > 0) {
+        conversationDensity = bufferMessages.length / bufferDurationMin;
+      }
+    }
+    const isHighDensity = conversationDensity > 0.5; // More than 1 message per 2 minutes
+
+    // Dynamic timeout based on conversation signals
+    let inactivityTimeout = this.INACTIVITY_MS;
+    if (hasReplyOrMention || hasRecentReplyToParticipants) {
+      inactivityTimeout = this.INACTIVITY_MS_WITH_REPLIES;
+    } else if (isHighDensity) {
+      // High-density conversations get extended timeout (15 min)
+      inactivityTimeout = 15 * 60 * 1000;
+    }
 
     if (buffer.timeoutHandle) {
       clearTimeout(buffer.timeoutHandle);
@@ -1223,8 +1578,8 @@ export class ConversationManager {
         }
       }
 
-      // Only add if score meets threshold (0.5)
-      if (bestScore > 0.5 && bestGroup) {
+      // Only add if score meets threshold (0.35 - lowered from 0.5 for better coverage)
+      if (bestScore > 0.35 && bestGroup) {
         bestGroup.add(msg.id);
         processedMessages.add(msg.id);
       }
@@ -1233,15 +1588,15 @@ export class ConversationManager {
     }
 
     // Convert groups back to message arrays, filtering out groups that are too small
-    // Only include groups that have actual reply/mention connections (not just time-based)
+    // Use conditional MIN_MESSAGES: 2 for conversations with replies/mentions, 3 otherwise
     const result: Array<{ messages: typeof messages }> = [];
     for (const group of allGroups) {
-      if (group.size >= this.MIN_MESSAGES) {
+      if (group.size >= 2) {  // Initial check with minimum of 2
         const groupMessages = Array.from(group)
           .map((id) => messageMap.get(id))
           .filter((m): m is (typeof messages)[0] => m !== undefined);
 
-        if (groupMessages.length >= this.MIN_MESSAGES) {
+        if (groupMessages.length >= 2) {
           // Sort chronologically for gap checking
           groupMessages.sort((a, b) => a.created_at.getTime() - b.created_at.getTime());
 
@@ -1281,16 +1636,83 @@ export class ConversationManager {
             (m) => m.mentioned_user_ids && m.mentioned_user_ids.length > 0
           );
 
-          // Only include if there are actual reply chains or mentions connecting the messages
-          if (hasReplyConnections || hasMentions) {
-            result.push({ messages: groupMessages });
+          // Conditional minimum: 2 messages for conversations with explicit connections, 3 otherwise
+          const minRequired = (hasReplyConnections || hasMentions) ? 2 : this.MIN_MESSAGES;
+
+          if (groupMessages.length >= minRequired) {
+            // Include if has explicit connections OR meets the higher threshold
+            if (hasReplyConnections || hasMentions) {
+              result.push({ messages: groupMessages });
+            }
           }
         }
       }
     }
 
-    // Don't fallback - if no valid conversation groups found, return empty
-    // This filters out noise (one-off messages without actual conversations)
+    // Proximity-based fallback: Group unprocessed messages within 10-minute windows from same participants
+    const proximityGroups = this.groupByProximity(messages, processedMessages);
+    result.push(...proximityGroups);
+
+    return result;
+  }
+
+  /**
+   * Group unprocessed messages by proximity (within 10-minute windows from same participants)
+   * This catches organic conversations that don't have explicit reply chains or mentions
+   */
+  private groupByProximity<T extends { id: string; author_id: string; created_at: Date; content?: string }>(
+    allMessages: T[],
+    processedMessages: Set<string>
+  ): Array<{ messages: T[] }> {
+    const PROXIMITY_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+    const result: Array<{ messages: T[] }> = [];
+
+    // Get unprocessed messages
+    const unprocessed = allMessages.filter((m) => !processedMessages.has(m.id));
+    if (unprocessed.length < 2) return result;
+
+    // Sort by time
+    const sorted = [...unprocessed].sort((a, b) => a.created_at.getTime() - b.created_at.getTime());
+
+    // Group messages within proximity windows
+    let currentGroup: T[] = [];
+    let lastMessageTime: number | null = null;
+    const participantSet = new Set<string>();
+
+    for (const msg of sorted) {
+      const msgTime = msg.created_at.getTime();
+
+      // Start new group if:
+      // 1. First message
+      // 2. Time gap > 10 minutes
+      // 3. No participant overlap with current group
+      if (
+        lastMessageTime === null ||
+        msgTime - lastMessageTime > PROXIMITY_WINDOW_MS ||
+        (participantSet.size > 0 && !participantSet.has(msg.author_id))
+      ) {
+        // Save previous group if it has at least 2 messages
+        if (currentGroup.length >= 2) {
+          result.push({ messages: currentGroup });
+        }
+        // Start new group
+        currentGroup = [msg];
+        participantSet.clear();
+        participantSet.add(msg.author_id);
+      } else {
+        // Add to current group
+        currentGroup.push(msg);
+        participantSet.add(msg.author_id);
+      }
+
+      lastMessageTime = msgTime;
+    }
+
+    // Don't forget the last group
+    if (currentGroup.length >= 2) {
+      result.push({ messages: currentGroup });
+    }
+
     return result;
   }
 
@@ -2571,6 +2993,446 @@ export class ConversationManager {
       }
     } catch (error) {
       console.error("🔸 Failed to run semantic merging:", error);
+    }
+  }
+
+  /**
+   * Helper: Extract keywords from message content (stopword filtering + stemming)
+   */
+  private extractKeywords(content: string): Set<string> {
+    const stopwords = new Set([
+      "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
+      "by", "from", "as", "is", "was", "are", "were", "be", "been", "being", "have", "has",
+      "had", "do", "does", "did", "will", "would", "should", "could", "may", "might", "must",
+      "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
+      "my", "your", "his", "its", "our", "their", "this", "that", "these", "those",
+      "im", "ive", "youre", "dont", "doesnt", "didnt", "isnt", "arent", "wasnt", "werent",
+      "just", "so", "like", "yeah", "oh", "um", "uh", "lol", "lmao", "tbh", "ngl"
+    ]);
+
+    const keywords = new Set<string>();
+    const words = content
+      .toLowerCase()
+      .replace(/<@!?\d+>/g, "") // Remove mentions
+      .replace(/[^\w\s]/g, " ") // Remove punctuation
+      .split(/\s+/)
+      .filter(w => w.length > 2 && !stopwords.has(w));
+
+    words.forEach(word => keywords.add(word));
+    return keywords;
+  }
+
+  /**
+   * Helper: Calculate topic overlap using Jaccard similarity
+   */
+  private calculateTopicOverlapFromKeywords(keywords1: Set<string>, keywords2: Set<string>): number {
+    if (keywords1.size === 0 && keywords2.size === 0) return 0;
+    if (keywords1.size === 0 || keywords2.size === 0) return 0;
+
+    let intersection = 0;
+    for (const word of keywords1) {
+      if (keywords2.has(word)) {
+        intersection++;
+      }
+    }
+
+    const union = keywords1.size + keywords2.size - intersection;
+    return union > 0 ? intersection / union : 0;
+  }
+
+  /**
+   * Helper: Calculate cosine similarity between embeddings
+   */
+  private calculateCosineSimilarity(vec1: number[], vec2: number[]): number {
+    if (vec1.length !== vec2.length || vec1.length === 0) return 0;
+
+    let dotProduct = 0;
+    let norm1 = 0;
+    let norm2 = 0;
+
+    for (let i = 0; i < vec1.length; i++) {
+      dotProduct += vec1[i]! * vec2[i]!;
+      norm1 += vec1[i]! * vec1[i]!;
+      norm2 += vec2[i]! * vec2[i]!;
+    }
+
+    norm1 = Math.sqrt(norm1);
+    norm2 = Math.sqrt(norm2);
+
+    if (norm1 === 0 || norm2 === 0) return 0;
+    return dotProduct / (norm1 * norm2);
+  }
+
+  /**
+   * Helper: Calculate average embedding from array of embeddings
+   */
+  private calculateAverageEmbedding(embeddings: number[][]): number[] | null {
+    if (embeddings.length === 0) return null;
+
+    const dim = embeddings[0]!.length;
+    const avg = new Array(dim).fill(0);
+
+    for (const emb of embeddings) {
+      if (emb.length !== dim) continue;
+      for (let i = 0; i < dim; i++) {
+        avg[i] += emb[i]!;
+      }
+    }
+
+    for (let i = 0; i < dim; i++) {
+      avg[i] /= embeddings.length;
+    }
+
+    return avg;
+  }
+
+  /**
+   * Batch regeneration using sophisticated algorithm from test script
+   * Includes all Phase 2 & 3 improvements: keyword caching, multiplicative scoring,
+   * empty content handling, participant pair continuity, rapid-fire detection, etc.
+   */
+  async regenerateConversationsAdvanced(
+    channelId: string,
+    guildId: string,
+    messages: Array<{
+      id: string;
+      author_id: string;
+      content: string;
+      created_at: Date;
+      referenced_message_id?: string;
+      embedding?: number[];
+    }>
+  ): Promise<DatabaseResult<ConversationEntry[]>> {
+    try {
+      interface MessageWithKeywords {
+        id: string;
+        author_id: string;
+        content: string;
+        created_at: Date;
+        referenced_message_id?: string;
+        embedding?: number[];
+        keywords: Set<string>;
+      }
+
+      interface ConversationGroup {
+        id: string;
+        participants: Set<string>;
+        messageIds: Set<string>;
+        messages: MessageWithKeywords[];
+        startTime: Date;
+        endTime: Date;
+        avgAffinity: number;
+      }
+
+      // Pre-compute keywords for all messages
+      const messagesWithKeywords: MessageWithKeywords[] = messages.map(m => ({
+        ...m,
+        keywords: this.extractKeywords(m.content || "")
+      }));
+
+      const uniqueAuthors = new Set(messagesWithKeywords.map(m => m.author_id));
+
+      // Build affinity matrix
+      const affinityMatrix = await this.buildRelationshipContextForChannel(
+        Array.from(uniqueAuthors),
+        guildId
+      );
+
+      const conversations: ConversationGroup[] = [];
+      const processedMessages = new Set<string>();
+
+      // Phase 1: Explicit signals (reply chains, mentions)
+      for (const msg of messagesWithKeywords) {
+        if (processedMessages.has(msg.id)) continue;
+
+        let targetConvo: ConversationGroup | undefined;
+
+        // Reply chains
+        if (msg.referenced_message_id) {
+          targetConvo = conversations.find(c => c.messageIds.has(msg.referenced_message_id!));
+
+          // If no conversation exists, create new one with referenced message
+          if (!targetConvo) {
+            const referencedMsg = messagesWithKeywords.find(m => m.id === msg.referenced_message_id);
+            if (referencedMsg) {
+              targetConvo = {
+                id: `conv_${referencedMsg.id}`,
+                participants: new Set([referencedMsg.author_id, msg.author_id]),
+                messageIds: new Set([referencedMsg.id, msg.id]),
+                messages: [referencedMsg, msg],
+                startTime: referencedMsg.created_at,
+                endTime: msg.created_at,
+                avgAffinity: 0
+              };
+              conversations.push(targetConvo);
+              processedMessages.add(referencedMsg.id);
+              processedMessages.add(msg.id);
+              continue;
+            }
+          }
+        }
+
+        // Mentions
+        if (!targetConvo) {
+          const mentionMatches = msg.content.match(this.mentionPattern);
+          if (mentionMatches) {
+            const mentionedIds = mentionMatches.map(m => m.replace(/<@!?(\d+)>/, "$1"));
+
+            for (const convo of conversations) {
+              for (const mentionedId of mentionedIds) {
+                if (convo.participants.has(mentionedId)) {
+                  const timeDelta = msg.created_at.getTime() - convo.endTime.getTime();
+                  if (timeDelta <= 5 * 60 * 1000) {
+                    targetConvo = convo;
+                    break;
+                  }
+                }
+              }
+              if (targetConvo) break;
+            }
+          }
+        }
+
+        if (targetConvo) {
+          targetConvo.messageIds.add(msg.id);
+          targetConvo.participants.add(msg.author_id);
+          targetConvo.messages.push(msg);
+          targetConvo.endTime = msg.created_at;
+          processedMessages.add(msg.id);
+        }
+      }
+
+      // Phase 2: Enhanced scoring with all improvements
+      const BASE_EXTEND_MINUTES = 45;
+      const RECENT_MESSAGES_WINDOW = 5;
+
+      for (const msg of messagesWithKeywords) {
+        if (processedMessages.has(msg.id)) continue;
+
+        let bestScore = 0;
+        let bestConvo: ConversationGroup | null = null;
+        let bestMaxAffinity = 0;
+
+        const mentionMatches = msg.content.match(this.mentionPattern);
+        const mentionedIds = mentionMatches ? mentionMatches.map(m => m.replace(/<@!?(\d+)>/, "$1")) : [];
+
+        for (const convo of conversations) {
+          const timeDelta = msg.created_at.getTime() - convo.endTime.getTime();
+          const timeSinceEnd = timeDelta / (1000 * 60);
+
+          // Special handling for empty content (images/attachments)
+          const isEmptyContent = !msg.content || msg.content.trim().length === 0;
+          if (isEmptyContent && convo.participants.has(msg.author_id) && timeSinceEnd <= 10) {
+            bestScore = 1.0;
+            bestConvo = convo;
+            break;
+          }
+
+          const mentionsParticipant = mentionedIds.some(id => convo.participants.has(id));
+          const repliesToParticipant = msg.referenced_message_id && convo.messageIds.has(msg.referenced_message_id);
+          const isParticipant = convo.participants.has(msg.author_id);
+
+          // Calculate max affinity
+          let maxAffinity = 0;
+          for (const participantId of convo.participants) {
+            if (participantId === msg.author_id) continue;
+            const affinity = affinityMatrix.get(msg.author_id)?.get(participantId) || 0;
+            if (affinity > maxAffinity) {
+              maxAffinity = affinity;
+            }
+          }
+
+          // Semantic similarity
+          let semanticScore = 0;
+          if (msg.embedding && convo.messages.length > 0) {
+            const convEmbeddings = convo.messages
+              .map(m => m.embedding)
+              .filter((emb): emb is number[] => emb !== undefined);
+            if (convEmbeddings.length > 0) {
+              const avgEmb = this.calculateAverageEmbedding(convEmbeddings);
+              if (avgEmb) {
+                semanticScore = this.calculateCosineSimilarity(msg.embedding, avgEmb);
+              }
+            }
+          }
+
+          // Topic overlap with recent messages
+          const recentMessages = convo.messages.slice(-RECENT_MESSAGES_WINDOW);
+          let recentTopicScore = 0;
+          if (recentMessages.length > 0) {
+            let totalOverlap = 0;
+            for (const convMsg of recentMessages) {
+              totalOverlap += this.calculateTopicOverlapFromKeywords(msg.keywords, convMsg.keywords);
+            }
+            recentTopicScore = totalOverlap / recentMessages.length;
+          }
+
+          // Overall topic score
+          let overallTopicScore = 0;
+          if (convo.messages.length > 0) {
+            let weightedOverlap = 0;
+            let totalWeight = 0;
+            for (let i = 0; i < convo.messages.length; i++) {
+              const convMsg = convo.messages[i]!;
+              const overlap = this.calculateTopicOverlapFromKeywords(msg.keywords, convMsg.keywords);
+              const weight = i >= convo.messages.length - 10 ? 1.0 : 0.5;
+              weightedOverlap += overlap * weight;
+              totalWeight += weight;
+            }
+            overallTopicScore = totalWeight > 0 ? weightedOverlap / totalWeight : 0;
+          }
+
+          // Rapid-fire detection
+          const isRapidFire = convo.messages.length >= 3 && timeSinceEnd <= 3;
+
+          // Dynamic extend window
+          let extendWindow = BASE_EXTEND_MINUTES;
+          if (isParticipant && recentTopicScore > 0.05) {
+            extendWindow = 180;
+          } else if (semanticScore > 0.7) {
+            extendWindow = 120;
+          } else if (semanticScore > 0.6) {
+            extendWindow = 90;
+          } else if (recentTopicScore > 0.2) {
+            extendWindow = 120;
+          } else if (recentTopicScore > 0.1) {
+            extendWindow = 60;
+          }
+
+          if (isRapidFire) {
+            extendWindow = Math.max(extendWindow, 120);
+          }
+
+          if (timeSinceEnd > extendWindow) continue;
+
+          const timeScore = Math.max(0, 1 - (timeSinceEnd / extendWindow));
+
+          // Base score with multiplicative bonuses
+          let baseScore = (
+            maxAffinity * 0.20 +
+            timeScore * 0.10 +
+            semanticScore * 0.40 +
+            recentTopicScore * 0.20 +
+            overallTopicScore * 0.10
+          );
+
+          let scoreMultiplier = 1.0;
+          if (repliesToParticipant) scoreMultiplier *= 1.50;
+          if (mentionsParticipant) scoreMultiplier *= 1.15;
+          if (isParticipant) scoreMultiplier *= 1.10;
+
+          // Participant pair continuity
+          const isExactPairMatch = convo.participants.size === 2 && convo.participants.has(msg.author_id) && timeSinceEnd <= 15;
+          if (isExactPairMatch) {
+            scoreMultiplier *= 1.40;
+          }
+
+          if (convo.participants.size <= 3 && convo.participants.has(msg.author_id) && timeSinceEnd <= 45) {
+            scoreMultiplier *= 1.25;
+          }
+
+          baseScore *= scoreMultiplier;
+
+          if (baseScore > bestScore) {
+            bestScore = baseScore;
+            bestConvo = convo;
+            bestMaxAffinity = maxAffinity;
+          }
+        }
+
+        // Thresholds
+        const hasStrongSignal = bestConvo && (
+          mentionedIds.some(id => bestConvo!.participants.has(id)) ||
+          bestConvo.participants.has(msg.author_id)
+        );
+
+        const isSameSmallGroup = bestConvo && bestConvo.participants.size <= 2 && bestConvo.participants.has(msg.author_id);
+
+        const threshold = hasStrongSignal ? 0.15 :
+                         isSameSmallGroup ? 0.12 :
+                         (bestMaxAffinity > 0.3 && bestScore > 0.35 ? 0.30 : 0.40);
+
+        if (bestScore > threshold && bestConvo) {
+          bestConvo.messageIds.add(msg.id);
+          bestConvo.participants.add(msg.author_id);
+          bestConvo.messages.push(msg);
+          bestConvo.endTime = msg.created_at;
+          processedMessages.add(msg.id);
+        }
+      }
+
+      // Phase 3: Merge pass with same-participant priority
+      let merged = true;
+      while (merged) {
+        merged = false;
+
+        for (let i = 0; i < conversations.length; i++) {
+          for (let j = i + 1; j < conversations.length; j++) {
+            const convoA = conversations[i]!;
+            const convoB = conversations[j]!;
+
+            const timeGap = Math.abs(convoA.endTime.getTime() - convoB.startTime.getTime()) / (1000 * 60);
+            if (timeGap > 180) continue;
+
+            // Same participants check (highest priority)
+            const sameParticipants = convoA.participants.size === convoB.participants.size &&
+                                    [...convoA.participants].every(p => convoB.participants.has(p));
+
+            if (sameParticipants && timeGap <= 30) {
+              // Merge
+              for (const msgId of convoB.messageIds) convoA.messageIds.add(msgId);
+              for (const p of convoB.participants) convoA.participants.add(p);
+              convoA.messages.push(...convoB.messages);
+              convoA.endTime = new Date(Math.max(convoA.endTime.getTime(), convoB.endTime.getTime()));
+              convoA.startTime = new Date(Math.min(convoA.startTime.getTime(), convoB.startTime.getTime()));
+              conversations.splice(j, 1);
+              merged = true;
+              break;
+            }
+          }
+          if (merged) break;
+        }
+      }
+
+      // Convert to ConversationEntry
+      const result: ConversationEntry[] = [];
+      for (const convo of conversations) {
+        if (convo.messages.length < 3) continue;
+
+        // Calculate avg affinity
+        const participants = Array.from(convo.participants);
+        let totalAffinity = 0;
+        let pairCount = 0;
+        for (let i = 0; i < participants.length; i++) {
+          for (let j = i + 1; j < participants.length; j++) {
+            const affinity = affinityMatrix.get(participants[i]!)?.get(participants[j]!) || 0;
+            totalAffinity += affinity;
+            pairCount++;
+          }
+        }
+        convo.avgAffinity = pairCount > 0 ? totalAffinity / pairCount : 0;
+
+        result.push({
+          segment_id: convo.id,
+          conversation_id: convo.id,
+          start_time: convo.startTime,
+          end_time: convo.endTime,
+          message_count: convo.messages.length,
+          participant_count: convo.participants.size,
+          channel_id: channelId,
+          message_ids: Array.from(convo.messageIds),
+          interaction_types: [],
+          duration_minutes: Math.round((convo.endTime.getTime() - convo.startTime.getTime()) / (1000 * 60)),
+          participants: Array.from(convo.participants)
+        });
+      }
+
+      return { success: true, data: result };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error"
+      };
     }
   }
 }

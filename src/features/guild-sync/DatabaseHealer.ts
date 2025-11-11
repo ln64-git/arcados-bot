@@ -1,6 +1,7 @@
 import type { Client, Guild } from "discord.js";
 import type { PostgreSQLManager } from "../database/PostgreSQLManager";
 import { RelationshipNetworkManager } from "../relationship-network/NetworkManager";
+import { config } from "../../config/index.js";
 
 export class DatabaseHealer {
   private client: Client;
@@ -28,9 +29,22 @@ export class DatabaseHealer {
     console.log("🔹 Starting database healing pass...");
 
     try {
-      const guilds = this.client.guilds.cache;
-      for (const [, guild] of guilds) {
-        await this.healGuild(guild);
+      if (config.guildId) {
+        const targetGuild = this.client.guilds.cache.get(config.guildId);
+        if (targetGuild) {
+          console.log(
+            `🔹 Limiting healing to guild: ${targetGuild.name} (${config.guildId})`
+          );
+          await this.healGuild(targetGuild);
+        } else {
+          console.log(
+            `🔸 Warning: Guild ID ${config.guildId} not found in cache`
+          );
+        }
+      } else {
+        for (const [, guild] of this.client.guilds.cache) {
+          await this.healGuild(guild);
+        }
       }
 
       console.log("✅ Database healing pass completed");
@@ -360,24 +374,7 @@ export class DatabaseHealer {
                   (latestMessages as any).values()
                 ).find((m: any) => !m.author?.bot) as any;
 
-                if (latestNonBot) {
-                  // Compare newest Discord non-bot with newest in DB; if equal, skip
-                  const newestInDb = await this.db.query(
-                    "SELECT id FROM messages WHERE channel_id = $1 AND active = true ORDER BY created_at DESC LIMIT 1",
-                    [channel.id]
-                  );
-
-                  if (
-                    newestInDb.success &&
-                    newestInDb.data &&
-                    newestInDb.data.length > 0 &&
-                    newestInDb.data[0].id === latestNonBot.id
-                  ) {
-                    return { success: true };
-                  }
-                }
-
-                // Otherwise backfill from watermark
+                // Always backfill from watermark forward to catch any gaps
                 const backfillResult = await this.backfillMessagesFromWatermark(
                   guild.id,
                   channel.id,
@@ -394,6 +391,58 @@ export class DatabaseHealer {
                     );
                   }
                 }
+
+                // Also check for gaps: if watermark is newer than oldest message in DB,
+                // there might be missing messages between them. Do a limited backward sync.
+                const oldestInDb = await this.db.query(
+                  "SELECT id, created_at FROM messages WHERE channel_id = $1 AND active = true ORDER BY created_at ASC LIMIT 1",
+                  [channel.id]
+                );
+
+                if (
+                  oldestInDb.success &&
+                  oldestInDb.data &&
+                  oldestInDb.data.length > 0
+                ) {
+                  const oldestTime = new Date(oldestInDb.data[0].created_at);
+                  const watermarkSnowflake = BigInt(lastMessageId);
+                  const watermarkTime = new Date(
+                    Number((watermarkSnowflake >> 22n) + 1420070400000n)
+                  );
+
+                  // Check if newest message in Discord is same as watermark
+                  const newestInDiscord = await textChannel.messages.fetch({
+                    limit: 1,
+                  });
+                  if (
+                    newestInDiscord &&
+                    newestInDiscord.size > 0 &&
+                    newestInDiscord.first()?.id === lastMessageId
+                  ) {
+                    // Watermark is at newest, but there might be gaps in the middle
+                    // Do a limited backward sync from watermark to find gaps
+                    // Limit to last 24 hours to avoid excessive syncing
+                    const gapFillResult =
+                      await this.backfillMessagesBackwardFromWatermark(
+                        guild.id,
+                        channel.id,
+                        lastMessageId,
+                        oldestInDb.data[0].id,
+                        channelName,
+                        processedCount,
+                        channels.length
+                      );
+                    if (gapFillResult.success && gapFillResult.messageCount) {
+                      totalMessagesSynced += gapFillResult.messageCount || 0;
+                      if (gapFillResult.messageCount > 0) {
+                        console.log(
+                          `   ✅ [${processedCount}/${channels.length}] [${channelName}] Filled ${gapFillResult.messageCount} gaps`
+                        );
+                      }
+                    }
+                  }
+                }
+
                 return { success: true };
               } catch (error: any) {
                 if (error.code === 50001 || error.status === 403) {
@@ -498,56 +547,51 @@ export class DatabaseHealer {
           break;
         }
 
-        // Quick check: if any message in this batch is already in DB, we've caught up
-        // Check a few messages from the batch (prioritize non-bot, but check any if needed)
-        let alreadySynced = false;
+        // Check if ALL messages in this batch are already in DB
+        // Only stop if we've truly caught up (all messages exist)
+        // This prevents stopping early when there are gaps in the middle
         const messagesToCheck = Array.from((messages as any).values()) as any[];
-        // Check non-bot messages first
-        for (const msg of messagesToCheck as any[]) {
-          if (!msg.author.bot) {
-            const existsResult = await this.db.query(
-              "SELECT id FROM messages WHERE id = $1",
-              [msg.id]
-            );
-            if (
-              existsResult.success &&
-              existsResult.data &&
-              existsResult.data.length > 0
-            ) {
-              // Found a non-bot message already in DB, we've caught up
-              alreadySynced = true;
-              break;
-            }
+        let allMessagesExist = true;
+        let checkedCount = 0;
+        const maxCheck = Math.min(10, messagesToCheck.length); // Check up to 10 messages
+
+        for (const msg of messagesToCheck.slice(0, maxCheck)) {
+          const existsResult = await this.db.query(
+            "SELECT id FROM messages WHERE id = $1",
+            [msg.id]
+          );
+          if (
+            !existsResult.success ||
+            !existsResult.data ||
+            existsResult.data.length === 0
+          ) {
+            allMessagesExist = false;
+            break;
           }
+          checkedCount++;
         }
-        // If no non-bot messages, check if all messages in batch already exist (bot-only channel)
+
+        // Only stop if we checked multiple messages and they all exist
+        // AND we got a full batch (indicating we might be at the end)
         if (
-          !alreadySynced &&
-          messagesToCheck.length > 0 &&
-          (messagesToCheck as any[]).every((m: any) => m.author.bot)
+          allMessagesExist &&
+          checkedCount >= 5 &&
+          messages.size === batchSize
         ) {
-          let allExist = true;
-          for (const msg of messagesToCheck.slice(0, 5) as any[]) {
-            // Check first 5 messages
-            const existsResult = await this.db.query(
-              "SELECT id FROM messages WHERE id = $1",
-              [msg.id]
-            );
-            if (
-              !existsResult.success ||
-              !existsResult.data ||
-              existsResult.data.length === 0
-            ) {
-              allExist = false;
-              break;
+          // Double-check: verify the newest message in this batch is actually the newest in Discord
+          const newestInBatch = messages.first();
+          if (newestInBatch) {
+            const newestInDiscord = await (channel as any).messages.fetch({
+              limit: 1,
+            });
+            if (newestInDiscord && newestInDiscord.size > 0) {
+              const actualNewest = newestInDiscord.first();
+              if (actualNewest && actualNewest.id === newestInBatch.id) {
+                // We've truly caught up to the newest message
+                break;
+              }
             }
           }
-          if (allExist) {
-            alreadySynced = true;
-          }
-        }
-        if (alreadySynced) {
-          break;
         }
 
         // Batch DB inserts for better performance
@@ -630,6 +674,119 @@ export class DatabaseHealer {
   }
 
   /**
+   * Backfill messages backward from watermark to find gaps
+   * This is used when watermark is at newest but there might be missing messages in the middle
+   */
+  private async backfillMessagesBackwardFromWatermark(
+    guildId: string,
+    channelId: string,
+    watermarkId: string,
+    oldestInDbId: string,
+    channelName?: string,
+    processedCount?: number,
+    totalChannels?: number
+  ): Promise<{ success: boolean; messageCount: number }> {
+    try {
+      const channel = this.client.channels.cache.get(channelId);
+      if (!channel || !channel.isTextBased())
+        return { success: false, messageCount: 0 };
+
+      let lastId: string | null = watermarkId;
+      let synced = 0;
+      let batchNumber = 0;
+      const batchSize = 100;
+      const maxBatches = 50; // Limit to prevent infinite loops
+
+      while (batchNumber < maxBatches) {
+        batchNumber++;
+        const options: any = { limit: batchSize };
+        if (lastId) {
+          options.before = lastId;
+        }
+
+        const messages = await (channel as any).messages.fetch(options);
+        if (!messages || messages.size === 0) {
+          break;
+        }
+
+        // Check if we've reached the oldest message in DB
+        let reachedOldest = false;
+        for (const [, msg] of messages) {
+          if (msg.id === oldestInDbId) {
+            reachedOldest = true;
+            break;
+          }
+        }
+
+        // Check which messages are missing from DB
+        const messageIds = Array.from(messages.keys());
+        const existingResult = await this.db.query(
+          `SELECT id FROM messages WHERE id = ANY($1) AND active = true`,
+          [messageIds]
+        );
+
+        const existingIds = new Set<string>();
+        if (
+          existingResult.success &&
+          existingResult.data &&
+          existingResult.data.length > 0
+        ) {
+          for (const row of existingResult.data) {
+            existingIds.add(row.id);
+          }
+        }
+
+        // Insert missing messages
+        const insertPromises: Promise<any>[] = [];
+        for (const [, msg] of messages) {
+          if (!existingIds.has(msg.id)) {
+            insertPromises.push(
+              this.db.upsertMessage({
+                id: msg.id,
+                guild_id: guildId,
+                channel_id: channelId,
+                author_id: msg.author.id,
+                content: msg.content || "",
+                created_at: msg.createdAt,
+                edited_at: msg.editedAt || undefined,
+                attachments: Array.from(msg.attachments.values()).map(
+                  (a: any) => a.url
+                ),
+                embeds: msg.embeds.map((e: any) => JSON.stringify(e.toJSON())),
+                referenced_message_id: msg.reference?.messageId || undefined,
+                active: true,
+              })
+            );
+            if (!msg.author.bot) {
+              synced++;
+            }
+          }
+        }
+
+        if (insertPromises.length > 0) {
+          await Promise.all(insertPromises);
+        }
+
+        // Stop if we reached the oldest message or got less than a full batch
+        if (reachedOldest || messages.size < batchSize) {
+          break;
+        }
+
+        // Get oldest message ID for pagination (going backward)
+        lastId = messages.last()?.id || null;
+        if (!lastId) break;
+      }
+
+      return { success: true, messageCount: synced };
+    } catch (error: any) {
+      if (error.code === 50001 || error.status === 403) {
+        return { success: false, messageCount: 0 };
+      }
+      return { success: false, messageCount: 0 };
+    }
+  }
+
+  /**
    * Backfill all messages (initial sync)
    */
   private async backfillAllMessages(
@@ -696,47 +853,10 @@ export class DatabaseHealer {
             parseInt(channelMessageCount.data[0].count, 10) > 0;
 
           if (hasMessages) {
-            // Channel already has messages - check if newest non-bot Discord message matches newest non-bot in DB
-            // Find first non-bot message in the fetched batch
-            const firstNonBot = Array.from((messages as any).values()).find(
-              (m: any) => !m.author?.bot
-            ) as any;
-            if (firstNonBot) {
-              // Compare with newest non-bot message in DB
-              const newestNonBotInDb = await this.db.query(
-                `SELECT m.id FROM messages m
-                 JOIN members mb ON mb.user_id = m.author_id AND mb.guild_id = m.guild_id
-                 WHERE m.channel_id = $1 AND m.active = true AND mb.bot = false
-                 ORDER BY m.created_at DESC LIMIT 1`,
-                [channelId]
-              );
-
-              if (
-                newestNonBotInDb.success &&
-                newestNonBotInDb.data &&
-                newestNonBotInDb.data.length > 0 &&
-                newestNonBotInDb.data[0].id === firstNonBot.id
-              ) {
-                // Channel is fully up to date (newest non-bot messages match)
-                // Update watermark to newest message (can be bot) for consistency
-                const newestAny = await this.db.query(
-                  "SELECT id FROM messages WHERE channel_id = $1 AND active = true ORDER BY created_at DESC LIMIT 1",
-                  [channelId]
-                );
-                if (
-                  newestAny.success &&
-                  newestAny.data &&
-                  newestAny.data.length > 0
-                ) {
-                  await this.db.updateChannelLastMessage(
-                    channelId,
-                    newestAny.data[0].id
-                  );
-                }
-                return { success: true, messageCount: 0 };
-              }
-              // Has messages but newest doesn't match - continue to sync below
-            }
+            // Channel already has messages - but we still need to check for gaps
+            // Don't skip syncing just because the newest message matches
+            // There could be missing messages in the middle of the history
+            // We'll continue with the backfill to ensure completeness
           }
           // No messages in DB or need to sync - proceed with backfill
         }
@@ -985,18 +1105,9 @@ export class DatabaseHealer {
    */
   private async runMaintenance(): Promise<void> {
     try {
-      // Only log if verbose or on errors
-      if (this.verbose) {
-        console.log("🔹 Running periodic maintenance...");
-      }
-
       await this.compactSegments();
       await this.updateRollingWindows();
       await this.consolidateOverlappingSegments();
-
-      if (this.verbose) {
-        console.log("✅ Periodic maintenance completed");
-      }
     } catch (error) {
       console.error("🔸 Error during maintenance:", error);
     }
@@ -1034,9 +1145,19 @@ export class DatabaseHealer {
     const cutoff30d = new Date();
     cutoff30d.setDate(cutoff30d.getDate() - 30);
 
-    const guilds = this.client.guilds.cache;
-    for (const [, guild] of guilds) {
-      await this.db.updateEdgeRollingWindows(guild.id, cutoff7d, cutoff30d);
+    if (config.guildId) {
+      const targetGuild = this.client.guilds.cache.get(config.guildId);
+      if (targetGuild) {
+        await this.db.updateEdgeRollingWindows(
+          targetGuild.id,
+          cutoff7d,
+          cutoff30d
+        );
+      }
+    } else {
+      for (const [, guild] of this.client.guilds.cache) {
+        await this.db.updateEdgeRollingWindows(guild.id, cutoff7d, cutoff30d);
+      }
     }
   }
 
@@ -1045,10 +1166,16 @@ export class DatabaseHealer {
    */
   private async consolidateOverlappingSegments(): Promise<void> {
     try {
-      const guilds = this.client.guilds.cache;
+      const guildsToProcess = config.guildId
+        ? (() => {
+            const guild = this.client.guilds.cache.get(config.guildId!);
+            return guild ? [guild] : [];
+          })()
+        : Array.from(this.client.guilds.cache.values());
+
       let consolidated = 0;
 
-      for (const [, guild] of guilds) {
+      for (const guild of guildsToProcess) {
         // Find segments in the same channel that overlap in time with shared participants
         const segmentsResult = await this.db.query(
           `SELECT id, channel_id, participants, start_time, end_time, message_ids, message_count

@@ -18,27 +18,35 @@
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
 		"stats": "NODE_ENV=development npx tsx -e \"import { getCommandStats } from './src/utils/loadCommands.js'; console.log('Command Stats:', getCommandStats());\"",
-
 		"sync:channel": "npx tsx src/scripts/sync-single-channel.ts",
 		"regenerate:conversations": "npx tsx src/scripts/regenerate-conversations.ts",
+		"regenerate:conversations:advanced": "npx tsx src/scripts/regenerate-conversations-advanced.ts",
 		"generate:embeddings": "bun --bun src/scripts/generate-embeddings.ts",
 		"regenerate:relationships": "npx tsx src/scripts/regenerate-relationships.ts",
-
 		"view:relationships": "npx tsx src/scripts/test-relationships.ts",
 		"view:recent": "npx tsx src/scripts/view-recent-activity.ts",
+		"view:active-channels": "npx tsx src/scripts/list-active-channels.ts",
+		"inspect:conversations": "npx tsx src/scripts/inspect-active-conversations.ts",
 		"identify:bots": "npx tsx src/scripts/identify-bots.ts",
-
 		"analyze:relationships": "npx tsx src/scripts/analyze-relationships.ts",
 		"analyze:conversations": "npx tsx src/scripts/analyze-conversations.ts",
+		"analyze:conversation-accuracy": "npx tsx src/scripts/analyze-conversation-accuracy.ts",
+		"test:conversation-mapping": "npx tsx src/scripts/test-conversation-mapping.ts",
+		"analyze:conversation": "npx tsx src/scripts/analyze-specific-conversation.ts",
+		"list:messages": "npx tsx src/scripts/list-messages.ts",
+		"test:enhanced-batch": "npx tsx src/scripts/test-enhanced-batch-mode.ts",
 		"analyze:user": "npx tsx src/scripts/analyze-user.ts",
-
 		"clean:segments": "npx tsx src/scripts/clean-segments-bot-commands.ts",
 		"consolidate:segments": "npx tsx src/scripts/consolidate-segments.ts",
-
 		"recreate:schema": "npx tsx src/scripts/recreate-postgres-schema.ts",
 		"drop:all": "npx tsx src/scripts/drop-all-postgres-data.ts"
 	},
-	"keywords": ["discord", "bot", "template", "typescript"],
+	"keywords": [
+		"discord",
+		"bot",
+		"template",
+		"typescript"
+	],
 	"author": "",
 	"license": "MIT",
 	"devDependencies": {
@@ -50,6 +58,7 @@
 		"typescript": "^5.0.0"
 	},
 	"dependencies": {
+		"@google/generative-ai": "^0.24.1",
 		"@langchain/community": "^0.3.57",
 		"@langchain/core": "^0.3.78",
 		"@langchain/openai": "^0.6.16",
@@ -78,7 +87,11 @@
 		},
 		"files": {
 			"ignoreUnknown": false,
-			"ignore": ["node_modules", "dist", "*.min.js"]
+			"ignore": [
+				"node_modules",
+				"dist",
+				"*.min.js"
+			]
 		},
 		"formatter": {
 			"enabled": true,
