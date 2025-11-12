@@ -107,7 +107,7 @@ export function appendAssistantTurnAndTrackMessage(
 export function formatHistoryForPrompt(sessionId: string): string {
   const session = sessions.get(sessionId);
   if (!session) return "";
-  // Keep only the last 10 turns (user+assistant) for brevity
+  // Keep only the last 10 turns (user+assistant) for context
   const sys = session.history.filter((t) => t.role === "system");
   const convo = session.history.filter((t) => t.role !== "system");
   const recent = convo.slice(-10);
@@ -119,7 +119,7 @@ export function formatHistoryForPrompt(sessionId: string): string {
     const who = turn.role === "user" ? "User" : "Assistant";
     parts.push(`${who}: ${turn.content}`);
   }
-  parts.push("Assistant (reply concisely in 1-2 sentences):");
+  parts.push("Assistant:");
   return parts.join("\n");
 }
 

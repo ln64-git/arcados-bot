@@ -1,10 +1,12 @@
 export type ResponseLengthCategory = "brief" | "medium" | "long" | "extended";
+export type ConversationMode = "chat" | "structured";
 
 export interface PolicyInput {
   userPrompt: string;
   historyCount: number;
   toolContextBytes: number; // approximate size of tool results passed to model
   clarifyingTurn?: boolean; // optional external signal
+  mode?: ConversationMode; // chat (natural conversation) or structured (formal queries)
 }
 
 export interface PolicyOutput {
@@ -12,6 +14,7 @@ export interface PolicyOutput {
   guidance: string; // one short sentence to nudge length naturally
   maxTokens: number; // soft target provided to provider
   temperatureNudge?: number; // small adjustment
+  applyGuidance: boolean; // whether to inject guidance into prompt
 }
 
 const CATEGORY_CONFIG: Record<
@@ -42,6 +45,21 @@ const CATEGORY_CONFIG: Record<
 };
 
 export function computeResponsePolicy(input: PolicyInput): PolicyOutput {
+  const mode = input.mode || "structured";
+
+  // For chat mode: let persona drive the conversation naturally
+  // Don't apply rigid guidance, use flexible token limits
+  if (mode === "chat") {
+    return {
+      category: "long", // Use generous default for natural conversation
+      guidance: "Respond naturally based on the context and conversation flow.",
+      maxTokens: 600, // Flexible limit (can be short or detailed as needed)
+      temperatureNudge: 0.05,
+      applyGuidance: false, // Don't inject guidance - let persona drive
+    };
+  }
+
+  // For structured mode: apply adaptive policy based on context
   const text = input.userPrompt || "";
   const charLen = text.length;
   const hasQuestion = /\?/m.test(text);
@@ -78,5 +96,6 @@ export function computeResponsePolicy(input: PolicyInput): PolicyOutput {
     guidance: cfg.guidance,
     maxTokens: cfg.maxTokens,
     temperatureNudge: cfg.temperatureNudge,
+    applyGuidance: true, // Apply guidance for structured queries
   };
 }

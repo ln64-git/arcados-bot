@@ -58,7 +58,8 @@ export class GrokProvider extends BaseAIProvider {
     systemPrompt: string,
     userPrompt: string,
     tools: Array<{ name: string; description: string; parameters: any }>,
-    toolResults?: ToolCallResponse[]
+    toolResults?: ToolCallResponse[],
+    runtimeConfig?: { maxTokens?: number; temperature?: number }
   ): Promise<{ content: string; toolCalls?: ToolCall[] }> {
     // Convert tools to LangChain format
     const langchainTools = tools.map((tool) => ({
@@ -67,9 +68,22 @@ export class GrokProvider extends BaseAIProvider {
       parameters: tool.parameters,
     }));
 
+    // Apply runtime configuration by creating a new model instance if needed
+    let modelToUse = this.model;
+    if (runtimeConfig?.maxTokens || runtimeConfig?.temperature) {
+      modelToUse = new ChatOpenAI({
+        apiKey: config.grokApiKey,
+        modelName: "grok-3",
+        temperature: runtimeConfig.temperature ?? 0.7,
+        maxTokens: runtimeConfig.maxTokens ?? 1000,
+        configuration: {
+          baseURL: "https://api.x.ai/v1",
+        },
+      });
+    }
+
     // Bind tools to model
-    // Bind tools to model (runtime params are currently applied via guidance at the prompt level)
-    const modelWithTools = this.model.bindTools(
+    const modelWithTools = modelToUse.bindTools(
       langchainTools.map((tool) => ({
         type: "function" as const,
         function: {

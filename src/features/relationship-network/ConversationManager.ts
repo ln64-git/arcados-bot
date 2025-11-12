@@ -3435,4 +3435,135 @@ export class ConversationManager {
       };
     }
   }
+
+  // ============================================================================
+  // PUBLIC ACCESSORS - Live Conversation State (for AI Context Integration)
+  // ============================================================================
+
+  /**
+   * Get live conversation state for a channel
+   * Returns current buffer and active conversations before finalization
+   * Used by AI assistant to understand ongoing conversations when bot is mentioned
+   */
+  getLiveConversationInChannel(
+    channelId: string,
+    guildId: string
+  ): {
+    buffer: ChannelBuffer | null;
+    activeConversations: ActiveConversation[];
+    recentMessages: Array<{
+      id: string;
+      author_id: string;
+      content: string;
+      created_at: Date;
+      referenced_message_id?: string;
+      mentioned_user_ids?: string[];
+    }>;
+  } {
+    const key = `${guildId}:${channelId}`;
+    const buffer = this.channelBuffers.get(key);
+
+    if (!buffer) {
+      return {
+        buffer: null,
+        activeConversations: [],
+        recentMessages: [],
+      };
+    }
+
+    return {
+      buffer,
+      activeConversations: buffer.activeConversations,
+      recentMessages: buffer.messages,
+    };
+  }
+
+  /**
+   * Get participant IDs from active conversations in a channel
+   * Returns unique set of user IDs participating in ongoing conversations
+   */
+  getActiveParticipantsInChannel(
+    channelId: string,
+    guildId: string
+  ): string[] {
+    const key = `${guildId}:${channelId}`;
+    const buffer = this.channelBuffers.get(key);
+
+    if (!buffer || buffer.activeConversations.length === 0) {
+      return [];
+    }
+
+    // Combine participants from all active conversations
+    const allParticipants = new Set<string>();
+    for (const convo of buffer.activeConversations) {
+      for (const participantId of convo.participants) {
+        allParticipants.add(participantId);
+      }
+    }
+
+    return Array.from(allParticipants);
+  }
+
+  /**
+   * Get recent messages from buffer (before finalization)
+   * Returns last N messages from the channel's active buffer
+   */
+  getRecentBufferedMessages(
+    channelId: string,
+    guildId: string,
+    limit: number = 10
+  ): Array<{
+    id: string;
+    author_id: string;
+    content: string;
+    created_at: Date;
+    referenced_message_id?: string;
+    mentioned_user_ids?: string[];
+  }> {
+    const key = `${guildId}:${channelId}`;
+    const buffer = this.channelBuffers.get(key);
+
+    if (!buffer) {
+      return [];
+    }
+
+    return buffer.messages.slice(-limit);
+  }
+
+  /**
+   * Check if a message is part of an active conversation
+   * Returns conversation metadata if found
+   */
+  isPartOfActiveConversation(
+    messageId: string,
+    channelId: string,
+    guildId: string
+  ): {
+    isActive: boolean;
+    conversationIndex?: number;
+    participants?: string[];
+    messageCount?: number;
+  } {
+    const key = `${guildId}:${channelId}`;
+    const buffer = this.channelBuffers.get(key);
+
+    if (!buffer) {
+      return { isActive: false };
+    }
+
+    // Check each active conversation for this message
+    for (let i = 0; i < buffer.activeConversations.length; i++) {
+      const convo = buffer.activeConversations[i];
+      if (convo && convo.messageIds.has(messageId)) {
+        return {
+          isActive: true,
+          conversationIndex: i,
+          participants: Array.from(convo.participants),
+          messageCount: convo.messageIds.size,
+        };
+      }
+    }
+
+    return { isActive: false };
+  }
 }

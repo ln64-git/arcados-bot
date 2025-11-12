@@ -320,7 +320,13 @@ export class Bot {
               rawForAI,
               message.author.id,
               provider,
-              { persona: "casual", useDiscordFormatting: false }
+              {
+                persona: "casual",
+                useDiscordFormatting: false,
+                mode: "chat",
+                channelId: message.channel.id,
+                messageId: message.id,
+              }
             );
 
             if (!contentResponse?.success || !contentResponse.content) {
@@ -331,28 +337,7 @@ export class Bot {
               return;
             }
 
-            // Hard guard: if too long, notify and skip sending the full text
-            const limit = 1900;
-            if (contentResponse.content.length > limit) {
-              const reply = await message.reply({
-                content:
-                  "That answer's a bit too long to fit here. Could you narrow it down, or try /ai for a cleaner, formatted version?",
-                allowedMentions: {
-                  parse: ["users", "roles"],
-                  repliedUser: false,
-                },
-              });
-              // Start a new chat session with the notice only
-              startSession({
-                initialBotMessage: reply,
-                userId: message.author.id,
-                initialUserMessage: resolvedContent,
-                initialAssistantMessage: reply.content || "",
-              });
-              return;
-            }
-
-            // Send response and start new session
+            // Send response using chunking (handles long responses automatically)
             const { message: reply, sentText } = await sendChunked(
               contentResponse.content
             );
@@ -416,6 +401,9 @@ export class Bot {
               persona: "casual",
               history,
               useDiscordFormatting: false,
+              mode: "chat",
+              channelId: message.channel.id,
+              messageId: message.id,
             }
           );
 
@@ -424,33 +412,69 @@ export class Bot {
           // Append user's turn to session (store resolved version)
           appendUserTurn(found.sessionId, resolvedContent);
 
-          const reply = await (async () => {
+          // Helper to split and send long reply messages (reuse chunking logic)
+          const sendReplyChunked = async (
+            text: string
+          ): Promise<{ message: any; sentText: string }> => {
             const limit = 1900;
-            if (contentResponse.content.length <= limit) {
-              return await message.reply({
-                content: sanitizeEveryone(contentResponse.content),
-                allowedMentions: {
-                  parse: ["users", "roles"],
-                  repliedUser: false,
-                },
-              });
+            const chunks: string[] = [];
+            let remaining = text;
+            while (remaining.length > limit) {
+              let idx = Math.max(
+                remaining.lastIndexOf("\n\n", limit),
+                remaining.lastIndexOf("\n", limit),
+                remaining.lastIndexOf(". ", limit)
+              );
+              if (idx < limit * 0.6) idx = limit;
+              chunks.push(remaining.slice(0, idx).trim());
+              remaining = remaining.slice(idx).trimStart();
             }
-            // Notify and skip long replies in reply-context
-            return await message.reply({
-              content:
-                "That reply would be too long for one message. Mind tightening the request, or use /ai for a formatted response?",
-              allowedMentions: {
-                parse: ["users", "roles"],
-                repliedUser: false,
-              },
-            });
-          })();
-          // Store exactly what was sent in session history
-          appendAssistantTurnAndTrackMessage(
-            found.sessionId,
-            reply,
-            (reply as any)?.content || sanitizeEveryone(contentResponse.content)
+            if (remaining.length) chunks.push(remaining);
+            let lastMessage = message as any;
+            const sentParts: string[] = [];
+            for (let i = 0; i < chunks.length; i++) {
+              const chunk = chunks[i];
+              try {
+                if (i === 0) {
+                  lastMessage = await lastMessage.reply({
+                    content: sanitizeEveryone(chunk),
+                    allowedMentions: {
+                      parse: ["users", "roles"],
+                      repliedUser: false,
+                    },
+                  });
+                } else {
+                  lastMessage = await (message.channel as any).send({
+                    content: sanitizeEveryone(chunk),
+                    allowedMentions: {
+                      parse: ["users", "roles"],
+                      repliedUser: false,
+                    },
+                  });
+                }
+              } catch (err: any) {
+                lastMessage = await (message.channel as any).send({
+                  content: sanitizeEveryone(chunk),
+                  allowedMentions: {
+                    parse: ["users", "roles"],
+                    repliedUser: false,
+                  },
+                });
+              }
+              sentParts.push(
+                (lastMessage as any).content || sanitizeEveryone(chunk)
+              );
+            }
+            return { message: lastMessage, sentText: sentParts.join("\n\n") };
+          };
+
+          // Send response using chunking (handles long responses automatically)
+          const { message: reply, sentText } = await sendReplyChunked(
+            contentResponse.content
           );
+
+          // Store exactly what was sent in session history
+          appendAssistantTurnAndTrackMessage(found.sessionId, reply, sentText);
         });
       } catch (err) {
         // Log errors but don't send to channel to avoid spam

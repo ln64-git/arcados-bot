@@ -43,7 +43,8 @@ export interface AIProvider {
     systemPrompt: string,
     userPrompt: string,
     tools: Array<{ name: string; description: string; parameters: any }>,
-    toolResults?: ToolCallResponse[]
+    toolResults?: ToolCallResponse[],
+    runtimeConfig?: { maxTokens?: number; temperature?: number }
   ): Promise<{ content: string; toolCalls?: ToolCall[] }>;
 
   // Provider identification

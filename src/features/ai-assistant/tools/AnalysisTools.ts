@@ -179,6 +179,318 @@ export const rankUsersByNicenessTool: DatabaseTool = {
   },
 };
 
-export const analysisTools: DatabaseTool[] = [rankUsersByNicenessTool];
+export const compareUsersTool: DatabaseTool = {
+	name: "compareUsers",
+	description:
+		"Compare two users across multiple metrics including activity (message count), relationships (affinity score, friend count), and niceness (sentiment). Useful for queries like 'who is more active, X or Y?', 'who has more friends?', 'who is nicer?'",
+	parameters: {
+		type: "object",
+		properties: {
+			user1Id: {
+				type: "string",
+				description: "First user ID to compare",
+			},
+			user2Id: {
+				type: "string",
+				description: "Second user ID to compare",
+			},
+			metric: {
+				type: "string",
+				description:
+					"Metric to compare (activity, relationships, niceness, or all)",
+				enum: ["activity", "relationships", "niceness", "all"],
+			},
+			lookbackDays: {
+				type: "number",
+				description:
+					"Days to look back for activity and niceness metrics (default: 30)",
+			},
+		},
+		required: ["user1Id", "user2Id", "metric"],
+	},
+	execute: async (params: any, context: ToolContext) => {
+		try {
+			const { user1Id, user2Id, metric } = params;
+			const lookbackDays = params.lookbackDays || 30;
+			const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
+
+			// Get user info for both users
+			const user1Result = await context.db.query(
+				`SELECT display_name, username, global_name FROM members WHERE guild_id = $1 AND user_id = $2`,
+				[context.guildId, user1Id]
+			);
+
+			const user2Result = await context.db.query(
+				`SELECT display_name, username, global_name FROM members WHERE guild_id = $1 AND user_id = $2`,
+				[context.guildId, user2Id]
+			);
+
+			if (
+				!user1Result.success ||
+				!user1Result.data ||
+				user1Result.data.length === 0
+			) {
+				return {
+					success: false,
+					error: `User 1 (${user1Id}) not found in guild`,
+				};
+			}
+
+			if (
+				!user2Result.success ||
+				!user2Result.data ||
+				user2Result.data.length === 0
+			) {
+				return {
+					success: false,
+					error: `User 2 (${user2Id}) not found in guild`,
+				};
+			}
+
+			const user1Name =
+				user1Result.data[0].display_name ||
+				user1Result.data[0].global_name ||
+				user1Result.data[0].username;
+			const user2Name =
+				user2Result.data[0].display_name ||
+				user2Result.data[0].global_name ||
+				user2Result.data[0].username;
+
+			const comparison: any = {
+				user1: { id: user1Id, name: user1Name },
+				user2: { id: user2Id, name: user2Name },
+				metrics: {},
+				winner: {},
+			};
+
+			// Activity comparison
+			if (metric === "activity" || metric === "all") {
+				const user1MessagesResult = await context.db.query(
+					`SELECT COUNT(*) as count FROM messages WHERE guild_id = $1 AND author_id = $2 AND created_at >= $3`,
+					[context.guildId, user1Id, since]
+				);
+
+				const user2MessagesResult = await context.db.query(
+					`SELECT COUNT(*) as count FROM messages WHERE guild_id = $1 AND author_id = $2 AND created_at >= $3`,
+					[context.guildId, user2Id, since]
+				);
+
+				const user1Count = user1MessagesResult.data?.[0]?.count || 0;
+				const user2Count = user2MessagesResult.data?.[0]?.count || 0;
+
+				comparison.metrics.activity = {
+					user1Messages: user1Count,
+					user2Messages: user2Count,
+					difference: Math.abs(user1Count - user2Count),
+					percentageDifference:
+						user1Count > 0 || user2Count > 0
+							? (Math.abs(user1Count - user2Count) /
+									Math.max(user1Count, user2Count)) *
+								100
+							: 0,
+				};
+
+				comparison.winner.activity =
+					user1Count > user2Count
+						? user1Name
+						: user2Count > user1Count
+							? user2Name
+							: "Tie";
+			}
+
+			// Relationships comparison
+			if (metric === "relationships" || metric === "all") {
+				// Get relationship counts and average affinity
+				const user1RelResult = await context.db.query(
+					`SELECT COUNT(*) as friend_count,
+                AVG(CASE
+                  WHEN (msg_a_to_b + msg_b_to_a + mentions + replies + reactions) = 0 THEN 0
+                  ELSE LEAST(100,
+                    (CASE WHEN msg_a_to_b > 0 THEN 15 ELSE 0 END +
+                     CASE WHEN msg_b_to_a > 0 THEN 15 ELSE 0 END +
+                     CASE WHEN mentions > 0 THEN 20 ELSE 0 END +
+                     CASE WHEN replies > 0 THEN 30 ELSE 0 END +
+                     CASE WHEN reactions > 0 THEN 10 ELSE 0 END +
+                     LEAST(10, (msg_a_to_b + msg_b_to_a) / 2))
+                  )
+                END) as avg_affinity
+           FROM relationship_edges
+           WHERE guild_id = $1 AND user_a = $2
+             AND (msg_a_to_b + msg_b_to_a + mentions + replies + reactions) >= 5`,
+					[context.guildId, user1Id]
+				);
+
+				const user2RelResult = await context.db.query(
+					`SELECT COUNT(*) as friend_count,
+                AVG(CASE
+                  WHEN (msg_a_to_b + msg_b_to_a + mentions + replies + reactions) = 0 THEN 0
+                  ELSE LEAST(100,
+                    (CASE WHEN msg_a_to_b > 0 THEN 15 ELSE 0 END +
+                     CASE WHEN msg_b_to_a > 0 THEN 15 ELSE 0 END +
+                     CASE WHEN mentions > 0 THEN 20 ELSE 0 END +
+                     CASE WHEN replies > 0 THEN 30 ELSE 0 END +
+                     CASE WHEN reactions > 0 THEN 10 ELSE 0 END +
+                     LEAST(10, (msg_a_to_b + msg_b_to_a) / 2))
+                  )
+                END) as avg_affinity
+           FROM relationship_edges
+           WHERE guild_id = $1 AND user_a = $2
+             AND (msg_a_to_b + msg_b_to_a + mentions + replies + reactions) >= 5`,
+					[context.guildId, user2Id]
+				);
+
+				const user1FriendCount = Number.parseInt(
+					user1RelResult.data?.[0]?.friend_count || "0"
+				);
+				const user2FriendCount = Number.parseInt(
+					user2RelResult.data?.[0]?.friend_count || "0"
+				);
+				const user1Affinity = Number.parseFloat(
+					user1RelResult.data?.[0]?.avg_affinity || "0"
+				);
+				const user2Affinity = Number.parseFloat(
+					user2RelResult.data?.[0]?.avg_affinity || "0"
+				);
+
+				comparison.metrics.relationships = {
+					user1: {
+						friendCount: user1FriendCount,
+						avgAffinity: user1Affinity.toFixed(1),
+					},
+					user2: {
+						friendCount: user2FriendCount,
+						avgAffinity: user2Affinity.toFixed(1),
+					},
+					friendCountDifference: Math.abs(user1FriendCount - user2FriendCount),
+					affinityDifference: Math.abs(user1Affinity - user2Affinity).toFixed(1),
+				};
+
+				comparison.winner.relationships =
+					user1FriendCount > user2FriendCount
+						? user1Name
+						: user2FriendCount > user1FriendCount
+							? user2Name
+							: user1Affinity > user2Affinity
+								? user1Name
+								: user2Affinity > user1Affinity
+									? user2Name
+									: "Tie";
+			}
+
+			// Niceness comparison
+			if (metric === "niceness" || metric === "all") {
+				const user1MsgsResult = await context.db.query(
+					`SELECT content FROM messages WHERE guild_id = $1 AND author_id = $2 AND created_at >= $3 ORDER BY created_at DESC LIMIT 100`,
+					[context.guildId, user1Id, since]
+				);
+
+				const user2MsgsResult = await context.db.query(
+					`SELECT content FROM messages WHERE guild_id = $1 AND author_id = $2 AND created_at >= $3 ORDER BY created_at DESC LIMIT 100`,
+					[context.guildId, user2Id, since]
+				);
+
+				const user1Scores =
+					user1MsgsResult.data?.map((row: any) =>
+						scoreNiceness(row.content || "")
+					) || [];
+				const user2Scores =
+					user2MsgsResult.data?.map((row: any) =>
+						scoreNiceness(row.content || "")
+					) || [];
+
+				const user1Avg =
+					user1Scores.length > 0
+						? user1Scores.reduce((a, b) => a + b, 0) / user1Scores.length
+						: 0;
+				const user2Avg =
+					user2Scores.length > 0
+						? user2Scores.reduce((a, b) => a + b, 0) / user2Scores.length
+						: 0;
+
+				// Map to 1-10 scale
+				const toTen = (avg: number) => {
+					const scaled = Math.round(((avg + 2) / 4) * 9) + 1;
+					return Math.max(1, Math.min(10, scaled));
+				};
+
+				comparison.metrics.niceness = {
+					user1Score: user1Avg.toFixed(2),
+					user2Score: user2Avg.toFixed(2),
+					user1Rating: toTen(user1Avg),
+					user2Rating: toTen(user2Avg),
+					difference: Math.abs(user1Avg - user2Avg).toFixed(2),
+				};
+
+				comparison.winner.niceness =
+					user1Avg > user2Avg
+						? user1Name
+						: user2Avg > user1Avg
+							? user2Name
+							: "Tie";
+			}
+
+			// Generate formatted summary
+			let formatted = `Comparison: ${user1Name} vs ${user2Name}\n\n`;
+
+			if (comparison.metrics.activity) {
+				formatted += `📊 ACTIVITY (past ${lookbackDays} days):\n`;
+				formatted += `   ${user1Name}: ${comparison.metrics.activity.user1Messages} messages\n`;
+				formatted += `   ${user2Name}: ${comparison.metrics.activity.user2Messages} messages\n`;
+				formatted += `   Winner: ${comparison.winner.activity}\n\n`;
+			}
+
+			if (comparison.metrics.relationships) {
+				formatted += `🤝 RELATIONSHIPS:\n`;
+				formatted += `   ${user1Name}: ${comparison.metrics.relationships.user1.friendCount} connections (avg ${comparison.metrics.relationships.user1.avgAffinity}% affinity)\n`;
+				formatted += `   ${user2Name}: ${comparison.metrics.relationships.user2.friendCount} connections (avg ${comparison.metrics.relationships.user2.avgAffinity}% affinity)\n`;
+				formatted += `   Winner: ${comparison.winner.relationships}\n\n`;
+			}
+
+			if (comparison.metrics.niceness) {
+				formatted += `😊 NICENESS (past ${lookbackDays} days):\n`;
+				formatted += `   ${user1Name}: ${comparison.metrics.niceness.user1Rating}/10 (score: ${comparison.metrics.niceness.user1Score})\n`;
+				formatted += `   ${user2Name}: ${comparison.metrics.niceness.user2Rating}/10 (score: ${comparison.metrics.niceness.user2Score})\n`;
+				formatted += `   Winner: ${comparison.winner.niceness}\n\n`;
+			}
+
+			// Overall winner
+			const winners = Object.values(comparison.winner).filter(
+				(w) => w !== "Tie"
+			);
+			const user1Wins = winners.filter((w) => w === user1Name).length;
+			const user2Wins = winners.filter((w) => w === user2Name).length;
+
+			formatted += `🏆 OVERALL: `;
+			if (user1Wins > user2Wins) {
+				formatted += `${user1Name} wins (${user1Wins}/${winners.length} metrics)`;
+			} else if (user2Wins > user1Wins) {
+				formatted += `${user2Name} wins (${user2Wins}/${winners.length} metrics)`;
+			} else {
+				formatted += `Tie`;
+			}
+
+			return {
+				success: true,
+				summary: `Compared ${user1Name} and ${user2Name} across ${metric} metric(s)`,
+				data: { comparison, formatted },
+				formatted,
+			};
+		} catch (error) {
+			console.error("🔸 Error in compareUsers:", error);
+			return {
+				success: false,
+				error:
+					error instanceof Error
+						? error.message
+						: "Failed to compare users",
+			};
+		}
+	},
+};
+
+export const analysisTools: DatabaseTool[] = [
+	rankUsersByNicenessTool,
+	compareUsersTool,
+];
 
 

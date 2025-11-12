@@ -19,8 +19,13 @@ import { messageTools } from "./tools/MessageTools";
 import { serverTools } from "./tools/ServerTools";
 import { contextTools } from "./tools/ContextTools";
 import { analysisTools } from "./tools/AnalysisTools";
+import { liveConversationTools } from "./tools/LiveConversationTools";
+import { dramaAnalysisTools } from "./tools/DramaAnalysisTools";
+import { semanticSearchTools } from "./tools/SemanticSearchTools";
+import { storylineTools } from "./tools/StorylineTools";
 import type { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { computeResponsePolicy } from "./utils/ResponseLengthPolicy";
+import { computeResponsePolicy, type ConversationMode } from "./utils/ResponseLengthPolicy";
+import { ConversationManager } from "../relationship-network/ConversationManager";
 
 export class AIManager {
   private static instance: AIManager | null = null;
@@ -73,6 +78,10 @@ export class AIManager {
     this.databaseTools.registerTools(serverTools);
     this.databaseTools.registerTools(contextTools);
     this.databaseTools.registerTools(analysisTools);
+    this.databaseTools.registerTools(liveConversationTools);
+    this.databaseTools.registerTools(dramaAnalysisTools);
+    this.databaseTools.registerTools(semanticSearchTools);
+    this.databaseTools.registerTools(storylineTools);
   }
 
   /**
@@ -120,6 +129,9 @@ export class AIManager {
       personaKey?: string;
       history?: Array<{ role: string; content: string }>;
       useDiscordFormatting?: boolean;
+      mode?: ConversationMode; // chat = natural conversation, structured = formal queries
+      channelId?: string; // Current channel ID (for live conversation context)
+      messageId?: string; // Message that triggered the bot (for thread detection)
     }
   ): Promise<AIResponse> {
     const provider = this.getProvider(providerName);
@@ -150,6 +162,9 @@ export class AIManager {
           personaKey: options?.personaKey,
           history: options?.history,
           useDiscordFormatting: options?.useDiscordFormatting !== false,
+          mode: options?.mode,
+          channelId: options?.channelId,
+          messageId: options?.messageId,
         }
       );
     }
@@ -562,6 +577,9 @@ export class AIManager {
       personaKey?: string;
       history?: Array<{ role: string; content: string }>;
       useDiscordFormatting?: boolean; // Whether to include DISCORD_FORMATTING instructions
+      mode?: ConversationMode; // chat = natural conversation, structured = formal queries
+      channelId?: string; // Current channel ID (for live conversation context)
+      messageId?: string; // Message that triggered the bot (for thread detection)
     }
   ): Promise<AIResponse> {
     const provider = this.getProvider(providerName);
@@ -617,18 +635,28 @@ export class AIManager {
 
     // Tool guidance removed to allow the model to respond without rigid constraints
 
-    // Build method prompt with adaptive policy (no rigid rules)
+    // Build method prompt with adaptive policy (mode-aware)
+    const mode = options?.mode || "structured";
     const initialPolicy = computeResponsePolicy({
       userPrompt,
       historyCount: options?.history?.length || 0,
       toolContextBytes: 0,
+      mode,
     });
-    const fullMethodPrompt = `${formatting}${methodPrompt}\n\n${initialPolicy.guidance}`;
+    // Only inject guidance for structured mode
+    const guidanceText = initialPolicy.applyGuidance ? `\n\n${initialPolicy.guidance}` : "";
+
+    // Add mode-specific context hints
+    const modeHint = mode === "chat"
+      ? "\n\nContext: This is a casual conversation in Discord. Respond naturally and conversationally, varying your response length based on what feels appropriate for the discussion. You can be brief when a short reply fits, or more detailed when the context calls for it."
+      : "\n\nContext: This is a structured query requesting specific information. Provide clear, well-organized responses.";
+
+    const fullMethodPrompt = `${formatting}${methodPrompt}${modeHint}${guidanceText}`;
     const systemPrompt = this.buildSystemPrompt(fullMethodPrompt, personaKey);
 
     // Override with custom persona if provided
     const finalSystemPrompt = options?.persona
-      ? `${persona.base}\n\n${formatting}${methodPrompt}\n\nCustom Persona: ${options.persona}`
+      ? `${persona.base}\n\n${formatting}${methodPrompt}${modeHint}\n\nCustom Persona: ${options.persona}`
       : systemPrompt;
 
     // Convert tools to provider format (start with Grok-compatible schema)
@@ -637,20 +665,25 @@ export class AIManager {
     try {
       let finalContent = "";
       let toolResults: ToolCallResponse[] = [];
-      const maxIterations = 5;
+      // Adaptive iteration budget: chat needs fewer iterations (faster), structured needs more (thorough)
+      const maxIterations = mode === "chat" ? 3 : 7;
 
       for (let iteration = 0; iteration < maxIterations; iteration++) {
         // Build user prompt
         let composedUser = userPrompt;
         if (options?.history && options.history.length > 0 && iteration === 0) {
+          // Use more history for chat mode (12 messages vs 6 for structured)
+          const historyLimit = mode === "chat" ? 12 : 6;
           const historyText = options.history
-            .slice(-6)
+            .slice(-historyLimit)
             .map(
               (msg) =>
                 `${msg.role === "user" ? "User" : "Assistant"}: ${msg.content}`
             )
             .join("\n");
-          composedUser = `${historyText}\n\nUser: ${userPrompt}\n\nGuidance: ${initialPolicy.guidance}`;
+          // Only add guidance for structured mode
+          const historyGuidance = initialPolicy.applyGuidance ? `\n\nGuidance: ${initialPolicy.guidance}` : "";
+          composedUser = `${historyText}\n\nUser: ${userPrompt}${historyGuidance}`;
         }
 
         // Prefetch holistic user context when a mention or self is present (first iteration only)
@@ -669,7 +702,7 @@ export class AIManager {
             }
 
             if (targetUserId) {
-              const context: ToolContext = { userId, guildId, db };
+              const context: ToolContext = { userId, guildId, db, channelId: options?.channelId, messageId: options?.messageId };
               const holistic = await this.databaseTools.executeTool(
                 "getHolisticUserContext",
                 {
@@ -691,13 +724,83 @@ export class AIManager {
           } catch (prefetchErr) {
             // Non-fatal: continue without prefetch context
           }
+
+          // Prefetch live conversation context if in chat mode and channel is provided
+          if (mode === "chat" && options?.channelId) {
+            try {
+              const conversationManager = new ConversationManager(db);
+              const liveData = conversationManager.getLiveConversationInChannel(
+                options.channelId,
+                guildId
+              );
+
+              const context: ToolContext = { userId, guildId, db, channelId: options.channelId, messageId: options.messageId };
+              let contextParts: string[] = [];
+
+              // Inject live conversation if active
+              if (
+                liveData.buffer &&
+                liveData.activeConversations.length > 0 &&
+                liveData.recentMessages.length >= 3
+              ) {
+                const liveContext = await this.databaseTools.executeTool(
+                  "getLiveConversationContext",
+                  { channelId: options.channelId, messageLimit: 10 },
+                  context
+                );
+
+                const formattedLive =
+                  typeof liveContext === "object"
+                    ? liveContext.data?.formatted || liveContext.summary || ""
+                    : String(liveContext);
+
+                if (formattedLive) {
+                  contextParts.push(formattedLive);
+                }
+              }
+
+              // Also inject recent channel topics for broader context
+              // Detect if user is asking about general discussion ("what have people been talking about", etc.)
+              const broadQueryRegex = /(what.*people.*talking|what.*discussed|recent.*topics?|what.*happening|channel.*activity|conversation.*history)/i;
+              if (broadQueryRegex.test(userPrompt)) {
+                const channelTopics = await this.databaseTools.executeTool(
+                  "getRecentChannelTopics",
+                  { channelId: options.channelId, lookbackHours: 24, limit: 5 },
+                  context
+                );
+
+                const formattedTopics =
+                  typeof channelTopics === "object"
+                    ? channelTopics.data?.formatted || channelTopics.summary || ""
+                    : String(channelTopics);
+
+                if (formattedTopics) {
+                  contextParts.push(formattedTopics);
+                }
+              }
+
+              // Prepend all context before user prompt
+              if (contextParts.length > 0) {
+                composedUser = `${contextParts.join("\n\n")}\n\n${composedUser}`;
+              }
+            } catch (liveErr) {
+              // Non-fatal: continue without live conversation context
+              console.error("🔸 Error prefetching live conversation context:", liveErr);
+            }
+          }
         }
 
         const response = await provider.callTextAPIWithTools!(
           finalSystemPrompt,
           composedUser,
           tools,
-          toolResults.length > 0 ? toolResults : undefined
+          toolResults.length > 0 ? toolResults : undefined,
+          {
+            maxTokens: initialPolicy.maxTokens,
+            temperature: initialPolicy.temperatureNudge
+              ? 0.7 + initialPolicy.temperatureNudge
+              : 0.7,
+          }
         );
 
         finalContent = response.content;
@@ -834,8 +937,11 @@ export class AIManager {
             userPrompt,
             historyCount: options?.history?.length || 0,
             toolContextBytes: toolResultsText.length,
+            mode,
           });
-          composedUser = `Context:\n\n${toolResultsText}\n\nGuidance: ${updatedPolicy.guidance}\n\nUser: ${userPrompt}`;
+          // Only add guidance for structured mode
+          const iterationGuidance = updatedPolicy.applyGuidance ? `\n\nGuidance: ${updatedPolicy.guidance}` : "";
+          composedUser = `Context:\n\n${toolResultsText}${iterationGuidance}\n\nUser: ${userPrompt}`;
         }
       }
 

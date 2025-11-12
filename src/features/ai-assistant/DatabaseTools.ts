@@ -12,6 +12,8 @@ export interface ToolContext {
   userId: string; // Requesting user ID
   guildId: string; // Current guild ID
   db: PostgreSQLManager; // Database connection
+  channelId?: string; // Current channel ID (for live conversation access)
+  messageId?: string; // Message that triggered the bot (for thread detection)
 }
 
 /**
@@ -21,6 +23,7 @@ export interface DatabaseToolResult {
   success: boolean;
   data?: any;
   summary?: string; // AI-friendly summary of the result
+  formatted?: string; // Human-readable formatted output
   error?: string;
 }
 
