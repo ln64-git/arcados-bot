@@ -1,12 +1,24 @@
 import type { PostgreSQLManager } from "../database/PostgreSQLManager";
 import type { DatabaseResult } from "../database/PostgreSQLManager";
 import type { ConversationEntry } from "./types";
+import {
+  TopicDriftDetector,
+  type ConversationSplit,
+  type Message as DriftMessage,
+} from "./TopicDriftDetector";
+import type { AIManager } from "../ai-assistant/AIManager";
+import { EmbeddingService } from "../embeddings/EmbeddingService";
+import { KNOWN_BOT_USER_IDS } from "./constants";
+import { parseEmbedding as parseEmbeddingValue } from "./messageUtils";
 
 interface ActiveConversation {
   participants: Set<string>;
   messageIds: Set<string>;
   lastActivity: Date;
   topicEmbedding?: number[]; // Semantic center of conversation
+  topicEmbeddingCount?: number; // Number of embeddings included in topicEmbedding
+  topicLabel?: string; // AI-generated topic description
+  topicConfidence?: number; // Confidence in topic label (0-1)
 }
 
 interface ChannelBuffer {
@@ -17,6 +29,7 @@ interface ChannelBuffer {
     created_at: Date;
     referenced_message_id?: string;
     mentioned_user_ids?: string[];
+    embedding?: number[];
   }>;
   startTime: Date;
   lastActivity: Date;
@@ -24,6 +37,15 @@ interface ChannelBuffer {
   guildId: string;
   channelId: string;
   activeConversations: ActiveConversation[];
+}
+
+interface SegmentContext {
+  id: string;
+  start: Date;
+  end: Date;
+  participants: Set<string>;
+  messageIds: string[];
+  messages: DriftMessage[];
 }
 
 interface CachedEdgeData {
@@ -36,15 +58,21 @@ export class ConversationManager {
   private channelBuffers: Map<string, ChannelBuffer> = new Map();
   private finalizationLocks: Map<string, Promise<void>> = new Map();
   private edgeCache: Map<string, CachedEdgeData> = new Map(); // Cache for edge queries
+  private embeddingService = EmbeddingService.getInstance();
   private readonly EDGE_CACHE_TTL = 5 * 60 * 1000; // 5 minute cache TTL
-  private readonly INACTIVITY_MS = 10 * 60 * 1000; // 10 minutes base inactivity (increased from 5 to reduce fragmentation)
-  private readonly INACTIVITY_MS_WITH_REPLIES = 30 * 60 * 1000; // 30 minutes when there are active replies/mentions
-  private readonly MIN_MESSAGES = 3;
+  private readonly INACTIVITY_MS = 3 * 60 * 1000; // 3 minute base inactivity to flush single-speaker runs sooner
+  private readonly INACTIVITY_MS_WITH_REPLIES = 10 * 60 * 1000; // 10 minutes when there are active replies/mentions
+  private readonly MIN_MESSAGES = 2;
+  private readonly PRE_CONVERSATION_GRACE_MS = 2 * 60 * 1000; // Include up to 2 minutes of prelude chatter once a conversation forms
+  private topicDriftDetector: TopicDriftDetector;
 
   // Time-based constraints to prevent unrealistic conversation grouping
   private readonly MAX_REPLY_CHAIN_GAP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days - don't follow reply chains older than this
   private readonly MAX_CONVERSATION_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours - conversations can't span more than a day
   private readonly MAX_MESSAGE_GAP_MS = 4 * 60 * 60 * 1000; // 4 hours - max gap between consecutive messages in a conversation
+  private readonly FORCE_FLUSH_MESSAGE_COUNT = 25; // Force-finalize after 25 buffered messages even if conversation is active
+  private readonly FORCE_FLUSH_DURATION_MS = 15 * 60 * 1000; // Force-finalize after 15 minutes of continuous activity
+  private readonly ORPHAN_LOOKBACK_MS = 30 * 60 * 1000; // Look back 30 minutes when reconciling orphan messages
 
   // Pre-compile regex patterns for better performance
   private readonly mentionPattern = /<@!?(\d+)>/g;
@@ -68,6 +96,15 @@ export class ConversationManager {
 
   constructor(db: PostgreSQLManager) {
     this.db = db;
+    this.topicDriftDetector = new TopicDriftDetector(this.db);
+  }
+
+  /**
+   * Set AI Manager for topic drift detection
+   * Call this after construction to enable topic drift detection
+   */
+  setAIManager(aiManager: AIManager): void {
+    this.topicDriftDetector.setAIManager(aiManager);
   }
 
   /**
@@ -512,6 +549,18 @@ export class ConversationManager {
     for (const convo of conversations) {
       if (convo.messages.length < minMessages) continue;
 
+      // Sort messages chronologically to ensure accurate start/end times
+      convo.messages.sort(
+        (a, b) => a.created_at.getTime() - b.created_at.getTime()
+      );
+      convo.messageIds = new Set(convo.messages.map((m) => m.id));
+      convo.startTime = convo.messages[0]
+        ? new Date(convo.messages[0].created_at)
+        : convo.startTime;
+      convo.endTime = convo.messages[convo.messages.length - 1]
+        ? new Date(convo.messages[convo.messages.length - 1].created_at)
+        : convo.endTime;
+
       // Calculate average affinity between all participant pairs
       const participants = Array.from(convo.participants);
       let totalAffinity = 0;
@@ -542,6 +591,7 @@ export class ConversationManager {
         end_time: convo.endTime,
         message_count: convo.messages.length,
         participant_count: convo.participants.size,
+        participants,
         channel_id: channelId,
         message_ids: Array.from(convo.messageIds),
         interaction_types: hasMentions ? ["mention"] : [],
@@ -902,6 +952,61 @@ export class ConversationManager {
   }
 
   /**
+   * Ensure we have an embedding for the given message content.
+   * Generates one on demand for meaningful text content.
+   */
+  private async ensureMessageEmbedding(
+    content: string,
+    existing?: number[]
+  ): Promise<number[] | undefined> {
+    if ((existing && existing.length > 0) || !this.hasMeaningfulContent(content)) {
+      return existing;
+    }
+
+    try {
+      return await this.embeddingService.generateEmbedding(content);
+    } catch (error) {
+      console.error("🔸 Failed to generate message embedding:", error);
+      return existing;
+    }
+  }
+
+  /**
+   * Maintain a running average embedding for an active conversation.
+   */
+  private updateConversationTopicEmbedding(
+    conversation: ActiveConversation,
+    embedding?: number[]
+  ): void {
+    if (!embedding || embedding.length === 0) {
+      return;
+    }
+
+    if (!conversation.topicEmbedding || !conversation.topicEmbeddingCount) {
+      conversation.topicEmbedding = [...embedding];
+      conversation.topicEmbeddingCount = 1;
+      return;
+    }
+
+    const count = conversation.topicEmbeddingCount;
+    const current = conversation.topicEmbedding;
+
+    if (current.length !== embedding.length) {
+      conversation.topicEmbedding = [...embedding];
+      conversation.topicEmbeddingCount = 1;
+      return;
+    }
+
+    const newCount = count + 1;
+    for (let i = 0; i < current.length; i++) {
+      const prevValue = current[i] ?? 0;
+      const newValue = embedding[i] ?? 0;
+      current[i] = (prevValue * count + newValue) / newCount;
+    }
+    conversation.topicEmbeddingCount = newCount;
+  }
+
+  /**
    * Get relationship score between author and participants (normalized 0-1)
    * Uses cached edge data to reduce DB queries
    */
@@ -1043,6 +1148,11 @@ export class ConversationManager {
       return;
     }
 
+    const messageEmbedding = await this.ensureMessageEmbedding(
+      message.content || "",
+      message.embedding
+    );
+
     const key = `${message.guild_id}:${message.channel_id}`;
     let buffer = this.channelBuffers.get(key);
 
@@ -1071,21 +1181,87 @@ export class ConversationManager {
           author_id: message.author_id,
           content: message.content || "",
           created_at: message.created_at,
-          embedding: message.embedding,
+          embedding: messageEmbedding,
         },
         buffer.activeConversations,
         message.guild_id || ""
       );
 
       if (scoredMatches.length > 0 && scoredMatches[0] && scoredMatches[0].score > 0.5) {
-        // Route to best matching conversation
         const bestMatch = scoredMatches[0]!.conversation;
-        bestMatch.participants.add(message.author_id);
-        bestMatch.messageIds.add(message.id);
-        bestMatch.lastActivity = message.created_at;
+        
+        // Check for topic drift if drift detector is available
+        let shouldRoute = true;
+        if (bestMatch.messageIds.size >= 3) {
+          try {
+            // Get conversation messages for drift detection
+            const convMessages = buffer.messages
+              .filter(m => bestMatch.messageIds.has(m.id))
+              .map(m => ({
+                id: m.id,
+                author_id: m.author_id,
+                content: m.content,
+                created_at: m.created_at,
+                embedding: m.embedding,
+              }));
 
-        // Update topic embedding (lazy average calculation)
-        // For now, we'll calculate it when needed during finalization
+            const driftResult = await this.topicDriftDetector.detectTopicDrift(
+              {
+                id: message.id,
+                author_id: message.author_id,
+                content: message.content || "",
+                created_at: message.created_at,
+                embedding: messageEmbedding,
+              },
+              convMessages,
+              bestMatch.topicLabel,
+              message.guild_id || "",
+              message.author_id
+            );
+
+            if (driftResult.shouldSplit) {
+              console.log(`🔸 Topic drift detected: ${driftResult.reason}`);
+              shouldRoute = false; // Don't route to existing conversation, start new one
+            }
+          } catch (error) {
+            console.error("🔸 Topic drift detection failed:", error);
+            // On error, fall back to routing based on score alone
+          }
+        }
+
+        if (shouldRoute) {
+          // Route to best matching conversation
+          bestMatch.participants.add(message.author_id);
+          bestMatch.messageIds.add(message.id);
+          bestMatch.lastActivity = message.created_at;
+          this.updateConversationTopicEmbedding(bestMatch, messageEmbedding);
+
+          // Generate topic label after 5 messages if not set
+          if (!bestMatch.topicLabel && bestMatch.messageIds.size >= 5) {
+            try {
+              const convMessages = buffer.messages
+                .filter(m => bestMatch.messageIds.has(m.id))
+                .map(m => ({
+                  id: m.id,
+                  author_id: m.author_id,
+                  content: m.content,
+                  created_at: m.created_at,
+                  embedding: m.embedding,
+                }));
+              
+              const topicLabel = await this.topicDriftDetector.generateTopicLabel(
+                convMessages,
+                message.guild_id || "",
+                message.author_id
+              );
+              
+              bestMatch.topicLabel = topicLabel.label;
+              bestMatch.topicConfidence = topicLabel.confidence;
+            } catch (error) {
+              console.error("🔸 Topic label generation failed:", error);
+            }
+          }
+        }
       }
     }
 
@@ -1097,8 +1273,24 @@ export class ConversationManager {
       created_at: message.created_at,
       referenced_message_id: message.referenced_message_id,
       mentioned_user_ids: message.mentioned_user_ids,
+      embedding: messageEmbedding,
     });
     buffer.lastActivity = message.created_at;
+
+    const bufferDuration =
+      message.created_at.getTime() - buffer.startTime.getTime();
+    const exceedsCount =
+      buffer.messages.length >= this.FORCE_FLUSH_MESSAGE_COUNT;
+    const exceedsDuration = bufferDuration >= this.FORCE_FLUSH_DURATION_MS;
+
+    if (exceedsCount || exceedsDuration) {
+      if (buffer.timeoutHandle) {
+        clearTimeout(buffer.timeoutHandle);
+        buffer.timeoutHandle = undefined;
+      }
+      await this.finalizeSegment(key);
+      return;
+    }
 
     // Update or create active conversation
     if (hasDirectSignal) {
@@ -1124,6 +1316,8 @@ export class ConversationManager {
           participants: new Set([message.author_id]),
           messageIds: new Set([message.id]),
           lastActivity: message.created_at,
+          topicEmbedding: messageEmbedding ? [...messageEmbedding] : undefined,
+          topicEmbeddingCount: messageEmbedding ? 1 : 0,
         };
         if (message.mentioned_user_ids) {
           message.mentioned_user_ids.forEach((id) =>
@@ -1139,6 +1333,7 @@ export class ConversationManager {
         activeConv.participants.add(message.author_id);
         activeConv.messageIds.add(message.id);
         activeConv.lastActivity = message.created_at;
+        this.updateConversationTopicEmbedding(activeConv, messageEmbedding);
         if (message.mentioned_user_ids) {
           message.mentioned_user_ids.forEach((id) =>
             activeConv!.participants.add(id)
@@ -1717,6 +1912,167 @@ export class ConversationManager {
   }
 
   /**
+   * Fallback: create time-windowed segments when higher-signal grouping fails.
+   * Ensures we still produce segments for organic conversations even without explicit mentions/replies.
+   */
+  private createTemporalSegments(
+    messages: Array<{
+      id: string;
+      author_id: string;
+      content: string;
+      created_at: Date;
+      referenced_message_id?: string;
+      mentioned_user_ids?: string[];
+      embedding?: number[];
+    }>,
+    windowMs: number = 10 * 60 * 1000
+  ): Array<{ messages: typeof messages }> {
+    if (messages.length < this.MIN_MESSAGES) {
+      return [];
+    }
+
+    const sorted = [...messages].sort(
+      (a, b) => a.created_at.getTime() - b.created_at.getTime()
+    );
+
+    const fallbackGroups: Array<{ messages: typeof messages }> = [];
+    let currentGroup: typeof messages = [];
+
+    for (const msg of sorted) {
+      if (currentGroup.length === 0) {
+        currentGroup.push(msg);
+        continue;
+      }
+
+      const prev = currentGroup[currentGroup.length - 1]!;
+      const gap = msg.created_at.getTime() - prev.created_at.getTime();
+
+      if (gap <= windowMs) {
+        currentGroup.push(msg);
+      } else {
+        if (this.isValidTemporalGroup(currentGroup)) {
+          fallbackGroups.push({ messages: [...currentGroup] });
+        }
+        currentGroup = [msg];
+      }
+    }
+
+    if (this.isValidTemporalGroup(currentGroup)) {
+      fallbackGroups.push({ messages: currentGroup });
+    }
+
+    return fallbackGroups;
+  }
+
+  private isValidTemporalGroup(
+    messages: Array<{ author_id: string }>
+  ): boolean {
+    if (messages.length < this.MIN_MESSAGES) {
+      return false;
+    }
+    const participants = new Set(messages.map((m) => m.author_id));
+    return participants.size >= 2;
+  }
+
+  /**
+   * Attach single-speaker "prelude" messages that happen shortly before a confirmed conversation.
+   * This lets us keep the ramp-up context once another user joins, improving coverage in logs.
+   */
+  private attachConversationPreludes(
+    groups: Array<{
+      messages: Array<{
+        id: string;
+        author_id: string;
+        content: string;
+        created_at: Date;
+        referenced_message_id?: string;
+        mentioned_user_ids?: string[];
+        embedding?: number[];
+      }>;
+    }>,
+    allMessages: Array<{
+      id: string;
+      author_id: string;
+      content: string;
+      created_at: Date;
+      referenced_message_id?: string;
+      mentioned_user_ids?: string[];
+      embedding?: number[];
+    }>
+  ): Array<{
+    messages: Array<{
+      id: string;
+      author_id: string;
+      content: string;
+      created_at: Date;
+      referenced_message_id?: string;
+      mentioned_user_ids?: string[];
+      embedding?: number[];
+    }>;
+  }> {
+    if (groups.length === 0 || allMessages.length === 0) {
+      return groups;
+    }
+
+    const sortedAllMessages = [...allMessages].sort(
+      (a, b) => a.created_at.getTime() - b.created_at.getTime()
+    );
+    const consumedPreludeIds = new Set<string>();
+
+    const groupsWithMeta = groups
+      .map((group, index) => ({
+        group,
+        index,
+        start: Math.min(
+          ...group.messages.map((m) => m.created_at.getTime())
+        ),
+      }))
+      .sort((a, b) => a.start - b.start);
+
+    for (const { group } of groupsWithMeta) {
+      if (!group || group.messages.length === 0) {
+        continue;
+      }
+
+      const participantSet = new Set(
+        group.messages.map((m) => m.author_id).filter(Boolean)
+      );
+      if (participantSet.size < 2) {
+        continue;
+      }
+
+      const groupStart = Math.min(
+        ...group.messages.map((m) => m.created_at.getTime())
+      );
+      const existingIds = new Set(group.messages.map((m) => m.id));
+
+      const preludes = sortedAllMessages.filter((msg) => {
+        if (existingIds.has(msg.id) || consumedPreludeIds.has(msg.id)) {
+          return false;
+        }
+        if (!participantSet.has(msg.author_id)) {
+          return false;
+        }
+        const delta = groupStart - msg.created_at.getTime();
+        return delta > 0 && delta <= this.PRE_CONVERSATION_GRACE_MS;
+      });
+
+      if (preludes.length === 0) {
+        continue;
+      }
+
+      preludes.forEach((msg) => consumedPreludeIds.add(msg.id));
+
+      group.messages.push(...preludes);
+      group.messages.sort(
+        (a, b) => a.created_at.getTime() - b.created_at.getTime()
+      );
+    }
+
+    return groups;
+  }
+
+  /**
    * Merge overlapping conversation groups into unified multi-participant conversations
    * Groups are merged if they:
    * 1. Share messages (same message IDs)
@@ -2023,8 +2379,14 @@ export class ConversationManager {
     );
 
     if (groupedMessages.length === 0) {
-      return; // No valid conversation groups found - filter out noise
+      console.log(
+        `🔸 No grouped clusters for ${bufferKey}; attempting temporal fallback`
+      );
     }
+
+    console.log(
+      `🔸 Finalizing buffer ${bufferKey}: ${validMessages.length} valid messages, ${groupedMessages.length} grouped clusters`
+    );
 
     // Merge overlapping groups into a single multi-participant conversation
     // Groups overlap if they share messages or have overlapping participants in the same time window
@@ -2066,9 +2428,15 @@ export class ConversationManager {
     }
 
     // Filter out messages that are already in existing segments
-    const filteredMergedGroups = mergedGroups.map((group) => ({
-      messages: group.messages.filter((msg) => !existingMessageIds.has(msg.id)),
-    })).filter((group) => group.messages.length >= this.MIN_MESSAGES);
+    const filteredMergedGroups = mergedGroups
+      .map((group) => ({
+        messages: group.messages.filter((msg) => !existingMessageIds.has(msg.id)),
+      }))
+      .filter((group) => group.messages.length >= this.MIN_MESSAGES);
+
+    console.log(
+      `🔸 Buffer ${bufferKey}: merged groups ${mergedGroups.length}, filtered ${filteredMergedGroups.length}`
+    );
 
     if (filteredMergedGroups.length === 0) {
       return; // All messages already in segments
@@ -2076,11 +2444,27 @@ export class ConversationManager {
 
     // Merge again after filtering to ensure groups that share remaining messages are combined
     // This prevents creating duplicate segments from groups that had overlapping messages
-    const finalMergedGroups = this.mergeOverlappingGroups(filteredMergedGroups);
+    let candidateGroups = this.mergeOverlappingGroups(filteredMergedGroups);
+    console.log(
+      `🔸 Buffer ${bufferKey}: final merged groups ${candidateGroups.length}`
+    );
+
+    if (candidateGroups.length === 0) {
+      candidateGroups = this.createTemporalSegments(validMessages);
+      console.log(
+        `🔸 Buffer ${bufferKey}: fallback temporal groups ${candidateGroups.length}`
+      );
+    }
+
+    candidateGroups = this.attachConversationPreludes(
+      candidateGroups,
+      validMessages
+    );
 
     // Process all merged groups (not just the largest)
     // This creates one unified multi-participant conversation instead of multiple pairwise ones
-    for (const group of finalMergedGroups) {
+    const createdSegmentIds: string[] = [];
+    for (const group of candidateGroups) {
       // Deduplicate messages within the group (in case merging combined duplicates)
       const uniqueMessages = new Map<string, typeof group.messages[0]>();
       for (const msg of group.messages) {
@@ -2093,7 +2477,23 @@ export class ConversationManager {
       };
 
       if (deduplicatedGroup.messages.length < this.MIN_MESSAGES) {
+        console.log(
+          `   ↪ Skipping group with ${deduplicatedGroup.messages.length} messages (< ${this.MIN_MESSAGES})`
+        );
         continue; // Skip if not enough messages after deduplication
+      }
+
+      const participantSet = new Set(
+        deduplicatedGroup.messages
+          .map((m) => m.author_id)
+          .filter((id) => id && id.trim().length > 0)
+      );
+
+      if (participantSet.size < 2) {
+        console.log(
+          `   ↪ Skipping group with only ${participantSet.size} participant(s)`
+        );
+        continue;
       }
       // Fetch and include any referenced messages that aren't already in the group
       let processedGroup = await this.includeReferencedMessages(deduplicatedGroup, buffer);
@@ -2104,14 +2504,12 @@ export class ConversationManager {
       );
 
       const participants = Array.from(
-        new Set(processedGroup.messages.map((m) => m.author_id))
-      )
-        .filter((id) => id && id.trim().length > 0)
-        .sort();
-
-      if (participants.length < 2) {
-        continue; // Need at least 2 participants
-      }
+        new Set(
+          processedGroup.messages
+            .map((m) => m.author_id)
+            .filter((id) => id && id.trim().length > 0)
+        )
+      ).sort();
 
       // Use the grouped messages for this segment (already sorted chronologically)
       const segmentMessages = processedGroup.messages;
@@ -2152,34 +2550,597 @@ export class ConversationManager {
       status: "finalized", // Segments created from finalization are finalized
     });
 
+      console.log(
+        `✅ Created segment ${segmentId} (${segmentMessages.length} messages, participants: ${participants.join(
+          ", "
+        )})`
+      );
+      createdSegmentIds.push(segmentId);
+
       // Clear finalized conversations from activeConversations
       buffer.activeConversations = buffer.activeConversations.filter(
-        (conv) => !Array.from(conv.messageIds).every((id) => segmentMessages.some((m) => m.id === id))
+        (conv) =>
+          !Array.from(conv.messageIds).every((id) =>
+            segmentMessages.some((m) => m.id === id)
+          )
       );
 
-    // Only create pairs for distinct users (skip self-interactions)
-    for (let i = 0; i < participants.length; i++) {
-      for (let j = i + 1; j < participants.length; j++) {
-        // Skip if same user
-        if (participants[i] === participants[j]) continue;
-        const user1 = participants[i];
-        const user2 = participants[j];
-        if (user1 && user2) {
-          await this.db.upsertPair(buffer.guildId, user1, user2, segmentId);
+      await this.upsertParticipantPairs(buffer.guildId, participants, segmentId);
+
+      // Try to merge with nearby segments in the same channel
+      await this.mergeNearbySegments(
+        buffer.guildId,
+        buffer.channelId,
+        segmentId,
+        participants,
+        buffer.startTime,
+        endTime
+      );
+    }
+
+    if (createdSegmentIds.length > 0) {
+      try {
+        await this.reconcileOrphanMessages(
+          buffer.guildId,
+          buffer.channelId,
+          new Date(buffer.startTime.getTime() - this.ORPHAN_LOOKBACK_MS)
+        );
+      } catch (error) {
+        console.error(
+          `🔸 Failed to reconcile orphan messages for ${buffer.guildId}:${buffer.channelId}`,
+          error
+        );
+      }
+
+      try {
+        await this.splitSegmentsByTopic(
+          buffer.guildId,
+          buffer.channelId,
+          createdSegmentIds
+        );
+      } catch (error) {
+        console.error(
+          `🔸 Failed to split segments by topic for ${buffer.guildId}:${buffer.channelId}`,
+          error
+        );
+      }
+    }
+  }
+
+  private async reconcileOrphanMessages(
+    guildId: string,
+    channelId: string,
+    since: Date
+  ): Promise<number> {
+
+    const effectiveSince = new Date(Math.max(0, since.getTime()));
+    const orphanResult = await this.db.query(
+      `
+        SELECT id, author_id, content, created_at
+        FROM messages m
+        WHERE m.guild_id = $1
+          AND m.channel_id = $2
+          AND m.active = true
+          AND m.created_at >= $3
+          AND m.author_id != ALL($4::TEXT[])
+          AND NOT EXISTS (
+            SELECT 1
+            FROM conversation_segments cs
+            WHERE cs.guild_id = m.guild_id
+              AND cs.channel_id = m.channel_id
+              AND m.id = ANY(cs.message_ids)
+          )
+        ORDER BY m.created_at ASC
+      `,
+      [guildId, channelId, effectiveSince, KNOWN_BOT_USER_IDS]
+    );
+
+    if (
+      !orphanResult.success ||
+      !orphanResult.data ||
+      orphanResult.data.length === 0
+    ) {
+      return 0;
+    }
+
+    const windowStart = new Date(
+      effectiveSince.getTime() - this.ORPHAN_LOOKBACK_MS
+    );
+    const segmentsResult = await this.db.query(
+      `
+        SELECT id, start_time, end_time, participants, message_ids
+        FROM conversation_segments
+        WHERE guild_id = $1
+          AND channel_id = $2
+          AND end_time >= $3
+      `,
+      [guildId, channelId, windowStart]
+    );
+
+    if (
+      !segmentsResult.success ||
+      !segmentsResult.data ||
+      segmentsResult.data.length === 0
+    ) {
+      return 0;
+    }
+
+    const segmentsRaw = segmentsResult.data;
+    const allSegmentMessageIds = new Set<string>();
+    for (const seg of segmentsRaw) {
+      if (Array.isArray(seg.message_ids)) {
+        for (const id of seg.message_ids) {
+          allSegmentMessageIds.add(id);
         }
       }
     }
 
-    // Try to merge with nearby segments in the same channel
-    await this.mergeNearbySegments(
-      buffer.guildId,
-      buffer.channelId,
-      segmentId,
-      participants,
-      buffer.startTime,
-      endTime
-    );
+    const segmentMessagesMap = new Map<
+      string,
+      DriftMessage & { embedding?: number[] }
+    >();
+    if (allSegmentMessageIds.size > 0) {
+      const detailsResult = await this.db.query(
+        `
+          SELECT id, author_id, content, created_at
+          FROM messages
+          WHERE guild_id = $1
+            AND channel_id = $2
+            AND id = ANY($3::TEXT[])
+        `,
+        [guildId, channelId, Array.from(allSegmentMessageIds)]
+      );
+
+      if (detailsResult.success && detailsResult.data) {
+        for (const row of detailsResult.data) {
+          segmentMessagesMap.set(row.id, {
+            id: row.id,
+            author_id: row.author_id,
+            content: row.content || "",
+            created_at: new Date(row.created_at),
+          });
+        }
+      }
     }
+
+    const segments: SegmentContext[] = segmentsRaw.map((seg: any) => {
+      const messageIds: string[] = Array.isArray(seg.message_ids)
+        ? seg.message_ids
+        : [];
+      const messages: DriftMessage[] = messageIds
+        .map((id) => segmentMessagesMap.get(id))
+        .filter((m): m is DriftMessage => Boolean(m))
+        .sort(
+          (a, b) => a.created_at.getTime() - b.created_at.getTime()
+        );
+      return {
+        id: seg.id,
+        start: new Date(seg.start_time),
+        end: new Date(seg.end_time),
+        participants: new Set(
+          Array.isArray(seg.participants) ? seg.participants : []
+        ),
+        messageIds,
+        messages,
+      };
+    });
+
+    const recentOrphans: DriftMessage[] = orphanResult.data.map((row: any) => ({
+      id: row.id,
+      author_id: row.author_id,
+      content: row.content || "",
+      created_at: new Date(row.created_at),
+    }));
+
+    let attached = 0;
+    for (const orphan of recentOrphans) {
+      const candidates = segments
+        .filter((segment) => this.isWithinSegmentWindow(segment, orphan))
+        .sort((a, b) => {
+          const gapA = this.timeGapToSegment(a, orphan.created_at);
+          const gapB = this.timeGapToSegment(b, orphan.created_at);
+          return gapA - gapB;
+        });
+
+      if (candidates.length === 0) {
+        continue;
+      }
+
+      for (const candidate of candidates) {
+        const shouldAttach = await this.shouldAttachOrphanToSegment(
+          candidate,
+          orphan,
+          guildId
+        );
+        if (shouldAttach) {
+          await this.attachOrphanToSegment(candidate, orphan, guildId);
+          attached++;
+          break;
+        }
+      }
+    }
+
+    if (attached > 0) {
+      console.log(
+        `🔹 Reconciled ${attached} orphaned messages into existing segments (${guildId}:${channelId})`
+      );
+    }
+
+    return attached;
+  }
+
+  private isWithinSegmentWindow(
+    segment: SegmentContext,
+    message: DriftMessage
+  ): boolean {
+    const windowBefore = 10 * 60 * 1000; // 10 minutes
+    const windowAfter = 10 * 60 * 1000;
+    const messageTime = message.created_at.getTime();
+    return (
+      messageTime >= segment.start.getTime() - windowBefore &&
+      messageTime <= segment.end.getTime() + windowAfter
+    );
+  }
+
+  private timeGapToSegment(segment: SegmentContext, time: Date): number {
+    const t = time.getTime();
+    if (t < segment.start.getTime()) {
+      return segment.start.getTime() - t;
+    }
+    if (t > segment.end.getTime()) {
+      return t - segment.end.getTime();
+    }
+    return 0;
+  }
+
+  private async shouldAttachOrphanToSegment(
+    segment: SegmentContext,
+    orphan: DriftMessage,
+    guildId: string
+  ): Promise<boolean> {
+
+    const hasContent = this.hasMeaningfulContent(orphan.content || "");
+    const recentMessages =
+      segment.messages.length > 0
+        ? segment.messages.slice(-10)
+        : [];
+
+    if (hasContent && recentMessages.length >= 2) {
+      const drift = await this.topicDriftDetector.detectTopicDrift(
+        orphan,
+        recentMessages,
+        undefined,
+        guildId,
+        orphan.author_id
+      );
+      if (!drift.shouldSplit && drift.confidence >= 0.4) {
+        return true;
+      }
+    }
+
+    const timeGap = this.timeGapToSegment(segment, orphan.created_at);
+    if (segment.participants.has(orphan.author_id) && timeGap <= 5 * 60 * 1000) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private async attachOrphanToSegment(
+    segment: SegmentContext,
+    message: DriftMessage,
+    guildId: string
+  ): Promise<void> {
+    if (segment.messageIds.includes(message.id)) {
+      return;
+    }
+
+    segment.messageIds.push(message.id);
+    segment.messages.push(message);
+    segment.messages.sort(
+      (a, b) => a.created_at.getTime() - b.created_at.getTime()
+    );
+
+    segment.participants.add(message.author_id);
+    segment.start = new Date(
+      Math.min(segment.start.getTime(), message.created_at.getTime())
+    );
+    segment.end = new Date(
+      Math.max(segment.end.getTime(), message.created_at.getTime())
+    );
+
+    const newMessageIds = Array.from(new Set(segment.messageIds));
+    segment.messageIds = newMessageIds;
+    const newParticipants = Array.from(segment.participants).sort();
+
+    await this.db.query(
+      `UPDATE conversation_segments
+         SET message_ids = $2::TEXT[],
+             message_count = $3,
+             participants = $4::TEXT[],
+             start_time = LEAST(start_time, $5),
+             end_time = GREATEST(end_time, $5)
+       WHERE id = $1`,
+      [
+        segment.id,
+        newMessageIds,
+        newMessageIds.length,
+        newParticipants,
+        message.created_at,
+      ]
+    );
+
+    for (const participant of newParticipants) {
+      if (participant !== message.author_id) {
+        await this.db.upsertPair(
+          guildId,
+          participant,
+          message.author_id,
+          segment.id
+        );
+      }
+    }
+  }
+
+  private async splitSegmentsByTopic(
+    guildId: string,
+    channelId: string,
+    segmentIds: string[]
+  ): Promise<void> {
+    if (segmentIds.length === 0) {
+      return;
+    }
+
+    for (const segmentId of segmentIds) {
+      await this.splitSegmentByTopic(guildId, channelId, segmentId);
+    }
+  }
+
+  private async splitSegmentByTopic(
+    guildId: string,
+    channelId: string,
+    segmentId: string
+  ): Promise<void> {
+    const segmentResult = await this.db.query(
+      `SELECT id, start_time, end_time, participants, message_ids
+       FROM conversation_segments
+       WHERE id = $1`,
+      [segmentId]
+    );
+
+    if (
+      !segmentResult.success ||
+      !segmentResult.data ||
+      segmentResult.data.length === 0
+    ) {
+      return;
+    }
+
+    const row = segmentResult.data[0];
+    const messageIds: string[] = Array.isArray(row.message_ids)
+      ? row.message_ids
+      : [];
+
+    if (messageIds.length < 10) {
+      return; // Too small to bother splitting
+    }
+
+    const messagesResult = await this.db.query(
+      `SELECT id, author_id, content, created_at, referenced_message_id, embedding
+       FROM messages
+       WHERE guild_id = $1
+         AND channel_id = $2
+         AND id = ANY($3::TEXT[])
+       ORDER BY created_at ASC`,
+      [guildId, channelId, messageIds]
+    );
+
+    if (!messagesResult.success || !messagesResult.data) {
+      return;
+    }
+
+    const dbMessages = messagesResult.data.map((msg: any) => ({
+      id: msg.id,
+      author_id: msg.author_id,
+      content: msg.content || "",
+      created_at: new Date(msg.created_at),
+      referenced_message_id: msg.referenced_message_id || undefined,
+      embedding: parseEmbeddingValue(msg.embedding),
+    }));
+
+    const driftMessages: DriftMessage[] = dbMessages.map((msg) => ({
+      id: msg.id,
+      author_id: msg.author_id,
+      content: msg.content,
+      created_at: msg.created_at,
+      embedding: msg.embedding,
+    }));
+
+    const participants = Array.isArray(row.participants)
+      ? row.participants
+      : [];
+    const durationMinutes =
+      (row.end_time && row.start_time
+        ? (new Date(row.end_time).getTime() -
+            new Date(row.start_time).getTime()) /
+          (60 * 1000)
+        : 0) || 0;
+
+    let splits: ConversationSplit[] = [];
+    try {
+      splits = await this.topicDriftDetector.analyzeConversationForSplits(
+        driftMessages,
+        guildId,
+        "system",
+        {
+          participantCount: participants.length,
+          durationMinutes,
+        }
+      );
+    } catch (error) {
+      console.warn(
+        "🔸 Topic split analysis failed; keeping segment intact:",
+        error instanceof Error ? error.message : error
+      );
+      return;
+    }
+
+    if (!splits || splits.length === 0) {
+      return;
+    }
+
+    const boundaries = [0];
+    const maxIndex = driftMessages.length;
+    for (const split of splits) {
+      const rawIndex = Math.round(split.splitIndex);
+      const clamped = Math.max(
+        this.MIN_MESSAGES,
+        Math.min(maxIndex - this.MIN_MESSAGES, rawIndex)
+      );
+      if (
+        clamped > boundaries[boundaries.length - 1] &&
+        clamped < maxIndex
+      ) {
+        boundaries.push(clamped);
+      }
+    }
+    boundaries.push(maxIndex);
+
+    if (boundaries.length <= 2) {
+      return; // No usable split points
+    }
+
+    const chunkData: Array<{
+      messageIds: string[];
+      participants: string[];
+      startTime: Date;
+      endTime: Date;
+      features: Record<string, any>;
+      summary: string;
+      messages: typeof dbMessages;
+    }> = [];
+
+    for (let i = 0; i < boundaries.length - 1; i++) {
+      const start = boundaries[i];
+      const end = boundaries[i + 1];
+      const chunkMessages = dbMessages.slice(start, end);
+      const chunk = this.buildSegmentChunk(chunkMessages);
+      if (!chunk) {
+        return; // Abort entire split if any chunk invalid
+      }
+      chunkData.push({
+        ...chunk,
+        messages: chunkMessages,
+      });
+    }
+
+    if (chunkData.length <= 1) {
+      return;
+    }
+
+    const originalParticipants = Array.isArray(row.participants)
+      ? row.participants
+      : [];
+    console.log(
+      `🔹 Splitting segment ${segmentId} (${messageIds.length} messages, participants: ${originalParticipants.join(
+        ", "
+      )}) into ${chunkData.length} topics`
+    );
+
+    const [firstChunk, ...extraChunks] = chunkData;
+
+    await this.db.upsertConversationSegment({
+      id: segmentId,
+      guildId,
+      channelId,
+      participants: firstChunk.participants,
+      startTime: firstChunk.startTime,
+      endTime: firstChunk.endTime,
+      messageIds: firstChunk.messageIds,
+      messageCount: firstChunk.messageIds.length,
+      features: firstChunk.features,
+      summary: firstChunk.summary,
+      status: "finalized",
+    });
+    await this.upsertParticipantPairs(guildId, firstChunk.participants, segmentId);
+
+    for (const chunk of extraChunks) {
+      const newSegmentId = `seg_${chunk.messageIds[0]}_${Date.now()}_${Math.random()
+        .toString(36)
+        .substring(7)}`;
+      await this.db.upsertConversationSegment({
+        id: newSegmentId,
+        guildId,
+        channelId,
+        participants: chunk.participants,
+        startTime: chunk.startTime,
+        endTime: chunk.endTime,
+        messageIds: chunk.messageIds,
+        messageCount: chunk.messageIds.length,
+        features: chunk.features,
+        summary: chunk.summary,
+        status: "finalized",
+      });
+      await this.upsertParticipantPairs(guildId, chunk.participants, newSegmentId);
+      console.log(
+        `   ↪ Created topic split ${newSegmentId} (${chunk.messageIds.length} messages, participants: ${chunk.participants.join(
+          ", "
+        )})`
+      );
+    }
+  }
+
+  private buildSegmentChunk(
+    messages: Array<{
+      id: string;
+      author_id: string;
+      content: string;
+      created_at: Date;
+      referenced_message_id?: string;
+    }>
+  ):
+    | {
+        messageIds: string[];
+        participants: string[];
+        startTime: Date;
+        endTime: Date;
+        features: Record<string, any>;
+        summary: string;
+      }
+    | null {
+    if (!messages || messages.length < this.MIN_MESSAGES) {
+      return null;
+    }
+
+    const participants = Array.from(
+      new Set(
+        messages
+          .map((m) => m.author_id)
+          .filter((id) => id && id.trim().length > 0)
+      )
+    ).sort();
+
+    if (participants.length < 2) {
+      return null;
+    }
+
+    const messageIds = messages.map((m) => m.id);
+    const startTime = messages[0].created_at;
+    const endTime = messages[messages.length - 1].created_at;
+    const features: Record<string, any> = {
+      mention_count: 0,
+      reply_count: messages.filter((m) => m.referenced_message_id).length,
+    };
+    const summary = this.generateSegmentSummary(messages, participants);
+
+    return {
+      messageIds,
+      participants,
+      startTime,
+      endTime,
+      features,
+      summary,
+    };
   }
 
   /**
@@ -2194,8 +3155,12 @@ export class ConversationManager {
     endTime: Date
   ): Promise<void> {
     try {
-      // Find segments in the same channel that are within 30 minutes and have overlapping participants
-      const mergeWindowMs = 30 * 60 * 1000; // 30 minutes
+      const mergeWindowMs = 60 * 60 * 1000; // 60 minutes
+      const semanticSimilarityThreshold = 0.82;
+      const participantJaccardThreshold = 0.5;
+      const participantCoverageThreshold = 0.6;
+      const minSharedForAutoMerge = 2;
+
       const nearbyResult = await this.db.query(
         `SELECT id, participants, start_time, end_time, message_ids, message_count
          FROM conversation_segments
@@ -2203,8 +3168,9 @@ export class ConversationManager {
            AND channel_id = $2
            AND id != $3
            AND (
-             (start_time BETWEEN $4::timestamp - interval '30 minutes' AND $5::timestamp + interval '30 minutes')
-             OR (end_time BETWEEN $4::timestamp - interval '30 minutes' AND $5::timestamp + interval '30 minutes')
+             (start_time BETWEEN $4::timestamp - interval '60 minutes' AND $5::timestamp + interval '60 minutes')
+             OR (end_time BETWEEN $4::timestamp - interval '60 minutes' AND $5::timestamp + interval '60 minutes')
+             OR ($4 BETWEEN start_time - interval '60 minutes' AND end_time + interval '60 minutes')
            )
          ORDER BY start_time ASC`,
         [guildId, channelId, newSegmentId, startTime, endTime]
@@ -2218,68 +3184,107 @@ export class ConversationManager {
         return;
       }
 
-      const nearbySegments = nearbyResult.data;
       const participantsSet = new Set(participants);
+      const segmentsToMerge: Array<{
+        id: string;
+        participants: string[];
+        message_ids: string[];
+        start_time: Date;
+        end_time: Date;
+      }> = [];
 
-      // Find segments with overlapping participants
-      const segmentsToMerge: any[] = [];
-      for (const seg of nearbySegments) {
-        const segParticipants = Array.isArray(seg.participants)
-          ? seg.participants
-          : (seg.participants as any).split
-          ? (seg.participants as any).split(",")
-          : [];
-
-        const hasOverlap = segParticipants.some((p: string) =>
-          participantsSet.has(p)
-        );
-        if (hasOverlap) {
-          segmentsToMerge.push(seg);
-        }
-      }
-
-      if (segmentsToMerge.length === 0) return;
-
-      // Merge: combine participants and message_ids
-      const allParticipants = new Set(participants);
-      const allMessageIds = new Set<string>();
-
-      // Get current segment's message IDs
+      // Fetch current segment message IDs (needed for semantic comparisons and merge aggregation)
       const currentSegmentResult = await this.db.query(
         `SELECT message_ids FROM conversation_segments WHERE id = $1`,
         [newSegmentId]
       );
 
-      if (currentSegmentResult.success && currentSegmentResult.data) {
-        const currentMsgIds = Array.isArray(
-          currentSegmentResult.data[0]?.message_ids
-        )
-          ? currentSegmentResult.data[0].message_ids
-          : [];
-        currentMsgIds.forEach((id: string) => allMessageIds.add(id));
+      const currentMsgIds = this.normalizeIdArray(
+        currentSegmentResult.success && currentSegmentResult.data
+          ? currentSegmentResult.data[0]?.message_ids
+          : []
+      );
+
+      let currentEmbeddingPromise: Promise<number[] | null> | null = null;
+      const getCurrentEmbedding = () => {
+        if (!currentEmbeddingPromise) {
+          currentEmbeddingPromise = this.computeConversationEmbedding(
+            guildId,
+            channelId,
+            currentMsgIds
+          );
+        }
+        return currentEmbeddingPromise;
+      };
+
+      for (const seg of nearbyResult.data) {
+        const segParticipants = this.extractParticipants(seg.participants);
+        if (segParticipants.length === 0) continue;
+
+        const overlapStats = this.calculateParticipantOverlap(
+          participantsSet,
+          segParticipants
+        );
+        const segStart = new Date(seg.start_time);
+        const segEnd = new Date(seg.end_time);
+        const gapMs = this.calculateSegmentGap(
+          startTime,
+          endTime,
+          segStart,
+          segEnd
+        );
+
+        let shouldMergeSegment =
+          overlapStats.jaccard >= participantJaccardThreshold ||
+          (overlapStats.shared >= minSharedForAutoMerge &&
+            overlapStats.coverage >= participantCoverageThreshold);
+
+        if (
+          !shouldMergeSegment &&
+          gapMs <= mergeWindowMs &&
+          (overlapStats.shared > 0 || participantsSet.size <= 2)
+        ) {
+          const segMsgIds = this.normalizeIdArray(seg.message_ids);
+          if (segMsgIds.length > 0 && currentMsgIds.length > 0) {
+            const semanticScore = await this.computeSemanticSimilarity(
+              guildId,
+              channelId,
+              segMsgIds,
+              getCurrentEmbedding
+            );
+            if (
+              semanticScore !== null &&
+              semanticScore >= semanticSimilarityThreshold
+            ) {
+              shouldMergeSegment = true;
+            }
+          }
+        }
+
+        if (shouldMergeSegment) {
+          segmentsToMerge.push({
+            id: seg.id,
+            participants: segParticipants,
+            message_ids: this.normalizeIdArray(seg.message_ids),
+            start_time: segStart,
+            end_time: segEnd,
+          });
+        }
       }
+
+      if (segmentsToMerge.length === 0) return;
+
+      const allParticipants = new Set(participants);
+      const allMessageIds = new Set(currentMsgIds);
 
       for (const seg of segmentsToMerge) {
-        const segParticipants = Array.isArray(seg.participants)
-          ? seg.participants
-          : (seg.participants as any).split
-          ? (seg.participants as any).split(",")
-          : [];
-        segParticipants.forEach((p: string) => allParticipants.add(p));
-
-        const segMsgIds = Array.isArray(seg.message_ids)
-          ? seg.message_ids
-          : (seg.message_ids as any).split
-          ? (seg.message_ids as any).split(",")
-          : [];
-        segMsgIds.forEach((id: string) => allMessageIds.add(id));
+        seg.participants.forEach((p: string) => allParticipants.add(p));
+        seg.message_ids.forEach((id: string) => allMessageIds.add(id));
       }
 
-      // Update the new segment with merged data
       const mergedParticipants = Array.from(allParticipants).sort();
       const mergedMessageIds = Array.from(allMessageIds);
 
-      // Recalculate times
       const allStartTimes = [
         startTime,
         ...segmentsToMerge.map((s) => new Date(s.start_time)),
@@ -2295,14 +3300,11 @@ export class ConversationManager {
         Math.max(...allEndTimes.map((d) => d.getTime()))
       );
 
-      // Check if merged result would exceed maximum conversation duration
       const mergedDuration = mergedEndTime.getTime() - mergedStartTime.getTime();
       if (mergedDuration > this.MAX_CONVERSATION_DURATION_MS) {
-        // Abort merge - would create unrealistic conversation span (>24 hours)
         return;
       }
 
-      // Update the segment
       await this.db.query(
         `UPDATE conversation_segments
          SET participants = $1::TEXT[],
@@ -2321,7 +3323,6 @@ export class ConversationManager {
         ]
       );
 
-      // Delete merged segments
       const deleteIds = segmentsToMerge.map((s) => s.id);
       if (deleteIds.length > 0) {
         await this.db.query(
@@ -2350,12 +3351,218 @@ export class ConversationManager {
     return `${participants.length} users: ${contents}...`;
   }
 
+  private extractParticipants(raw: unknown): string[] {
+    if (Array.isArray(raw)) {
+      return raw
+        .filter((id): id is string => typeof id === "string")
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0);
+    }
+
+    if (typeof raw === "string") {
+      return raw
+        .split(",")
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0);
+    }
+
+    return [];
+  }
+
+  private normalizeIdArray(raw: unknown): string[] {
+    if (Array.isArray(raw)) {
+      return raw
+        .filter((id): id is string => typeof id === "string")
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0);
+    }
+
+    if (typeof raw === "string") {
+      return raw
+        .split(",")
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0);
+    }
+
+    return [];
+  }
+
+  private calculateParticipantOverlap(
+    baseParticipants: Set<string>,
+    otherParticipants: string[]
+  ): { shared: number; jaccard: number; coverage: number } {
+    const otherSet = new Set(otherParticipants);
+    let shared = 0;
+    for (const participant of otherSet) {
+      if (baseParticipants.has(participant)) {
+        shared++;
+      }
+    }
+
+    const unionSize = new Set([
+      ...Array.from(baseParticipants),
+      ...Array.from(otherSet),
+    ]).size;
+    const minGroupSize = Math.min(
+      baseParticipants.size || 1,
+      otherSet.size || 1
+    );
+    const coverage = minGroupSize > 0 ? shared / minGroupSize : 0;
+    const jaccard = unionSize > 0 ? shared / unionSize : 0;
+    return { shared, jaccard, coverage };
+  }
+
+  private calculateSegmentGap(
+    currentStart: Date,
+    currentEnd: Date,
+    otherStart: Date,
+    otherEnd: Date
+  ): number {
+    if (otherEnd.getTime() < currentStart.getTime()) {
+      return currentStart.getTime() - otherEnd.getTime();
+    }
+    if (otherStart.getTime() > currentEnd.getTime()) {
+      return otherStart.getTime() - currentEnd.getTime();
+    }
+    return 0; // Overlapping or touching segments
+  }
+
+  private async computeSemanticSimilarity(
+    guildId: string,
+    channelId: string,
+    messageIds: string[],
+    getReferenceEmbedding: () => Promise<number[] | null>
+  ): Promise<number | null> {
+    const [referenceEmbedding, candidateEmbedding] = await Promise.all([
+      getReferenceEmbedding(),
+      this.computeConversationEmbedding(guildId, channelId, messageIds),
+    ]);
+
+    if (!referenceEmbedding || !candidateEmbedding) {
+      return null;
+    }
+
+    return this.cosineSimilarity(referenceEmbedding, candidateEmbedding);
+  }
+
+  private async computeConversationEmbedding(
+    guildId: string,
+    channelId: string,
+    messageIds: string[]
+  ): Promise<number[] | null> {
+    if (messageIds.length === 0) {
+      return null;
+    }
+
+    const textSample = await this.buildSegmentTextSample(
+      guildId,
+      channelId,
+      messageIds
+    );
+
+    if (!textSample) {
+      return null;
+    }
+
+    try {
+      return await this.embeddingService.generateEmbedding(textSample);
+    } catch (error) {
+      console.error("🔸 Failed to compute conversation embedding:", error);
+      return null;
+    }
+  }
+
+  private async buildSegmentTextSample(
+    guildId: string,
+    channelId: string,
+    messageIds: string[],
+    limit: number = 20
+  ): Promise<string | null> {
+    if (messageIds.length === 0) {
+      return null;
+    }
+
+    const result = await this.db.query(
+      `SELECT content, created_at
+       FROM messages
+       WHERE guild_id = $1
+         AND channel_id = $2
+         AND id = ANY($3::TEXT[])
+       ORDER BY created_at ASC`,
+      [guildId, channelId, messageIds]
+    );
+
+    if (!result.success || !result.data || result.data.length === 0) {
+      return null;
+    }
+
+    const contents = result.data
+      .map((row: any) => row.content)
+      .filter((content: any) => typeof content === "string" && content.trim().length > 0)
+      .slice(0, limit);
+
+    if (contents.length === 0) {
+      return null;
+    }
+
+    return contents.join("\n");
+  }
+
+  private cosineSimilarity(vecA: number[], vecB: number[]): number | null {
+    if (vecA.length === 0 || vecB.length === 0 || vecA.length !== vecB.length) {
+      return null;
+    }
+
+    let dot = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < vecA.length; i++) {
+      const a = vecA[i]!;
+      const b = vecB[i]!;
+      dot += a * b;
+      normA += a * a;
+      normB += b * b;
+    }
+
+    const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+    if (denominator === 0) {
+      return null;
+    }
+    return dot / denominator;
+  }
+
   /**
    * Manually finalize all active segments (for shutdown/cleanup)
    */
   async finalizeAllSegments(): Promise<void> {
     const keys = Array.from(this.channelBuffers.keys());
     for (const key of keys) {
+      await this.finalizeSegment(key);
+    }
+  }
+
+  /**
+   * Flush channel buffers that have been inactive longer than the configured timeout.
+   * Helps ensure real-time coverage even if timers are delayed or the process sleeps.
+   */
+  async flushInactiveBuffers(
+    maxIdleMs: number = this.INACTIVITY_MS
+  ): Promise<void> {
+    if (this.channelBuffers.size === 0) {
+      return;
+    }
+
+    const now = Date.now();
+    const keysToFlush: string[] = [];
+
+    for (const [key, buffer] of this.channelBuffers.entries()) {
+      const idleTime = now - buffer.lastActivity.getTime();
+      if (idleTime >= maxIdleMs) {
+        keysToFlush.push(key);
+      }
+    }
+
+    for (const key of keysToFlush) {
       await this.finalizeSegment(key);
     }
   }
@@ -2397,6 +3604,7 @@ export class ConversationManager {
           messageIds: new Set(segment.message_ids || []),
           lastActivity: new Date(segment.last_activity_at || segment.end_time),
           topicEmbedding: undefined,
+          topicEmbeddingCount: 0,
         };
 
         buffer.activeConversations.push(activeConv);
@@ -2419,6 +3627,21 @@ export class ConversationManager {
       console.log(
         `🔄 Restored ${restoredCount} active conversations for guild ${guildId}`
       );
+    }
+  }
+
+  private async upsertParticipantPairs(
+    guildId: string,
+    participants: string[],
+    segmentId: string
+  ): Promise<void> {
+    for (let i = 0; i < participants.length; i++) {
+      for (let j = i + 1; j < participants.length; j++) {
+        if (participants[i] === participants[j]) {
+          continue;
+        }
+        await this.db.upsertPair(guildId, participants[i], participants[j], segmentId);
+      }
     }
   }
 
@@ -3361,7 +4584,86 @@ export class ConversationManager {
         }
       }
 
-      // Phase 3: Merge pass with same-participant priority
+      // Phase 3: Topic drift analysis and splitting
+      console.log(`🔸 Running Phase 3: Topic drift analysis on ${conversations.length} conversations`);
+      const splitConversations: ConversationGroup[] = [];
+      
+      for (const convo of conversations) {
+          // Only analyze conversations with 10+ messages or 60+ minutes duration
+          if (convo.messages.length < 10) {
+            splitConversations.push(convo);
+            continue;
+          }
+          
+          const duration = (convo.endTime.getTime() - convo.startTime.getTime()) / (1000 * 60);
+          if (duration < 60) {
+            splitConversations.push(convo);
+            continue;
+          }
+          
+          try {
+            // Analyze for topic splits
+            const splits = await this.topicDriftDetector.analyzeConversationForSplits(
+              convo.messages,
+              guildId,
+              "system"
+            );
+            
+            if (splits.length === 0) {
+              // No splits detected
+              splitConversations.push(convo);
+              continue;
+            }
+            
+            // Split conversation at detected points
+            console.log(`🔸 Splitting conversation ${convo.id} at ${splits.length} points`);
+            let currentSegment: typeof convo.messages = [];
+            let segmentStart = 0;
+            
+            for (let i = 0; i < splits.length; i++) {
+              const split = splits[i]!;
+              const segmentMessages = convo.messages.slice(segmentStart, split.splitIndex);
+              
+              if (segmentMessages.length >= 3) {
+                splitConversations.push({
+                  id: `${convo.id}_split_${i}`,
+                  participants: new Set(segmentMessages.map(m => m.author_id)),
+                  messageIds: new Set(segmentMessages.map(m => m.id)),
+                  messages: segmentMessages,
+                  startTime: segmentMessages[0]!.created_at,
+                  endTime: segmentMessages[segmentMessages.length - 1]!.created_at,
+                  avgAffinity: convo.avgAffinity,
+                });
+              }
+              
+              segmentStart = split.splitIndex;
+            }
+            
+            // Add remaining messages as final segment
+            const finalSegment = convo.messages.slice(segmentStart);
+            if (finalSegment.length >= 3) {
+              splitConversations.push({
+                id: `${convo.id}_split_final`,
+                participants: new Set(finalSegment.map(m => m.author_id)),
+                messageIds: new Set(finalSegment.map(m => m.id)),
+                messages: finalSegment,
+                startTime: finalSegment[0]!.created_at,
+                endTime: finalSegment[finalSegment.length - 1]!.created_at,
+                avgAffinity: convo.avgAffinity,
+              });
+            }
+          } catch (error) {
+            console.error(`🔸 Failed to analyze conversation ${convo.id} for topic drift:`, error);
+            // On error, keep conversation as-is
+            splitConversations.push(convo);
+          }
+      }
+      
+      // Replace conversations with split versions
+      conversations.splice(0, conversations.length, ...splitConversations);
+      console.log(`🔸 After topic drift analysis: ${conversations.length} conversations`);
+
+      // Phase 4: Merge pass with same-participant priority
       let merged = true;
       while (merged) {
         merged = false;

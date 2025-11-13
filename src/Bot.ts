@@ -74,13 +74,21 @@ export class Bot {
         this.postgresManager
       );
       this.conversationManager = new ConversationManager(this.postgresManager);
+      if (config.enableTopicSplitting) {
+        const aiManager = AIManager.getInstance();
+        this.conversationManager.setAIManager(aiManager);
+      } else {
+        console.log(
+          "🔸 ENABLE_TOPIC_SPLITTING is disabled; conversations will not be split by Gemini."
+        );
+      }
 
       // Start database healer and maintenance
       this.databaseHealer = new DatabaseHealer(
         this.client,
         this.postgresManager,
         this.relationshipManager,
-        true // Set to true for verbose logging
+        false // Set to true for verbose logging
       );
       this.databaseHealer.startMaintenance();
 
@@ -130,6 +138,15 @@ export class Bot {
           }
         }
       }, 15 * 60 * 1000);
+
+      // Periodically flush inactive buffers to ensure conversations finalize in real-time
+      setInterval(async () => {
+        try {
+          await this.conversationManager?.flushInactiveBuffers();
+        } catch (error) {
+          console.error("🔸 Failed to flush inactive conversation buffers:", error);
+        }
+      }, 2 * 60 * 1000);
 
       // Start periodic semantic merging of related conversations (every hour)
       setInterval(async () => {

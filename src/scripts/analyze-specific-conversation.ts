@@ -130,6 +130,11 @@ async function analyzeSpecificConversation() {
 		}
 
 		const targetConversation = conversations[conversationIndex - 1];
+		if (!targetConversation) {
+			AnalysisFormatter.error(`Conversation #${conversationIndex} could not be loaded.`);
+			await db.disconnect();
+			return;
+		}
 
 		// Get all messages in the target conversation, sorted by time
 		const convoMessages = allMessages
@@ -167,11 +172,20 @@ async function analyzeSpecificConversation() {
 		AnalysisFormatter.subsection("All Messages in Chronological Order", 98);
 
 		// Find first and last message IDs in target conversation (chronologically)
-		const firstTargetMsgId = convoMessages[0].id;
-		const lastTargetMsgId = convoMessages[convoMessages.length - 1].id;
+		if (convoMessages.length === 0) {
+			AnalysisFormatter.error("Target conversation has no messages.");
+			await db.disconnect();
+			return;
+		}
+
+		const firstTargetMsgId = convoMessages[0]!.id;
+		const lastTargetMsgId = convoMessages[convoMessages.length - 1]!.id;
 
 		for (let i = 0; i < allMessages.length; i++) {
 			const msg = allMessages[i];
+			if (!msg) {
+				continue;
+			}
 			const convo = messageToConversation.get(msg.id);
 			const isTargetConversation = convo === targetConversation;
 
@@ -549,4 +563,3 @@ function groupMessagesWithRelationships(
 }
 
 analyzeSpecificConversation();
-

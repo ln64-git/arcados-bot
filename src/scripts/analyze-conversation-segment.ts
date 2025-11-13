@@ -280,33 +280,36 @@ async function analyzeConversationSegment() {
 			const msgTime = new Date(msg.created_at).getTime();
 			const windowStart = new Date(Math.floor(msgTime / windowSize) * windowSize);
 
-			let window = timeWindows.find(
+			let timeWindow = timeWindows.find(
 				(w) => w.start.getTime() === windowStart.getTime()
 			);
-			if (!window) {
-				window = { start: windowStart, end: new Date(windowStart.getTime() + windowSize), messages: [] };
-				timeWindows.push(window);
+			if (!timeWindow) {
+				timeWindow = { start: windowStart, end: new Date(windowStart.getTime() + windowSize), messages: [] };
+				timeWindows.push(timeWindow);
 			}
-			window.messages.push(msg);
+			timeWindow.messages.push(msg);
 		}
 
 		console.log(`│  ${timeWindows.length} time windows (10-minute intervals)`);
 		console.log("│");
 
 		for (let i = 0; i < Math.min(timeWindows.length, 20); i++) {
-			const window = timeWindows[i];
-			const windowStart = window.start.toLocaleTimeString("en-US", {
+			const timeWindow = timeWindows[i];
+			if (!timeWindow) {
+				continue;
+			}
+			const windowStart = timeWindow.start.toLocaleTimeString("en-US", {
 				hour: "2-digit",
 				minute: "2-digit",
 			});
-			const windowEnd = window.end.toLocaleTimeString("en-US", {
+			const windowEnd = timeWindow.end.toLocaleTimeString("en-US", {
 				hour: "2-digit",
 				minute: "2-digit",
 			});
 
-			const participantsInWindow = new Set(window.messages.map((m) => m.author_id)).size;
+			const participantsInWindow = new Set(timeWindow.messages.map((m) => m.author_id)).size;
 			console.log(
-				`│  ${windowStart} - ${windowEnd}: ${window.messages.length} messages from ${participantsInWindow} participants`
+				`│  ${windowStart} - ${windowEnd}: ${timeWindow.messages.length} messages from ${participantsInWindow} participants`
 			);
 		}
 
@@ -336,6 +339,9 @@ async function analyzeConversationSegment() {
 
 		for (let i = 0; i < messages.length; i++) {
 			const msg = messages[i];
+			if (!msg) {
+				continue;
+			}
 			const authorName = nameMap.get(msg.author_id) || msg.display_name || msg.username || msg.author_id.substring(0, 8);
 			const timestamp = new Date(msg.created_at).toLocaleTimeString("en-US", {
 				hour: "2-digit",
@@ -371,4 +377,3 @@ async function analyzeConversationSegment() {
 }
 
 analyzeConversationSegment();
-

@@ -105,9 +105,40 @@ export const getUserInfoTool: DatabaseTool = {
 
       // Get top relationships with more context
       const network = member.relationship_network || [];
-      const topRelationships = network
+      const topRelationshipsRaw = network
         .sort((a, b) => b.affinity_percentage - a.affinity_percentage)
-        .slice(0, 5)
+        .slice(0, 5);
+
+      // Enrich relationships with display names if missing
+      const enrichedRelationships = await Promise.all(
+        topRelationshipsRaw.map(async (r) => {
+          if (r.display_name || r.username) {
+            return r; // Already has a name
+          }
+
+          // Fetch display name from database
+          const userResult = await context.db.query(
+            `SELECT display_name, username, global_name
+             FROM members
+             WHERE user_id = $1 AND guild_id = $2
+             LIMIT 1`,
+            [r.user_id, context.guildId]
+          );
+
+          if (userResult.success && userResult.data && userResult.data.length > 0) {
+            const userData = userResult.data[0];
+            return {
+              ...r,
+              display_name: userData.display_name || userData.global_name || userData.username || r.user_id,
+              username: userData.username,
+            };
+          }
+
+          return r; // Fallback to original
+        })
+      );
+
+      const topRelationships = enrichedRelationships
         .map(
           (r) =>
             `  - ${
@@ -117,6 +148,35 @@ export const getUserInfoTool: DatabaseTool = {
             } interactions${r.summary ? `, context: ${r.summary}` : ""}`
         )
         .join("\n");
+
+      // Also enrich the full network for context (top 10)
+      const topNetworkRaw = network.slice(0, 10);
+      const enrichedNetwork = await Promise.all(
+        topNetworkRaw.map(async (r) => {
+          if (r.display_name || r.username) {
+            return r;
+          }
+
+          const userResult = await context.db.query(
+            `SELECT display_name, username, global_name
+             FROM members
+             WHERE user_id = $1 AND guild_id = $2
+             LIMIT 1`,
+            [r.user_id, context.guildId]
+          );
+
+          if (userResult.success && userResult.data && userResult.data.length > 0) {
+            const userData = userResult.data[0];
+            return {
+              ...r,
+              display_name: userData.display_name || userData.global_name || userData.username || r.user_id,
+              username: userData.username,
+            };
+          }
+
+          return r;
+        })
+      );
 
       // Build rich context object
       const richContext = {
@@ -133,7 +193,7 @@ export const getUserInfoTool: DatabaseTool = {
         firstMessageDate: firstMessage,
         active: member.active,
         relationships: topRelationships || "No relationships tracked",
-        relationshipNetwork: network.slice(0, 10), // Top 10 for context
+        relationshipNetwork: enrichedNetwork, // Top 10 with names enriched
         notes: member.notes || [],
       };
 

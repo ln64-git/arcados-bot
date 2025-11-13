@@ -382,6 +382,15 @@ export class PostgreSQLManager {
 				ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 			`);
 
+      // Add topic drift detection columns (migration)
+      await client.query(`
+				ALTER TABLE conversation_segments
+				ADD COLUMN IF NOT EXISTS topic_label TEXT,
+				ADD COLUMN IF NOT EXISTS topic_confidence FLOAT,
+				ADD COLUMN IF NOT EXISTS parent_segment_id VARCHAR(50),
+				ADD COLUMN IF NOT EXISTS split_reason TEXT
+			`);
+
       // Relationship pairs - optional cache for quick undirected reads
       await client.query(`
 				CREATE TABLE IF NOT EXISTS relationship_pairs (
@@ -1424,6 +1433,36 @@ export class PostgreSQLManager {
       return { success: true };
     } catch (error) {
       console.error("🔸 Failed to upsert conversation segment:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Remove conversation segments that don't meet minimum participant requirements
+   */
+  async removeSingleParticipantSegments(
+    guildId: string
+  ): Promise<DatabaseResult<void>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      await client.query(
+        `DELETE FROM conversation_segments
+         WHERE guild_id = $1
+           AND (participants IS NULL OR array_length(participants, 1) <= 1)`,
+        [guildId]
+      );
+      return { success: true };
+    } catch (error) {
+      console.error("🔸 Failed to remove single-participant segments:", error);
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",

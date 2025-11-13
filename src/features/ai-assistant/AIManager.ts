@@ -59,7 +59,8 @@ export class AIManager {
 	- NO bullet points - use paragraph format instead
 	- Keep responses concise and focused
 	- Structure: **Subtitle** followed by relevant context
-	- Each section should be 1-2 sentences maximum`;
+	- Each section should be 1-2 sentences maximum
+	- NEVER use Discord mention tags like <@userid> in your responses - always use actual display names or usernames`;
 
   private constructor() {
     this.initializeProviders();
@@ -803,9 +804,10 @@ export class AIManager {
           }
         );
 
-        finalContent = response.content;
-
+        // Only use content from iterations that don't make tool calls (the final response)
+        // If tool calls are present, the content is usually just "let me check..." placeholder text
         if (!response.toolCalls || response.toolCalls.length === 0) {
+          finalContent = response.content;
           break;
         }
 
@@ -915,7 +917,9 @@ export class AIManager {
             }
           } else {
             // For other tools, use formatted data or summary
+            // Check both toolResult.formatted (top-level) and toolResult.data?.formatted
             resultContent =
+              toolResult.formatted ||
               toolResult.data?.formatted ||
               toolResult.summary ||
               "Tool executed";
@@ -941,7 +945,8 @@ export class AIManager {
           });
           // Only add guidance for structured mode
           const iterationGuidance = updatedPolicy.applyGuidance ? `\n\nGuidance: ${updatedPolicy.guidance}` : "";
-          composedUser = `Context:\n\n${toolResultsText}${iterationGuidance}\n\nUser: ${userPrompt}`;
+          // Make it explicit that the AI should use tool results to answer the original question
+          composedUser = `Tool Results:\n\n${toolResultsText}${iterationGuidance}\n\nNow answer the user's question using the tool results above: ${userPrompt}`;
         }
       }
 
@@ -981,8 +986,17 @@ export class AIManager {
     if (config.ollamaUrl) {
       this.providers.set("ollama", new OllamaProvider());
     }
-    // Gemini will be initialized here once implemented
-    this.providers.set("gemini", new GeminiProvider()); // Stub for now
+    if (config.geminiApiKey) {
+      try {
+        const geminiProvider = new GeminiProvider();
+        this.providers.set("gemini", geminiProvider);
+        this.providers.set("gemini-flash", geminiProvider); // Alias used by TopicDriftDetector
+      } catch (error) {
+        console.warn("🔸 Failed to initialize Gemini provider:", error);
+      }
+    } else {
+      console.warn("🔸 GEMINI_API_KEY not set – skipping Gemini provider");
+    }
   }
 
   private getProvider(providerName: string): AIProvider {

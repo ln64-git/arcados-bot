@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { PostgreSQLManager } from "../features/database/PostgreSQLManager.js";
+import type { DatabaseResult } from "../features/database/PostgreSQLManager.js";
 import { AnalysisFormatter } from "./utils/analysis-formatter.js";
 
 interface RelationshipStats {
@@ -63,7 +64,7 @@ async function analyzeRelationships() {
 
 		// 1. Overall Statistics
 		AnalysisFormatter.subsection("Network Overview", 78);
-		const stats = await db.query<RelationshipStats>(
+		const stats = await db.query(
 			`SELECT
 				COUNT(*) as total_edges,
 				COUNT(CASE WHEN mentions > 0 THEN 1 END) as edges_with_mentions,
@@ -78,9 +79,9 @@ async function analyzeRelationships() {
 			FROM relationship_edges
 			WHERE guild_id = $1`,
 			[guildId]
-		);
+		) as DatabaseResult<RelationshipStats[]>;
 
-		if (stats.data && stats.data[0]) {
+		if (stats.success && stats.data && stats.data[0]) {
 			const s = stats.data[0];
 			const totalInteractions = (s.total_mentions || 0) + (s.total_replies || 0) + (s.total_reactions || 0);
 			const uniqueUsers = s.unique_users || 0;
@@ -108,7 +109,7 @@ async function analyzeRelationships() {
 
 		// 2. Top Users
 		AnalysisFormatter.subsection("Top 15 Most Active Users", 78);
-		const topUsers = await db.query<UserRank>(
+		const topUsers = await db.query(
 			`WITH user_totals AS (
 				SELECT user_a as user_id,
 					SUM(mentions + replies + reactions) as total_interactions,
@@ -133,9 +134,9 @@ async function analyzeRelationships() {
 			ORDER BY total_interactions DESC
 			LIMIT 15`,
 			[guildId]
-		);
+		) as DatabaseResult<UserRank[]>;
 
-		if (topUsers.data && topUsers.data.length > 0) {
+		if (topUsers.success && topUsers.data && topUsers.data.length > 0) {
 			const columns = [
 				{ header: "Rank", width: 5, align: "right" as const },
 				{ header: "User", width: 25, align: "left" as const },
@@ -165,7 +166,7 @@ async function analyzeRelationships() {
 
 		// 3. Strongest Bidirectional Relationships
 		AnalysisFormatter.subsection("Strongest Mutual Relationships", 78);
-		const strongestPairs = await db.query<RelationshipPair>(
+		const strongestPairs = await db.query(
 			`WITH pair_totals AS (
 				SELECT
 					LEAST(user_a, user_b) as user1,
@@ -188,9 +189,9 @@ async function analyzeRelationships() {
 			ORDER BY total_interactions DESC
 			LIMIT 15`,
 			[guildId]
-		);
+		) as DatabaseResult<RelationshipPair[]>;
 
-		if (strongestPairs.data && strongestPairs.data.length > 0) {
+		if (strongestPairs.success && strongestPairs.data && strongestPairs.data.length > 0) {
 			const columns = [
 				{ header: "Rank", width: 5, align: "right" as const },
 				{ header: "User 1", width: 22, align: "left" as const },

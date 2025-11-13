@@ -56,6 +56,8 @@ export interface ConversationEntry {
   interaction_types: string[]; // Types of interactions in this conversation
   duration_minutes: number;
   participant_count: number; // Number of participants in segment
+  participants?: string[];
+  participants?: string[]; // Optional participant list
   user_names?: {
     user1: string[];
     user2: string[];

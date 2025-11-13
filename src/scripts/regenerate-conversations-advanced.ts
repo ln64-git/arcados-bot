@@ -1,23 +1,18 @@
 import "dotenv/config";
+import { config } from "../config/index.js";
 import { PostgreSQLManager } from "../features/database/PostgreSQLManager.js";
 import { ConversationManager } from "../features/relationship-network/ConversationManager.js";
-
-// Known bot user IDs to exclude from conversation generation
-const BOT_USER_IDS = [
-	"356268235697553409", // .fmbot
-	"1290873223944343714", // Arcados-bot
-	"235148962103951360", // Carl-bot
-	"949731498808979557", // Euphony
-	"411916947773587456", // Jockie Music
-	"439205512425504771", // NotSoBot
-	"678344927997853742", // Sapphire
-	"778719049143025664", // Spoticord Music
-	"617037497574359050", // tip.cc
-];
+import { KNOWN_BOT_USER_IDS } from "../features/relationship-network/constants.js";
+import { AIManager } from "../features/ai-assistant/AIManager.js";
 
 async function regenerateConversationsAdvanced() {
 	const db = new PostgreSQLManager();
 	const conversationManager = new ConversationManager(db);
+	if (config.enableTopicSplitting) {
+		conversationManager.setAIManager(AIManager.getInstance());
+	} else {
+		console.log("🔸 ENABLE_TOPIC_SPLITTING is disabled; skipping AI topic splitting.");
+	}
 
 	try {
 		console.log("🔹 Connecting to database...");
@@ -96,7 +91,7 @@ async function regenerateConversationsAdvanced() {
 				WHERE guild_id = $1 AND channel_id = $2 AND active = true AND author_id != ALL($3::TEXT[])
 				ORDER BY created_at ASC
 			`,
-				[guildId, chId, BOT_USER_IDS]
+				[guildId, chId, KNOWN_BOT_USER_IDS]
 			);
 
 			if (!messagesResult.success || !messagesResult.data) {

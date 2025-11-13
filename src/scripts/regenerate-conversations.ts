@@ -1,23 +1,22 @@
 import "dotenv/config";
+import { config } from "../config/index.js";
 import { PostgreSQLManager } from "../features/database/PostgreSQLManager.js";
 import { ConversationManager } from "../features/relationship-network/ConversationManager.js";
+import { KNOWN_BOT_USER_IDS } from "../features/relationship-network/constants.js";
+import { AIManager } from "../features/ai-assistant/AIManager.js";
+import {
+	extractMentionedUserIds,
+	parseEmbedding,
+} from "../features/relationship-network/messageUtils.js";
 
-// Known bot user IDs to exclude from conversation generation
-const BOT_USER_IDS = [
-	"356268235697553409", // .fmbot
-	"1290873223944343714", // Arcados-bot
-	"235148962103951360", // Carl-bot
-	"949731498808979557", // Euphony
-	"411916947773587456", // Jockie Music
-	"439205512425504771", // NotSoBot
-	"678344927997853742", // Sapphire
-	"778719049143025664", // Spoticord Music
-	"617037497574359050", // tip.cc
-];
-
-async function regenerateConversations() {
+export async function regenerateConversationsForGuild(guildId: string): Promise<void> {
 	const db = new PostgreSQLManager();
 	const conversationManager = new ConversationManager(db);
+	if (config.enableTopicSplitting) {
+		conversationManager.setAIManager(AIManager.getInstance());
+	} else {
+		console.log("🔸 ENABLE_TOPIC_SPLITTING is disabled; skipping AI topic splitting.");
+	}
 
 	try {
 		console.log("🔹 Connecting to database...");
@@ -28,15 +27,6 @@ async function regenerateConversations() {
 		}
 
 		console.log("✅ Connected\n");
-
-		// Get guild ID from command line args or env
-		const guildId = process.argv[2] || process.env.GUILD_ID;
-
-		if (!guildId) {
-			console.error("🔸 Usage: npm run regenerate:conversations <guild_id>");
-			console.error("   Or set GUILD_ID in .env");
-			return;
-		}
 
 		console.log(
 			`🔹 Regenerating conversations for guild: ${guildId}\n`
@@ -70,7 +60,7 @@ async function regenerateConversations() {
 			WHERE guild_id = $1 AND active = true AND author_id != ALL($2::TEXT[])
 			ORDER BY created_at ASC
 		`,
-			[guildId, BOT_USER_IDS]
+			[guildId, KNOWN_BOT_USER_IDS]
 		);
 
 		if (!messagesResult.success || !messagesResult.data) {
@@ -106,42 +96,14 @@ async function regenerateConversations() {
 		let processed = 0;
 
 		// Extract mentions from content for each message
-		// Exclude mentions of bots
-		const mentionRegex = /<@!?(\d+)>/g;
-		const botUserIdSet = new Set(BOT_USER_IDS);
+		const botUserIdSet = new Set(KNOWN_BOT_USER_IDS);
 
 		for (const message of messages) {
-			const mentionedUsers: string[] = [];
-			let match;
-			while ((match = mentionRegex.exec(message.content || "")) !== null) {
-				const mentionedId = match[1];
-				// Skip if this mention is a bot
-				if (mentionedId && !botUserIdSet.has(mentionedId)) {
-					mentionedUsers.push(mentionedId);
-				}
-			}
-
-			// Parse embedding from database
-			// pgvector can return as array or PostgreSQL array string format
-			let embedding: number[] | undefined = undefined;
-			if (message.embedding) {
-				if (Array.isArray(message.embedding)) {
-					embedding = message.embedding as number[];
-				} else if (typeof message.embedding === 'string') {
-					// Parse PostgreSQL array format: "{1,2,3}" or JSON array format: "[1,2,3]"
-					try {
-						const embeddingStr: string = message.embedding;
-						let cleaned: string = embeddingStr.trim();
-						// Convert PostgreSQL array format {1,2,3} to JSON array format [1,2,3]
-						if (cleaned.startsWith('{') && cleaned.endsWith('}')) {
-							cleaned = '[' + cleaned.slice(1, -1) + ']';
-						}
-						embedding = JSON.parse(cleaned) as number[];
-					} catch {
-						// Silently skip if parsing fails (embedding will be undefined)
-					}
-				}
-			}
+			const mentionedUsers = extractMentionedUserIds(
+				message.content,
+				botUserIdSet
+			);
+			const embedding = parseEmbedding(message.embedding);
 
 			await conversationManager.addMessageToStream({
 				id: message.id,
@@ -187,9 +149,34 @@ async function regenerateConversations() {
 		console.log("\n✅ Regeneration complete!");
 	} catch (error) {
 		console.error("🔸 Error:", error);
+		throw error;
 	} finally {
 		await db.disconnect();
 	}
 }
 
-regenerateConversations();
+async function runFromCli() {
+	const guildId =
+		process.argv[2] || process.env.GUILD_ID || config.guildId;
+
+	if (!guildId) {
+		console.error(
+			"🔸 Guild ID is required. Provide it as an argument or set GUILD_ID in your environment."
+		);
+		process.exit(1);
+	}
+
+	try {
+		await regenerateConversationsForGuild(guildId);
+	} catch (error) {
+		console.error("🔸 Failed to regenerate conversations:", error);
+		process.exit(1);
+	}
+}
+
+const invokedDirectly =
+	process.argv[1]?.includes("regenerate-conversations") ?? false;
+
+if (invokedDirectly) {
+	runFromCli();
+}

@@ -25,16 +25,80 @@ interface Message {
   username?: string;
 }
 
+interface CliOptions {
+  guildId?: string;
+  lookbackHours: number;
+  label: string;
+}
+
+function parseCliOptions(): CliOptions {
+  const args = process.argv.slice(2);
+  let guildId: string | undefined;
+  let days: number | undefined;
+  let hours: number | undefined;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg) continue;
+
+    if (arg.startsWith("--")) {
+      const key = arg.replace(/^--/, "");
+      const next = args[i + 1];
+      switch (key) {
+        case "days":
+          if (next && !next.startsWith("--")) {
+            const value = Number(next);
+            if (!Number.isNaN(value) && value > 0) {
+              days = value;
+            }
+            i++;
+          }
+          break;
+        case "hours":
+          if (next && !next.startsWith("--")) {
+            const value = Number(next);
+            if (!Number.isNaN(value) && value > 0) {
+              hours = value;
+            }
+            i++;
+          }
+          break;
+        default:
+          break;
+      }
+    } else if (!guildId) {
+      guildId = arg;
+    }
+  }
+
+  const lookbackHours =
+    typeof hours === "number"
+      ? hours
+      : typeof days === "number"
+      ? days * 24
+      : 24;
+
+  const label =
+    typeof days === "number"
+      ? `${days} day${days === 1 ? "" : "s"}`
+      : `${lookbackHours} hour${lookbackHours === 1 ? "" : "s"}`;
+
+  return { guildId, lookbackHours, label };
+}
+
 async function inspectActiveConversations() {
   const db = new PostgreSQLManager();
 
   try {
     await db.connect();
 
-    const guildId = process.argv[2] || process.env.GUILD_ID;
+    const { guildId: cliGuildId, lookbackHours, label } = parseCliOptions();
+    const guildId = cliGuildId || process.env.GUILD_ID;
     if (!guildId) {
       console.error("\n❌ Error: Guild ID required");
-      console.error("Usage: npm run inspect:conversations <guild_id>\n");
+      console.error(
+        "Usage: npm run inspect:conversations <guild_id?> [--days N | --hours N]\n"
+      );
       return;
     }
 
@@ -46,12 +110,11 @@ async function inspectActiveConversations() {
     const guildName = guildResult.data?.[0]?.name || guildId;
 
     AnalysisFormatter.section(
-      `ACTIVE CONVERSATIONS (PAST 24 HOURS) - ${guildName.toUpperCase()}`,
+      `ACTIVE CONVERSATIONS (PAST ${label.toUpperCase()}) - ${guildName.toUpperCase()}`,
       90
     );
 
-    const twentyFourHoursAgo = new Date();
-    twentyFourHoursAgo.setHours(twentyFourHoursAgo.getHours() - 24);
+    const lookbackStart = new Date(Date.now() - lookbackHours * 60 * 60 * 1000);
 
     // Quick statistics
     AnalysisFormatter.subsection("Quick Statistics", 88);
@@ -70,7 +133,7 @@ async function inspectActiveConversations() {
 			FROM conversation_segments
 			WHERE guild_id = $1 AND start_time >= $2
 			`,
-      [guildId, twentyFourHoursAgo]
+      [guildId, lookbackStart]
     );
 
     if (stats.data && stats.data[0]) {
@@ -130,7 +193,7 @@ async function inspectActiveConversations() {
 			WHERE cs.guild_id = $1
 				AND cs.start_time >= $2
 			ORDER BY cs.start_time DESC`,
-      [guildId, twentyFourHoursAgo]
+      [guildId, lookbackStart]
     );
 
     if (!segmentsResult.success || !segmentsResult.data) {
@@ -310,7 +373,7 @@ async function inspectActiveConversations() {
 			WHERE cs.guild_id = $1 AND cs.start_time >= $2
 			GROUP BY cs.channel_id, c.name
 			ORDER BY segment_count DESC`,
-      [guildId, twentyFourHoursAgo]
+      [guildId, lookbackStart]
     );
 
     if (channelBreakdown.data && channelBreakdown.data.length > 0) {
@@ -350,7 +413,10 @@ async function inspectActiveConversations() {
     AnalysisFormatter.subsectionEnd(88);
 
     // Most active participants
-    AnalysisFormatter.subsection("Most Active Participants (24h)", 88);
+    AnalysisFormatter.subsection(
+      `Most Active Participants (${label})`,
+      88
+    );
 
     const participantActivity = await db.query(
       `SELECT
@@ -362,7 +428,7 @@ async function inspectActiveConversations() {
 			GROUP BY user_id
 			ORDER BY segment_count DESC
 			LIMIT 15`,
-      [guildId, twentyFourHoursAgo]
+      [guildId, lookbackStart]
     );
 
     if (participantActivity.data && participantActivity.data.length > 0) {

@@ -37,6 +37,30 @@ export interface BotConfig {
   // Ollama settings
   ollamaUrl?: string;
   ollamaModel?: string;
+
+  // Feature flags
+  enableTopicSplitting: boolean;
+}
+
+function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
+  if (value === undefined) {
+    return defaultValue;
+  }
+
+  switch (value.trim().toLowerCase()) {
+    case "1":
+    case "true":
+    case "yes":
+    case "on":
+      return true;
+    case "0":
+    case "false":
+    case "no":
+    case "off":
+      return false;
+    default:
+      return defaultValue;
+  }
 }
 
 function validateConfig(): BotConfig {
@@ -91,6 +115,12 @@ function validateConfig(): BotConfig {
     // Ollama settings
     ollamaUrl: process.env.OLLAMA_URL || undefined,
     ollamaModel: process.env.OLLAMA_MODEL || undefined,
+
+    // Feature flags
+    enableTopicSplitting: parseBoolean(
+      process.env.ENABLE_TOPIC_SPLITTING,
+      false
+    ),
   };
 
   // Validate node environment

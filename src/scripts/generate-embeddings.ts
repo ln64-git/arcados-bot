@@ -2,23 +2,17 @@ import { config } from "../config/index.js";
 import { PostgreSQLManager } from "../features/database/PostgreSQLManager.js";
 import { EmbeddingService } from "../features/embeddings/EmbeddingService.js";
 
-async function generateEmbeddings() {
-	const guildId = process.argv[2];
-
-	if (!guildId) {
-		console.error("🔸 Usage: npx tsx src/scripts/generate-embeddings.ts <guild_id>");
-		process.exit(1);
-	}
-
+export async function generateEmbeddingsForGuild(guildId: string): Promise<number> {
 	console.log(`🔹 Generating embeddings for guild: ${guildId}`);
 
 	const db = new PostgreSQLManager();
 	const embeddingService = EmbeddingService.getInstance();
 
+	let totalProcessed = 0;
+
 	try {
 		await db.connect();
 
-		let totalProcessed = 0;
 		let offset = 0;
 		const batchSize = 100;
 
@@ -60,14 +54,25 @@ async function generateEmbeddings() {
 					break;
 				}
 
-				const updates = messages.map((msg, idx) => ({
-					messageId: msg.id,
-					embedding: embeddings[idx]!,
-				})).filter(u => u.embedding !== undefined);
+				const updates = messages
+					.map((msg, idx) => ({
+						messageId: msg.id,
+						embedding: embeddings[idx]!,
+					}))
+					.filter((u) => u.embedding !== undefined) as Array<{
+					messageId: string;
+					embedding: number[];
+				}>;
+
+				if (updates.length === 0) {
+					console.log("🔸 No embeddings to update in this batch, continuing...");
+					offset += batchSize;
+					continue;
+				}
 
 				console.log(`🔹 Updating database with ${updates.length} embeddings...`);
 
-				const updateResult = await db.updateMessageEmbeddingsBatch(updates as { messageId: string; embedding: number[]; }[]);
+				const updateResult = await db.updateMessageEmbeddingsBatch(updates);
 
 				if (!updateResult.success) {
 					console.error(
@@ -101,14 +106,37 @@ async function generateEmbeddings() {
 
 		console.log(`🔹 Finished! Total messages processed: ${totalProcessed}`);
 	} catch (error) {
-		console.error("🔸 Fatal error:", error);
-		process.exit(1);
+		console.error("🔸 Fatal error during embedding generation:", error);
+		throw error;
 	} finally {
 		await db.disconnect();
 	}
+
+	return totalProcessed;
 }
 
-generateEmbeddings().catch((error) => {
-	console.error("🔸 Unhandled error:", error);
-	process.exit(1);
-});
+async function runFromCli() {
+	const guildId =
+		process.argv[2] || process.env.GUILD_ID || config.guildId;
+
+	if (!guildId) {
+		console.error(
+			"🔸 Guild ID is required. Pass it as an argument or set GUILD_ID in your environment."
+		);
+		process.exit(1);
+	}
+
+	try {
+		await generateEmbeddingsForGuild(guildId);
+	} catch (error) {
+		console.error("🔸 Unhandled error:", error);
+		process.exit(1);
+	}
+}
+
+const invokedDirectly =
+	process.argv[1]?.includes("generate-embeddings") ?? false;
+
+if (invokedDirectly) {
+	runFromCli();
+}

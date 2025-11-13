@@ -98,7 +98,7 @@ export class GeminiProvider extends BaseAIProvider {
 								functionResponse: {
 									name: toolResult.toolCallId,
 									response: {
-										result: toolResult.result,
+										result: toolResult.content,
 									},
 								},
 							},
