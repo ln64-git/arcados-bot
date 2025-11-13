@@ -34,7 +34,7 @@ async function testEnhancedBatchMode() {
 		const conversationManager = new ConversationManager(db);
 		const startTime = Date.now();
 
-		const result = await conversationManager.detectConversationsEnhanced(
+		const result = await conversationManager.detectConversationsOptimized(
 			CHANNEL_ID,
 			GUILD_ID,
 			TIME_WINDOW_HOURS,

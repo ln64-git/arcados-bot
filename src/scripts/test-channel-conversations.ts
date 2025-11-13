@@ -36,7 +36,7 @@ async function main() {
 
   try {
     const manager = new ConversationManager(db);
-    const result = await manager.detectConversationsEnhanced(
+    const result = await manager.detectConversationsOptimized(
       CHANNEL_ID,
       GUILD_ID,
       HOURS,

@@ -10,6 +10,11 @@ import type { AIManager } from "../ai-assistant/AIManager";
 import { EmbeddingService } from "../embeddings/EmbeddingService";
 import { KNOWN_BOT_USER_IDS } from "./constants";
 import { parseEmbedding as parseEmbeddingValue } from "./messageUtils";
+import { ConversationScorer } from "./ConversationScorer";
+import { ConversationValidator } from "./ConversationValidator";
+import { ConversationGrouper } from "./ConversationGrouper";
+import { ConversationGroup } from "./ConversationGroup";
+import type { GroupingContext } from "./strategies/GroupingStrategy";
 
 interface ActiveConversation {
   participants: Set<string>;
@@ -60,11 +65,16 @@ export class ConversationManager {
   private edgeCache: Map<string, CachedEdgeData> = new Map(); // Cache for edge queries
   private embeddingService = EmbeddingService.getInstance();
   private readonly EDGE_CACHE_TTL = 5 * 60 * 1000; // 5 minute cache TTL
-  private readonly INACTIVITY_MS = 3 * 60 * 1000; // 3 minute base inactivity to flush single-speaker runs sooner
-  private readonly INACTIVITY_MS_WITH_REPLIES = 10 * 60 * 1000; // 10 minutes when there are active replies/mentions
+  private readonly INACTIVITY_MS = 5 * 60 * 1000; // 5 minute base inactivity (increased from 3 to reduce fragmentation)
+  private readonly INACTIVITY_MS_WITH_REPLIES = 15 * 60 * 1000; // 15 minutes when there are active replies/mentions (increased from 10)
   private readonly MIN_MESSAGES = 2;
-  private readonly PRE_CONVERSATION_GRACE_MS = 2 * 60 * 1000; // Include up to 2 minutes of prelude chatter once a conversation forms
+  private readonly PRE_CONVERSATION_GRACE_MS = 3 * 60 * 1000; // Include up to 3 minutes of prelude chatter (increased from 2)
   private topicDriftDetector: TopicDriftDetector;
+
+  // New optimized components
+  private scorer: ConversationScorer;
+  private validator: ConversationValidator;
+  private grouper: ConversationGrouper<any>;
 
   // Time-based constraints to prevent unrealistic conversation grouping
   private readonly MAX_REPLY_CHAIN_GAP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days - don't follow reply chains older than this
@@ -97,6 +107,15 @@ export class ConversationManager {
   constructor(db: PostgreSQLManager) {
     this.db = db;
     this.topicDriftDetector = new TopicDriftDetector(this.db);
+
+    // Initialize optimized components
+    this.scorer = new ConversationScorer(this.db);
+    this.validator = new ConversationValidator(
+      this.MAX_CONVERSATION_DURATION_MS,
+      this.MAX_MESSAGE_GAP_MS,
+      this.MIN_MESSAGES
+    );
+    this.grouper = new ConversationGrouper(this.scorer);
   }
 
   /**
@@ -2373,9 +2392,11 @@ export class ConversationManager {
 
     // Group messages by reply chains and mentions before determining participants
     // This ensures messages that reply to each other stay together
-    const groupedMessages = await this.groupByReplyChainsAndMentions(
+    // OPTIMIZED: Use new strategy-based grouping
+    const groupedMessages = await this.groupMessagesOptimized(
       validMessages,
-      buffer.guildId
+      buffer.guildId,
+      buffer.channelId
     );
 
     if (groupedMessages.length === 0) {
@@ -4867,5 +4888,202 @@ export class ConversationManager {
     }
 
     return { isActive: false };
+  }
+
+  /**
+   * Generate a short hash from a string (for readable IDs)
+   */
+  private generateShortHash(input: string): string {
+    let hash = 0;
+    for (let i = 0; i < input.length; i++) {
+      const char = input.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32bit integer
+    }
+    return Math.abs(hash).toString(36).slice(0, 6);
+  }
+
+  /**
+   * Extract mentioned user IDs from message content
+   */
+  private extractMentionedUserIds(content: string): string[] {
+    const mentions: string[] = [];
+    const mentionPattern = /<@!?(\d+)>/g;
+    let match;
+
+    while ((match = mentionPattern.exec(content)) !== null) {
+      if (match[1]) {
+        mentions.push(match[1]);
+      }
+    }
+
+    return mentions;
+  }
+
+  /**
+   * OPTIMIZED: Group messages into conversations using the new strategy-based approach
+   * This replaces the old groupReplyChains method with improved performance and maintainability
+   *
+   * Key optimizations:
+   * - Messages are pre-sorted once (no redundant sorting)
+   * - Scoring logic centralized in ConversationScorer
+   * - Validation logic centralized in ConversationValidator
+   * - Strategy pattern for clean separation of grouping approaches
+   * - Cached metadata for repeated operations
+   */
+  private async groupMessagesOptimized<
+    T extends {
+      id: string;
+      author_id: string;
+      content: string;
+      created_at: Date;
+      referenced_message_id?: string;
+      mentioned_user_ids?: string[];
+      embedding?: number[];
+    }
+  >(
+    messages: T[],
+    guildId: string,
+    channelId: string
+  ): Promise<Array<{ messages: T[] }>> {
+    if (messages.length === 0) {
+      return [];
+    }
+
+    // PRE-SORT OPTIMIZATION: Sort messages once at the beginning
+    // All subsequent operations assume messages are sorted
+    const sortedMessages = [...messages].sort(
+      (a, b) => a.created_at.getTime() - b.created_at.getTime()
+    );
+
+    // Build message map for quick lookup
+    const messageMap = new Map<string, T>();
+    for (const msg of sortedMessages) {
+      messageMap.set(msg.id, msg);
+    }
+
+    // Create grouping context
+    const context: GroupingContext = {
+      guildId,
+      channelId,
+      messageMap,
+    };
+
+    // Use the strategy-based grouper to detect conversations
+    const groups = await this.grouper.groupMessages(sortedMessages, context);
+
+    // Filter and validate groups
+    const validGroups: Array<{ messages: T[] }> = [];
+
+    for (const group of groups) {
+      const groupMessages = group.getMessages(messageMap);
+      const messageIds = group.getMessageIds();
+
+      // Validate the conversation
+      if (this.validator.isValidConversation(groupMessages, messageIds)) {
+        validGroups.push({ messages: groupMessages });
+      }
+    }
+
+    return validGroups;
+  }
+
+  /**
+   * Public method to use the optimized grouping
+   * Can be called externally for testing or direct usage
+   */
+  async detectConversationsOptimized(
+    channelId: string,
+    guildId: string,
+    timeWindowHours: number = 24,
+    minMessages: number = 2
+  ): Promise<DatabaseResult<ConversationEntry[]>> {
+    const perfStart = Date.now();
+    try {
+      const cutoffTime = new Date();
+      cutoffTime.setHours(cutoffTime.getHours() - timeWindowHours);
+
+      // Fetch messages from channel
+      const fetchStart = Date.now();
+      const messagesResult = await this.db.query(
+        `SELECT
+          m.id, m.author_id, m.content, m.created_at, m.referenced_message_id,
+          m.embedding
+        FROM messages m
+        WHERE m.channel_id = $1
+          AND m.guild_id = $2
+          AND m.created_at >= $3
+          AND m.author_id NOT IN (${KNOWN_BOT_USER_IDS.map((_, i) => `$${i + 4}`).join(", ")})
+        ORDER BY m.created_at ASC`,
+        [channelId, guildId, cutoffTime, ...KNOWN_BOT_USER_IDS]
+      );
+
+      if (!messagesResult.success || !messagesResult.data) {
+        return { success: false, error: messagesResult.error };
+      }
+
+      const fetchTime = Date.now() - fetchStart;
+      const messages = messagesResult.data.map((row: any) => ({
+        id: row.id,
+        author_id: row.author_id,
+        content: row.content || "",
+        created_at: new Date(row.created_at),
+        referenced_message_id: row.referenced_message_id,
+        mentioned_user_ids: this.extractMentionedUserIds(row.content || ""),
+        embedding: row.embedding ? parseEmbeddingValue(row.embedding) : undefined,
+      }));
+
+      // Use optimized grouping
+      const groupStart = Date.now();
+      const groups = await this.groupMessagesOptimized(messages, guildId, channelId);
+      const groupTime = Date.now() - groupStart;
+
+      // Convert to ConversationEntry format
+      const conversations: ConversationEntry[] = [];
+      for (const group of groups) {
+        if (group.messages.length < minMessages) continue;
+
+        const participants = new Set(group.messages.map((m) => m.author_id));
+        const messageIds = group.messages.map((m) => m.id);
+        const startTime = group.messages[0]!.created_at;
+        const endTime = group.messages[group.messages.length - 1]!.created_at;
+
+        // Create readable segment ID: conv_YYYYMMDD_HHMM_hash
+        const dateStr = startTime.toISOString().split('T')[0]!.replace(/-/g, '');
+        const timeStr = startTime.toISOString().split('T')[1]!.slice(0, 5).replace(':', '');
+        const hash = this.generateShortHash(`${channelId}-${startTime.getTime()}`);
+        const readableId = `conv_${dateStr}_${timeStr}_${hash}`;
+
+        conversations.push({
+          segment_id: readableId,
+          conversation_id: readableId,
+          start_time: startTime,
+          end_time: endTime,
+          message_count: group.messages.length,
+          participant_count: participants.size,
+          participants: Array.from(participants),
+          channel_id: channelId,
+          message_ids: messageIds,
+          interaction_types: [],
+          duration_minutes: Math.round(
+            (endTime.getTime() - startTime.getTime()) / (1000 * 60)
+          ),
+        });
+      }
+
+      const totalTime = Date.now() - perfStart;
+      console.log(
+        `📊 [OPTIMIZED] Detected ${conversations.length} conversations from ${messages.length} messages ` +
+        `(fetch: ${fetchTime}ms, group: ${groupTime}ms, total: ${totalTime}ms)`
+      );
+
+      return { success: true, data: conversations };
+    } catch (error) {
+      console.error("Error detecting conversations (optimized):", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 }
