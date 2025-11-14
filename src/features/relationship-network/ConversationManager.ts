@@ -15,6 +15,8 @@ import { ConversationValidator } from "./ConversationValidator";
 import { ConversationGrouper } from "./ConversationGrouper";
 import { ConversationGroup } from "./ConversationGroup";
 import type { GroupingContext } from "./strategies/GroupingStrategy";
+import { KeywordExtractor } from "../keywords/KeywordExtractor";
+import type { KeywordMessage } from "../keywords/types";
 
 interface ActiveConversation {
   participants: Set<string>;
@@ -67,7 +69,7 @@ export class ConversationManager {
   private readonly EDGE_CACHE_TTL = 5 * 60 * 1000; // 5 minute cache TTL
   private readonly INACTIVITY_MS = 5 * 60 * 1000; // 5 minute base inactivity (increased from 3 to reduce fragmentation)
   private readonly INACTIVITY_MS_WITH_REPLIES = 15 * 60 * 1000; // 15 minutes when there are active replies/mentions (increased from 10)
-  private readonly MIN_MESSAGES = 2;
+  private readonly MIN_MESSAGES = 3;
   private readonly PRE_CONVERSATION_GRACE_MS = 3 * 60 * 1000; // Include up to 3 minutes of prelude chatter (increased from 2)
   private topicDriftDetector: TopicDriftDetector;
 
@@ -75,6 +77,7 @@ export class ConversationManager {
   private scorer: ConversationScorer;
   private validator: ConversationValidator;
   private grouper: ConversationGrouper<any>;
+  private keywordExtractor: KeywordExtractor;
 
   // Time-based constraints to prevent unrealistic conversation grouping
   private readonly MAX_REPLY_CHAIN_GAP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days - don't follow reply chains older than this
@@ -116,6 +119,7 @@ export class ConversationManager {
       this.MIN_MESSAGES
     );
     this.grouper = new ConversationGrouper(this.scorer);
+    this.keywordExtractor = new KeywordExtractor(this.db);
   }
 
   /**
@@ -1802,15 +1806,14 @@ export class ConversationManager {
     }
 
     // Convert groups back to message arrays, filtering out groups that are too small
-    // Use conditional MIN_MESSAGES: 2 for conversations with replies/mentions, 3 otherwise
     const result: Array<{ messages: typeof messages }> = [];
     for (const group of allGroups) {
-      if (group.size >= 2) {  // Initial check with minimum of 2
+      if (group.size >= this.MIN_MESSAGES) {
         const groupMessages = Array.from(group)
           .map((id) => messageMap.get(id))
           .filter((m): m is (typeof messages)[0] => m !== undefined);
 
-        if (groupMessages.length >= 2) {
+        if (groupMessages.length >= this.MIN_MESSAGES) {
           // Sort chronologically for gap checking
           groupMessages.sort((a, b) => a.created_at.getTime() - b.created_at.getTime());
 
@@ -1841,8 +1844,6 @@ export class ConversationManager {
             }
           }
 
-          // Verify this group has actual conversation connections (replies or mentions)
-          // Not just random messages grouped by time
           const hasReplyConnections = groupMessages.some(
             (m) => m.referenced_message_id && group.has(m.referenced_message_id)
           );
@@ -1850,14 +1851,8 @@ export class ConversationManager {
             (m) => m.mentioned_user_ids && m.mentioned_user_ids.length > 0
           );
 
-          // Conditional minimum: 2 messages for conversations with explicit connections, 3 otherwise
-          const minRequired = (hasReplyConnections || hasMentions) ? 2 : this.MIN_MESSAGES;
-
-          if (groupMessages.length >= minRequired) {
-            // Include if has explicit connections OR meets the higher threshold
-            if (hasReplyConnections || hasMentions) {
-              result.push({ messages: groupMessages });
-            }
+          if (groupMessages.length >= this.MIN_MESSAGES && (hasReplyConnections || hasMentions)) {
+            result.push({ messages: groupMessages });
           }
         }
       }
@@ -2399,16 +2394,6 @@ export class ConversationManager {
       buffer.channelId
     );
 
-    if (groupedMessages.length === 0) {
-      console.log(
-        `🔸 No grouped clusters for ${bufferKey}; attempting temporal fallback`
-      );
-    }
-
-    console.log(
-      `🔸 Finalizing buffer ${bufferKey}: ${validMessages.length} valid messages, ${groupedMessages.length} grouped clusters`
-    );
-
     // Merge overlapping groups into a single multi-participant conversation
     // Groups overlap if they share messages or have overlapping participants in the same time window
     const mergedGroups = this.mergeOverlappingGroups(groupedMessages);
@@ -2455,9 +2440,7 @@ export class ConversationManager {
       }))
       .filter((group) => group.messages.length >= this.MIN_MESSAGES);
 
-    console.log(
-      `🔸 Buffer ${bufferKey}: merged groups ${mergedGroups.length}, filtered ${filteredMergedGroups.length}`
-    );
+
 
     if (filteredMergedGroups.length === 0) {
       return; // All messages already in segments
@@ -2466,9 +2449,6 @@ export class ConversationManager {
     // Merge again after filtering to ensure groups that share remaining messages are combined
     // This prevents creating duplicate segments from groups that had overlapping messages
     let candidateGroups = this.mergeOverlappingGroups(filteredMergedGroups);
-    console.log(
-      `🔸 Buffer ${bufferKey}: final merged groups ${candidateGroups.length}`
-    );
 
     if (candidateGroups.length === 0) {
       candidateGroups = this.createTemporalSegments(validMessages);
@@ -2549,6 +2529,30 @@ export class ConversationManager {
             m.referenced_message_id !== null
       ).length,
     };
+
+      // Extract keywords for this conversation segment
+      try {
+        const keywordMessages: KeywordMessage[] = segmentMessages.map((m) => ({
+          id: m.id,
+          content: m.content,
+          embedding: (m as any).embedding, // Embedding might not be in type but can be present
+          author_id: m.author_id,
+        }));
+
+        const keywords = await this.keywordExtractor.extractKeywords(
+          keywordMessages,
+          buffer.guildId,
+          { topN: 10, method: "hybrid" }
+        );
+
+        features.keywords = keywords;
+      } catch (error) {
+        console.error(
+          `🔸 Failed to extract keywords for segment ${segmentId}:`,
+          error
+        );
+        // Continue without keywords if extraction fails
+      }
 
       const summary = this.generateSegmentSummary(segmentMessages, participants);
 
@@ -3013,13 +3017,14 @@ export class ConversationManager {
     const boundaries = [0];
     const maxIndex = driftMessages.length;
     for (const split of splits) {
+      const lastBoundary = boundaries[boundaries.length - 1] ?? 0;
       const rawIndex = Math.round(split.splitIndex);
       const clamped = Math.max(
         this.MIN_MESSAGES,
         Math.min(maxIndex - this.MIN_MESSAGES, rawIndex)
       );
       if (
-        clamped > boundaries[boundaries.length - 1] &&
+        clamped > lastBoundary &&
         clamped < maxIndex
       ) {
         boundaries.push(clamped);
@@ -3068,7 +3073,11 @@ export class ConversationManager {
       )}) into ${chunkData.length} topics`
     );
 
-    const [firstChunk, ...extraChunks] = chunkData;
+    const firstChunk = chunkData[0];
+    if (!firstChunk) {
+      return;
+    }
+    const extraChunks = chunkData.slice(1);
 
     await this.db.upsertConversationSegment({
       id: segmentId,
@@ -3086,7 +3095,11 @@ export class ConversationManager {
     await this.upsertParticipantPairs(guildId, firstChunk.participants, segmentId);
 
     for (const chunk of extraChunks) {
-      const newSegmentId = `seg_${chunk.messageIds[0]}_${Date.now()}_${Math.random()
+      const firstMessageId = chunk.messageIds[0];
+      if (!firstMessageId) {
+        continue;
+      }
+      const newSegmentId = `seg_${firstMessageId}_${Date.now()}_${Math.random()
         .toString(36)
         .substring(7)}`;
       await this.db.upsertConversationSegment({
@@ -3146,8 +3159,13 @@ export class ConversationManager {
     }
 
     const messageIds = messages.map((m) => m.id);
-    const startTime = messages[0].created_at;
-    const endTime = messages[messages.length - 1].created_at;
+    const firstMessage = messages[0];
+    const lastMessage = messages[messages.length - 1];
+    if (!firstMessage || !lastMessage) {
+      return null;
+    }
+    const startTime = firstMessage.created_at;
+    const endTime = lastMessage.created_at;
     const features: Record<string, any> = {
       mention_count: 0,
       reply_count: messages.filter((m) => m.referenced_message_id).length,
@@ -3657,11 +3675,16 @@ export class ConversationManager {
     segmentId: string
   ): Promise<void> {
     for (let i = 0; i < participants.length; i++) {
+      const participantI = participants[i];
+      if (!participantI) {
+        continue;
+      }
       for (let j = i + 1; j < participants.length; j++) {
-        if (participants[i] === participants[j]) {
+        const participantJ = participants[j];
+        if (!participantJ || participantI === participantJ) {
           continue;
         }
-        await this.db.upsertPair(guildId, participants[i], participants[j], segmentId);
+        await this.db.upsertPair(guildId, participantI, participantJ, segmentId);
       }
     }
   }

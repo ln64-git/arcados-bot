@@ -54,7 +54,14 @@
 		"consolidate:segments": "npx tsx src/scripts/consolidate-segments.ts",
 		"split:conversations": "npx tsx src/scripts/split-conversations-by-topic.ts",
 		"recreate:schema": "npx tsx src/scripts/recreate-postgres-schema.ts",
-		"drop:all": "npx tsx src/scripts/drop-all-postgres-data.ts"
+		"drop:all": "npx tsx src/scripts/drop-all-postgres-data.ts",
+		"keywords:build-vocabulary": "npx tsx src/scripts/build-keyword-vocabulary.ts",
+		"keywords:extract-all": "npx tsx src/scripts/extract-conversation-keywords.ts",
+		"keywords:analyze": "npx tsx src/scripts/analyze-keyword-quality.ts",
+		"conversations:regroup-keywords": "npx tsx src/scripts/regroup-conversations-with-keywords.ts",
+		"conversations:analyze-keyword-groups": "npx tsx src/scripts/analyze-keyword-conversation-groups.ts",
+		"analyze:24h-tuning": "npx tsx src/scripts/analyze-24h-tuning.ts",
+		"gemini:topic-sort": "bun --bun src/scripts/run-gemini-topic-sorting.ts"
 	},
 	"keywords": [
 		"discord",

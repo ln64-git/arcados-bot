@@ -1,8 +1,9 @@
 import type { PostgreSQLManager } from "../database/PostgreSQLManager";
+import type { KeywordScore } from "../keywords/types";
 
 /**
  * Centralized scoring logic for conversation grouping
- * Calculates relationship, semantic, and temporal scores to determine
+ * Calculates relationship, semantic, temporal, and keyword scores to determine
  * if messages belong to the same conversation
  */
 export class ConversationScorer {
@@ -11,9 +12,10 @@ export class ConversationScorer {
   private readonly EDGE_CACHE_TTL = 5 * 60 * 1000; // 5 minute cache TTL
 
   // Scoring weights (sum to 1.0)
-  private readonly RELATIONSHIP_WEIGHT = 0.5;
-  private readonly SEMANTIC_WEIGHT = 0.3;
-  private readonly TIME_WEIGHT = 0.2;
+  private readonly RELATIONSHIP_WEIGHT = 0.45; // Reduced from 0.5
+  private readonly SEMANTIC_WEIGHT = 0.25; // Reduced from 0.3
+  private readonly TIME_WEIGHT = 0.2; // Unchanged
+  private readonly KEYWORD_WEIGHT = 0.1; // New keyword dimension
 
   // Thresholds
   private readonly COMBINED_SCORE_THRESHOLD = 0.35;
@@ -107,18 +109,77 @@ export class ConversationScorer {
   }
 
   /**
+   * Calculate keyword overlap score (0-1)
+   * Measures how many keywords are shared between message and group
+   */
+  calculateKeywordScore(
+    messageKeywords: KeywordScore[] | undefined,
+    groupKeywords: KeywordScore[] | undefined
+  ): number {
+    if (!messageKeywords || !groupKeywords ||
+        messageKeywords.length === 0 || groupKeywords.length === 0) {
+      return 0;
+    }
+
+    // Create sets of keyword terms for overlap calculation
+    const messageTerms = new Set(messageKeywords.map(k => k.word.toLowerCase()));
+    const groupTerms = new Set(groupKeywords.map(k => k.word.toLowerCase()));
+
+    // Calculate Jaccard similarity: intersection / union
+    const intersection = new Set(
+      [...messageTerms].filter(term => groupTerms.has(term))
+    );
+    const union = new Set([...messageTerms, ...groupTerms]);
+
+    // Jaccard coefficient
+    const jaccardScore = intersection.size / union.size;
+
+    // Also consider weighted overlap based on keyword importance
+    const messageScoreMap = new Map(
+      messageKeywords.map(k => [k.word.toLowerCase(), k.score])
+    );
+    const groupScoreMap = new Map(
+      groupKeywords.map(k => [k.word.toLowerCase(), k.score])
+    );
+
+    let weightedOverlap = 0;
+    let totalPossibleWeight = 0;
+
+    for (const term of union) {
+      const messageScore = messageScoreMap.get(term) || 0;
+      const groupScore = groupScoreMap.get(term) || 0;
+
+      // Shared importance
+      weightedOverlap += Math.min(messageScore, groupScore);
+      // Maximum possible importance
+      totalPossibleWeight += Math.max(messageScore, groupScore);
+    }
+
+    const weightedScore = totalPossibleWeight > 0
+      ? weightedOverlap / totalPossibleWeight
+      : 0;
+
+    // Combine Jaccard and weighted scores (favor weighted)
+    return 0.3 * jaccardScore + 0.7 * weightedScore;
+  }
+
+  /**
    * Calculate combined score from individual components
-   * Uses weighted average of relationship, semantic, and time scores
+   * Uses weighted average of relationship, semantic, temporal, and keyword scores
    */
   calculateCombinedScore(scores: {
     relationship: number;
     semantic: number;
     time: number;
+    keywords?: number;
   }): number {
+    const keywordScore = scores.keywords ?? 0;
+
     return (
       scores.relationship * this.RELATIONSHIP_WEIGHT +
       scores.semantic * this.SEMANTIC_WEIGHT +
-      scores.time * this.TIME_WEIGHT
+      scores.time * this.TIME_WEIGHT +
+      keywordScore * this.KEYWORD_WEIGHT
     );
   }
 
@@ -132,11 +193,12 @@ export class ConversationScorer {
   /**
    * Get scoring weights for external use (e.g., debugging)
    */
-  getWeights(): { relationship: number; semantic: number; time: number } {
+  getWeights(): { relationship: number; semantic: number; time: number; keywords: number } {
     return {
       relationship: this.RELATIONSHIP_WEIGHT,
       semantic: this.SEMANTIC_WEIGHT,
       time: this.TIME_WEIGHT,
+      keywords: this.KEYWORD_WEIGHT,
     };
   }
 

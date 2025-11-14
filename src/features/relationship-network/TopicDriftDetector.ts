@@ -1,6 +1,8 @@
 import type { AIManager } from "../ai-assistant/AIManager";
 import type { PostgreSQLManager } from "../database/PostgreSQLManager";
 import { EmbeddingService } from "../embeddings/EmbeddingService";
+import { TFIDFExtractor } from "../keywords/TFIDFExtractor";
+import type { KeywordMessage } from "../keywords/types";
 
 export interface Message {
   id: string;
@@ -44,6 +46,7 @@ export class TopicDriftDetector {
   private aiManager: AIManager | null;
   private embeddingService: EmbeddingService;
   private db: PostgreSQLManager;
+  private tfidfExtractor: TFIDFExtractor;
   private readonly aiFailureCooldownMs: number;
   private aiCooldownUntil: number | null = null;
 
@@ -55,6 +58,12 @@ export class TopicDriftDetector {
   // Use Gemini Flash for topic labeling (fast, free tier, good for utility work)
   // Final AI assistant responses use Grok
   private readonly TOPIC_MODEL = "gemini-flash" as const;
+  private readonly AI_USAGE_WINDOW_MS = 60 * 1000; // Track AI usage per minute
+  private readonly AI_MAX_CALLS_PER_WINDOW = 20; // Max AI calls per window
+  private readonly AI_THROTTLE_COOLDOWN_MS = 60 * 1000; // Cooldown after hitting limit
+  private readonly AI_THROTTLE_LOG_INTERVAL_MS = 10 * 1000;
+  private aiUsageHistory: number[] = [];
+  private lastAiThrottleLog = 0;
 
   constructor(
     db: PostgreSQLManager,
@@ -63,6 +72,7 @@ export class TopicDriftDetector {
     this.aiManager = options.aiManager ?? null;
     this.embeddingService = EmbeddingService.getInstance();
     this.db = db;
+    this.tfidfExtractor = new TFIDFExtractor();
     this.aiFailureCooldownMs = options.aiFailureCooldownMs ?? 30 * 60 * 1000;
   }
 
@@ -74,10 +84,30 @@ export class TopicDriftDetector {
   }
 
   private canUseAI(): boolean {
-    return (
-      !!this.aiManager &&
-      (!this.aiCooldownUntil || Date.now() >= this.aiCooldownUntil)
-    );
+    if (!this.aiManager) {
+      return false;
+    }
+
+    const now = Date.now();
+
+    if (this.aiCooldownUntil && now < this.aiCooldownUntil) {
+      return false;
+    }
+
+    this.cleanupAIUsageHistory(now);
+
+    if (this.aiUsageHistory.length >= this.AI_MAX_CALLS_PER_WINDOW) {
+      if (now - this.lastAiThrottleLog > this.AI_THROTTLE_LOG_INTERVAL_MS) {
+        console.warn(
+          "🔸 TopicDriftDetector throttling Gemini usage to avoid rate limits."
+        );
+        this.lastAiThrottleLog = now;
+      }
+      this.aiCooldownUntil = now + this.AI_THROTTLE_COOLDOWN_MS;
+      return false;
+    }
+
+    return true;
   }
 
   private registerAIFailure(error: unknown): void {
@@ -86,6 +116,28 @@ export class TopicDriftDetector {
       "🔸 TopicDriftDetector AI failure; entering cooldown:",
       error instanceof Error ? error.message : error
     );
+  }
+
+  private recordAIUsage(): void {
+    this.aiUsageHistory.push(Date.now());
+  }
+
+  private cleanupAIUsageHistory(now: number): void {
+    if (this.aiUsageHistory.length === 0) {
+      return;
+    }
+    const cutoff = now - this.AI_USAGE_WINDOW_MS;
+    // Remove timestamps older than cutoff
+    let firstValidIndex = 0;
+    while (
+      firstValidIndex < this.aiUsageHistory.length &&
+      this.aiUsageHistory[firstValidIndex]! < cutoff
+    ) {
+      firstValidIndex++;
+    }
+    if (firstValidIndex > 0) {
+      this.aiUsageHistory = this.aiUsageHistory.slice(firstValidIndex);
+    }
   }
 
   /**
@@ -126,6 +178,7 @@ Respond with ONLY the topic label, nothing else. Examples: "planning dinner", "g
 
     if (this.canUseAI()) {
       try {
+        this.recordAIUsage();
         const response = await this.aiManager!.generateText(
           prompt,
           userId,
@@ -146,6 +199,10 @@ Respond with ONLY the topic label, nothing else. Examples: "planning dinner", "g
             confidence: 0.8,
             timestamp: new Date(),
           };
+        } else {
+          this.registerAIFailure(
+            new Error(response.error || "AI response missing content")
+          );
         }
       } catch (error) {
         this.registerAIFailure(error);
@@ -474,6 +531,7 @@ Response format: Either "continue" OR "split: [2-5 word topic label]"`;
 
     if (this.canUseAI()) {
       try {
+        this.recordAIUsage();
         const response = await this.aiManager!.generateText(
           prompt,
           userId,
@@ -515,6 +573,10 @@ Response format: Either "continue" OR "split: [2-5 word topic label]"`;
               confidence: 0.85,
             };
           }
+        } else {
+          this.registerAIFailure(
+            new Error(response.error || "AI response missing content")
+          );
         }
       } catch (error) {
         this.registerAIFailure(error);
@@ -577,6 +639,7 @@ Be balanced - group related subtopics together, but split clearly different disc
 
     if (this.canUseAI()) {
       try {
+        this.recordAIUsage();
         const response = await this.aiManager!.generateText(
           prompt,
           userId,
@@ -593,6 +656,10 @@ Be balanced - group related subtopics together, but split clearly different disc
             different: content.includes("different"),
             confidence: 0.8,
           };
+        } else {
+          this.registerAIFailure(
+            new Error(response.error || "AI response missing content")
+          );
         }
       } catch (error) {
         this.registerAIFailure(error);
@@ -731,71 +798,32 @@ Be balanced - group related subtopics together, but split clearly different disc
   /**
    * Extract keywords from text (simplified)
    */
+  /**
+   * Extract keywords using TF-IDF (no hardcoded stopwords)
+   * Uses simple frequency-based approach when vocabulary is not available
+   */
   private extractKeywords(text: string): Set<string> {
-    const stopwords = new Set([
-      "the",
-      "a",
-      "an",
-      "and",
-      "or",
-      "but",
-      "in",
-      "on",
-      "at",
-      "to",
-      "for",
-      "of",
-      "with",
-      "by",
-      "from",
-      "as",
-      "is",
-      "was",
-      "are",
-      "were",
-      "be",
-      "been",
-      "being",
-      "have",
-      "has",
-      "had",
-      "do",
-      "does",
-      "did",
-      "will",
-      "would",
-      "could",
-      "should",
-      "may",
-      "might",
-      "can",
-      "this",
-      "that",
-      "these",
-      "those",
-      "i",
-      "you",
-      "he",
-      "she",
-      "it",
-      "we",
-      "they",
-      "my",
-      "your",
-      "his",
-      "her",
-      "its",
-      "our",
-      "their",
-    ]);
+    // Create a simple KeywordMessage for TF-IDF extraction
+    const message: KeywordMessage = {
+      id: "temp",
+      content: text,
+      author_id: "system",
+    };
 
-    const words = text
-      .toLowerCase()
-      .replace(/[^\w\s]/g, " ")
-      .split(/\s+/)
-      .filter((word) => word.length > 2 && !stopwords.has(word));
-
-    return new Set(words);
+    try {
+      // Use TF-IDF's simple extraction (no vocabulary needed)
+      const keywords = this.tfidfExtractor.extractKeywordsSimple([message], 5);
+      return new Set(keywords.map((k) => k.word));
+    } catch (error) {
+      console.error("🔸 Failed to extract keywords with TF-IDF:", error);
+      // Fallback to basic tokenization if TF-IDF fails
+      const words = text
+        .toLowerCase()
+        .replace(/[^\w\s]/g, " ")
+        .split(/\s+/)
+        .filter((word) => word.length > 2);
+      return new Set(words.slice(0, 5));
+    }
   }
 
   /**

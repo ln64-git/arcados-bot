@@ -407,6 +407,20 @@ export class PostgreSQLManager {
 				)
 			`);
 
+      // Guild vocabulary - TF-IDF vocabulary for keyword extraction
+      await client.query(`
+				CREATE TABLE IF NOT EXISTS guild_vocabulary (
+					guild_id VARCHAR(20) NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+					term VARCHAR(100) NOT NULL,
+					idf_score FLOAT NOT NULL,
+					document_frequency INTEGER NOT NULL,
+					total_documents INTEGER NOT NULL,
+					is_stopword BOOLEAN DEFAULT false,
+					last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					PRIMARY KEY (guild_id, term)
+				)
+			`);
+
       // Add last_message_id to channels for watermark tracking
       await client.query(`
 				ALTER TABLE channels
@@ -437,6 +451,9 @@ export class PostgreSQLManager {
 				CREATE INDEX IF NOT EXISTS idx_conversation_segments_active_users ON conversation_segments(guild_id, status) WHERE status = 'active';
 				CREATE INDEX IF NOT EXISTS idx_relationship_pairs_guild ON relationship_pairs(guild_id);
 				CREATE INDEX IF NOT EXISTS idx_relationship_pairs_users ON relationship_pairs(u_min, u_max);
+				CREATE INDEX IF NOT EXISTS idx_guild_vocabulary_guild ON guild_vocabulary(guild_id);
+				CREATE INDEX IF NOT EXISTS idx_guild_vocabulary_term ON guild_vocabulary(term);
+				CREATE INDEX IF NOT EXISTS idx_guild_vocabulary_idf ON guild_vocabulary(guild_id, idf_score DESC);
 				CREATE INDEX IF NOT EXISTS messages_embedding_idx
 					ON messages USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
 					WHERE embedding IS NOT NULL;

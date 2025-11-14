@@ -9,14 +9,24 @@ import {
   parseEmbedding,
 } from "../features/relationship-network/messageUtils.js";
 
+export interface BackfillOptions {
+  channelIds?: string[];
+  sleepBetweenChannelsMs?: number;
+  forceEnableTopicSplitting?: boolean;
+}
+
 export async function backfillRecentConversations(
   guildId: string,
-  hours: number = 24
+  hours: number = 24,
+  options: BackfillOptions = {}
 ): Promise<void> {
   const since = new Date(Date.now() - hours * 60 * 60 * 1000);
   const db = new PostgreSQLManager();
   const conversationManager = new ConversationManager(db);
-  if (config.enableTopicSplitting) {
+  const useTopicSplitting =
+    options.forceEnableTopicSplitting ?? config.enableTopicSplitting;
+
+  if (useTopicSplitting) {
     const aiManager = AIManager.getInstance();
     conversationManager.setAIManager(aiManager);
   } else {
@@ -35,25 +45,35 @@ export async function backfillRecentConversations(
   }
 
   try {
-    const channelsResult = await db.query(
-      `
+    let channels: string[] | undefined = options.channelIds;
+
+    if (!channels || channels.length === 0) {
+      const channelsResult = await db.query(
+        `
         SELECT DISTINCT channel_id
         FROM messages
         WHERE guild_id = $1
           AND active = true
           AND created_at >= $2
       `,
-      [guildId, since]
-    );
+        [guildId, since]
+      );
 
-    if (!channelsResult.success || !channelsResult.data) {
-      console.warn("🔸 No recent channels found for backfill.");
+      if (!channelsResult.success || !channelsResult.data) {
+        console.warn("🔸 No recent channels found for backfill.");
+        return;
+      }
+
+      channels = channelsResult.data.map(
+        (row: { channel_id: string }) => row.channel_id
+      );
+    }
+
+    if (!channels || channels.length === 0) {
+      console.warn("🔸 No channels specified or discovered for backfill.");
       return;
     }
 
-    const channels: string[] = channelsResult.data.map(
-      (row: { channel_id: string }) => row.channel_id
-    );
     const botUserIdSet = new Set(KNOWN_BOT_USER_IDS);
 
     for (const channelId of channels) {
@@ -135,6 +155,15 @@ export async function backfillRecentConversations(
 
       await conversationManager.finalizeAllSegments();
       console.log("   ✅ Channel backfill complete.");
+
+      if (
+        options.sleepBetweenChannelsMs &&
+        options.sleepBetweenChannelsMs > 0
+      ) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, options.sleepBetweenChannelsMs)
+        );
+      }
     }
   } finally {
     await db.disconnect();

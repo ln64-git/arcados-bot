@@ -1,6 +1,9 @@
 import type { Client, Guild } from "discord.js";
 import type { PostgreSQLManager } from "../database/PostgreSQLManager";
+import type { KeywordMessage } from "../keywords/types";
+import { KeywordExtractor } from "../keywords/KeywordExtractor";
 import { RelationshipNetworkManager } from "../relationship-network/NetworkManager";
+import { parseEmbedding } from "../relationship-network/messageUtils";
 import { config } from "../../config/index.js";
 
 export class DatabaseHealer {
@@ -9,6 +12,8 @@ export class DatabaseHealer {
   private relationshipManager: RelationshipNetworkManager;
   private maintenanceTimer?: NodeJS.Timeout;
   private verbose: boolean;
+  private keywordExtractor: KeywordExtractor;
+  private readonly KEYWORD_HEAL_SEGMENT_LIMIT = 200;
 
   constructor(
     client: Client,
@@ -20,6 +25,7 @@ export class DatabaseHealer {
     this.db = db;
     this.relationshipManager = relationshipManager;
     this.verbose = verbose;
+    this.keywordExtractor = new KeywordExtractor(db);
   }
 
   /**
@@ -86,6 +92,7 @@ export class DatabaseHealer {
     await this.healChannels(guild);
     await this.healMembers(guild);
     await this.healMessages(guild);
+    await this.healConversationKeywords(guild);
 
     if (this.verbose) {
       console.log(`✅ Completed healing for: ${guild.name}`);
@@ -132,6 +139,147 @@ export class DatabaseHealer {
     }
 
     return { processed, skipped };
+  }
+
+  /**
+   * Ensure finalized conversation segments have extracted keywords stored in the database.
+   */
+  private async healConversationKeywords(guild: Guild): Promise<void> {
+    try {
+      const segmentsResult = await this.db.query<{
+        id: string;
+        message_ids: string[];
+        features: any;
+      }>(
+        `
+        SELECT id, message_ids, features
+        FROM conversation_segments
+        WHERE guild_id = $1
+          AND status = 'finalized'
+          AND (
+            features IS NULL
+            OR NOT (COALESCE(features, '{}'::jsonb) ? 'keywords')
+            OR jsonb_array_length(
+                COALESCE(features->'keywords'->'terms', '[]'::jsonb)
+              ) = 0
+          )
+        ORDER BY end_time DESC
+        LIMIT $2
+        `,
+        [guild.id, this.KEYWORD_HEAL_SEGMENT_LIMIT]
+      );
+
+      if (!segmentsResult.success || !segmentsResult.data) {
+        if (this.verbose) {
+          console.log(
+            `   🔸 Failed to fetch segments for keyword healing in ${guild.name}:`,
+            segmentsResult.error
+          );
+        }
+        return;
+      }
+
+      const segmentsNeedingKeywords = segmentsResult.data;
+      if (segmentsNeedingKeywords.length === 0) {
+        if (this.verbose) {
+          console.log(
+            `   🔹 All conversation segments in ${guild.name} already have keywords`
+          );
+        }
+        return;
+      }
+
+      if (this.verbose) {
+        console.log(
+          `   🧠 Extracting keywords for ${segmentsNeedingKeywords.length} conversation segments in ${guild.name}...`
+        );
+      }
+
+      let updated = 0;
+
+      for (const segment of segmentsNeedingKeywords) {
+        if (!Array.isArray(segment.message_ids) || segment.message_ids.length === 0) {
+          continue;
+        }
+
+        const messagesResult = await this.db.query<{
+          id: string;
+          content: string;
+          author_id: string;
+          embedding: any;
+        }>(
+          `
+          SELECT id, content, author_id, embedding
+          FROM messages
+          WHERE id = ANY($1)
+            AND content IS NOT NULL
+            AND LENGTH(TRIM(content)) > 0
+          ORDER BY created_at ASC
+          `,
+          [segment.message_ids]
+        );
+
+        if (
+          !messagesResult.success ||
+          !messagesResult.data ||
+          messagesResult.data.length === 0
+        ) {
+          continue;
+        }
+
+        const keywordMessages: KeywordMessage[] = messagesResult.data.map((msg) => ({
+          id: msg.id,
+          content: msg.content,
+          author_id: msg.author_id,
+          embedding: parseEmbedding(msg.embedding),
+        }));
+
+        try {
+          const keywords = await this.keywordExtractor.extractKeywords(
+            keywordMessages,
+            guild.id,
+            { topN: 10, method: "hybrid" }
+          );
+
+          const existingFeaturesRaw = segment.features ?? {};
+          const existingFeatures =
+            typeof existingFeaturesRaw === "string"
+              ? JSON.parse(existingFeaturesRaw)
+              : { ...(existingFeaturesRaw || {}) };
+
+          existingFeatures.keywords = keywords;
+
+          await this.db.query(
+            `UPDATE conversation_segments SET features = $1 WHERE id = $2`,
+            [JSON.stringify(existingFeatures), segment.id]
+          );
+
+          updated++;
+        } catch (error) {
+          console.error(
+            `   🔸 Failed to extract keywords for segment ${segment.id}:`,
+            error
+          );
+        }
+      }
+
+      if (updated > 0) {
+        console.log(
+          `   ✅ Added keywords to ${updated} conversation segment${
+            updated === 1 ? "" : "s"
+          } in ${guild.name}`
+        );
+      } else if (this.verbose) {
+        console.log(
+          `   🔹 No conversation keyword updates were necessary for ${guild.name}`
+        );
+      }
+    } catch (error) {
+      console.error(
+        `   🔸 Error healing conversation keywords for ${guild.name}:`,
+        error
+      );
+    }
   }
 
   /**
