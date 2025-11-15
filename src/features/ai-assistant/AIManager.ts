@@ -23,9 +23,12 @@ import { liveConversationTools } from "./tools/LiveConversationTools";
 import { dramaAnalysisTools } from "./tools/DramaAnalysisTools";
 import { semanticSearchTools } from "./tools/SemanticSearchTools";
 import { storylineTools } from "./tools/StorylineTools";
-import type { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { computeResponsePolicy, type ConversationMode } from "./utils/ResponseLengthPolicy";
+import {
+  computeResponsePolicy,
+  type ConversationMode,
+} from "./utils/ResponseLengthPolicy";
 import { ConversationDetector } from "../social-intelligence/conversation-detection/ConversationDetector";
+import { PostgreSQLManager } from "../../database/PostgreSQLManager";
 
 export class AIManager {
   private static instance: AIManager | null = null;
@@ -107,7 +110,7 @@ export class AIManager {
   public async getDb(): Promise<PostgreSQLManager> {
     if (!this.dbManager) {
       const { PostgreSQLManager } = await import(
-        "../database/PostgreSQLManager"
+        "../../database/PostgreSQLManager"
       );
       this.dbManager = new PostgreSQLManager();
       await this.dbManager.connect();
@@ -645,12 +648,15 @@ export class AIManager {
       mode,
     });
     // Only inject guidance for structured mode
-    const guidanceText = initialPolicy.applyGuidance ? `\n\n${initialPolicy.guidance}` : "";
+    const guidanceText = initialPolicy.applyGuidance
+      ? `\n\n${initialPolicy.guidance}`
+      : "";
 
     // Add mode-specific context hints
-    const modeHint = mode === "chat"
-      ? "\n\nContext: This is a casual conversation in Discord. Respond naturally and conversationally, varying your response length based on what feels appropriate for the discussion. You can be brief when a short reply fits, or more detailed when the context calls for it."
-      : "\n\nContext: This is a structured query requesting specific information. Provide clear, well-organized responses.";
+    const modeHint =
+      mode === "chat"
+        ? "\n\nContext: This is a casual conversation in Discord. Respond naturally and conversationally, varying your response length based on what feels appropriate for the discussion. You can be brief when a short reply fits, or more detailed when the context calls for it."
+        : "\n\nContext: This is a structured query requesting specific information. Provide clear, well-organized responses.";
 
     const fullMethodPrompt = `${formatting}${methodPrompt}${modeHint}${guidanceText}`;
     const systemPrompt = this.buildSystemPrompt(fullMethodPrompt, personaKey);
@@ -683,7 +689,9 @@ export class AIManager {
             )
             .join("\n");
           // Only add guidance for structured mode
-          const historyGuidance = initialPolicy.applyGuidance ? `\n\nGuidance: ${initialPolicy.guidance}` : "";
+          const historyGuidance = initialPolicy.applyGuidance
+            ? `\n\nGuidance: ${initialPolicy.guidance}`
+            : "";
           composedUser = `${historyText}\n\nUser: ${userPrompt}${historyGuidance}`;
         }
 
@@ -703,7 +711,13 @@ export class AIManager {
             }
 
             if (targetUserId) {
-              const context: ToolContext = { userId, guildId, db, channelId: options?.channelId, messageId: options?.messageId };
+              const context: ToolContext = {
+                userId,
+                guildId,
+                db,
+                channelId: options?.channelId,
+                messageId: options?.messageId,
+              };
               const holistic = await this.databaseTools.executeTool(
                 "getHolisticUserContext",
                 {
@@ -730,12 +744,19 @@ export class AIManager {
           if (mode === "chat" && options?.channelId) {
             try {
               const conversationDetector = new ConversationDetector(db);
-              const liveData = conversationDetector.getLiveConversationInChannel(
-                options.channelId,
-                guildId
-              );
+              const liveData =
+                conversationDetector.getLiveConversationInChannel(
+                  options.channelId,
+                  guildId
+                );
 
-              const context: ToolContext = { userId, guildId, db, channelId: options.channelId, messageId: options.messageId };
+              const context: ToolContext = {
+                userId,
+                guildId,
+                db,
+                channelId: options.channelId,
+                messageId: options.messageId,
+              };
               let contextParts: string[] = [];
 
               // Inject live conversation if active
@@ -762,7 +783,8 @@ export class AIManager {
 
               // Also inject recent channel topics for broader context
               // Detect if user is asking about general discussion ("what have people been talking about", etc.)
-              const broadQueryRegex = /(what.*people.*talking|what.*discussed|recent.*topics?|what.*happening|channel.*activity|conversation.*history)/i;
+              const broadQueryRegex =
+                /(what.*people.*talking|what.*discussed|recent.*topics?|what.*happening|channel.*activity|conversation.*history)/i;
               if (broadQueryRegex.test(userPrompt)) {
                 const channelTopics = await this.databaseTools.executeTool(
                   "getRecentChannelTopics",
@@ -772,7 +794,9 @@ export class AIManager {
 
                 const formattedTopics =
                   typeof channelTopics === "object"
-                    ? channelTopics.data?.formatted || channelTopics.summary || ""
+                    ? channelTopics.data?.formatted ||
+                      channelTopics.summary ||
+                      ""
                     : String(channelTopics);
 
                 if (formattedTopics) {
@@ -782,11 +806,16 @@ export class AIManager {
 
               // Prepend all context before user prompt
               if (contextParts.length > 0) {
-                composedUser = `${contextParts.join("\n\n")}\n\n${composedUser}`;
+                composedUser = `${contextParts.join(
+                  "\n\n"
+                )}\n\n${composedUser}`;
               }
             } catch (liveErr) {
               // Non-fatal: continue without live conversation context
-              console.error("🔸 Error prefetching live conversation context:", liveErr);
+              console.error(
+                "🔸 Error prefetching live conversation context:",
+                liveErr
+              );
             }
           }
         }
@@ -944,7 +973,9 @@ export class AIManager {
             mode,
           });
           // Only add guidance for structured mode
-          const iterationGuidance = updatedPolicy.applyGuidance ? `\n\nGuidance: ${updatedPolicy.guidance}` : "";
+          const iterationGuidance = updatedPolicy.applyGuidance
+            ? `\n\nGuidance: ${updatedPolicy.guidance}`
+            : "";
           // Make it explicit that the AI should use tool results to answer the original question
           composedUser = `Tool Results:\n\n${toolResultsText}${iterationGuidance}\n\nNow answer the user's question using the tool results above: ${userPrompt}`;
         }

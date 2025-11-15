@@ -1,14 +1,14 @@
-import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
 import type {
   DatabaseResult,
   RelationshipEntry,
-} from "../../database/PostgreSQLManager";
+} from "../../../database/PostgreSQLManager";
 import type {
   AffinityScoreResult,
   MessageInteraction,
   UserInteractionSummary,
 } from "../types";
 import { ConversationDetector } from "../conversation-detection/ConversationDetector";
+import { PostgreSQLManager } from "../../../database/PostgreSQLManager";
 
 export class RelationshipMapper {
   private db: PostgreSQLManager;
@@ -75,7 +75,7 @@ export class RelationshipMapper {
       const interactions = interactionsResult.data || [];
 
       // Calculate interaction summary (legacy)
-      const summary = this.calculateInteractionSummary(user2Id, interactions);
+      const summary = this.calculateInteractionSummary(interactions);
 
       // Get conversations for enhanced scoring
       const conversationsResult =
@@ -91,21 +91,19 @@ export class RelationshipMapper {
         : [];
 
       // Calculate enhanced affinity score
-      const enhancedBreakdown = this.calculateEnhancedAffinity(
-        conversations,
-        user1Id,
-        user2Id
-      );
+      const breakdown = this.calculateAffinityBreakdown(conversations);
+      const rawPoints =
+        breakdown.conversation_points +
+        breakdown.message_points +
+        breakdown.bonus_points;
 
       return {
-        raw_points:
-          enhancedBreakdown.conversation_points +
-          enhancedBreakdown.message_points +
-          enhancedBreakdown.interaction_bonuses,
+        target_user_id: user2Id,
+        raw_points: rawPoints,
+        relevance_percentage: 0,
         interaction_summary: summary,
-        computed_at: new Date(),
-        enhanced_breakdown: enhancedBreakdown,
-        relevance_percentage: 0, // Will be calculated by buildRelationshipNetwork
+        conversations,
+        breakdown,
       };
     } catch (error) {
       throw new Error(
@@ -138,7 +136,6 @@ export class RelationshipMapper {
         user_id: string;
         points: number;
         interaction_count: number;
-        last_interaction: Date;
       }> = [];
 
       // Calculate affinity with each other member (excluding bots)
@@ -160,10 +157,7 @@ export class RelationshipMapper {
               user_id: member.user_id,
               points: points,
               interaction_count:
-                affinityResult.interaction_summary.interaction_count,
-              last_interaction:
-                affinityResult.interaction_summary.last_interaction ||
-                new Date(),
+                affinityResult.interaction_summary.total_interactions,
             });
           }
         } catch (error) {
@@ -202,15 +196,18 @@ export class RelationshipMapper {
         // Get member info for display - use the original members array
         const member = members.find((m) => m.user_id === raw.user_id);
         const totalMessages = conversations.reduce(
-          (sum, conv) => sum + conv.message_count,
+          (sum: number, conv: import("../types").ConversationEntry) =>
+            sum + conv.message_count,
           0
         );
+
+        const lastInteraction = this.getLastInteractionTimestamp(conversations);
 
         const relationshipEntry: RelationshipEntry = {
           user_id: raw.user_id,
           affinity_percentage: relevancePercentage, // This is now the relevance percentage
           interaction_count: raw.interaction_count,
-          last_interaction: raw.last_interaction,
+          last_interaction: lastInteraction,
           conversations: conversations, // Now lightweight segment references
           display_name: member?.display_name,
           username: member?.username,
@@ -332,46 +329,42 @@ export class RelationshipMapper {
    * Calculate interaction summary from message interactions
    */
   private calculateInteractionSummary(
-    otherUserId: string,
     interactions: MessageInteraction[]
   ): UserInteractionSummary {
-    let totalPoints = 0;
-    let sameChannelCount = 0;
-    let mentionCount = 0;
-    let replyCount = 0;
-    let lastInteraction: Date | undefined;
+    let messages = 0;
+    let mentions = 0;
+    let replies = 0;
+    let reactions = 0;
+    let conversationsTogether = 0;
 
     for (const interaction of interactions) {
-      totalPoints += interaction.points;
-
       switch (interaction.interaction_type) {
+        case "message":
         case "same_channel":
-          sameChannelCount++;
+          messages++;
           break;
         case "mention":
-          mentionCount++;
+          mentions++;
           break;
         case "reply":
-          replyCount++;
+          replies++;
           break;
-      }
-
-      // Track most recent interaction
-      if (!lastInteraction || interaction.timestamp > lastInteraction) {
-        lastInteraction = interaction.timestamp;
+        case "reaction":
+          reactions++;
+          break;
+        case "conversation":
+          conversationsTogether++;
+          break;
       }
     }
 
     return {
-      user_id: otherUserId,
-      total_points: totalPoints,
-      interaction_count: interactions.length,
-      last_interaction: lastInteraction,
-      breakdown: {
-        same_channel: sameChannelCount,
-        mentions: mentionCount,
-        replies: replyCount,
-      },
+      total_interactions: interactions.length,
+      messages,
+      mentions,
+      replies,
+      reactions,
+      conversations_together: conversationsTogether,
     };
   }
 
@@ -380,29 +373,23 @@ export class RelationshipMapper {
    */
   private createZeroAffinityResult(targetUserId: string): AffinityScoreResult {
     return {
+      target_user_id: targetUserId,
       raw_points: 0,
+      relevance_percentage: 0,
       interaction_summary: {
-        user_id: targetUserId,
-        total_points: 0,
-        interaction_count: 0,
-        last_interaction: new Date(),
-        breakdown: {
-          same_channel: 0,
-          mentions: 0,
-          replies: 0,
-        },
+        total_interactions: 0,
+        messages: 0,
+        mentions: 0,
+        replies: 0,
+        reactions: 0,
+        conversations_together: 0,
       },
-      computed_at: new Date(),
-      enhanced_breakdown: {
+      conversations: [],
+      breakdown: {
         conversation_points: 0,
         message_points: 0,
-        interaction_bonuses: 0,
-        total_conversations: 0,
-        total_messages: 0,
-        name_interactions: 0,
-        mention_interactions: 0,
+        bonus_points: 0,
       },
-      relevance_percentage: 0, // Bots get 0% relevance
     };
   }
 
@@ -459,62 +446,28 @@ export class RelationshipMapper {
    * Calculate enhanced affinity score based on conversations
    * Formula: (conversations * 1) + (total_messages * 0.05) + interaction_bonuses
    */
-  private calculateEnhancedAffinity(
-    conversations: import("../types").ConversationEntry[],
-    user1Id: string,
-    user2Id: string
-  ): import("../types").EnhancedAffinityBreakdown {
+  private calculateAffinityBreakdown(
+    conversations: import("../types").ConversationEntry[]
+  ): { conversation_points: number; message_points: number; bonus_points: number } {
     if (conversations.length === 0) {
       return {
         conversation_points: 0,
         message_points: 0,
-        interaction_bonuses: 0,
-        total_conversations: 0,
-        total_messages: 0,
-        name_interactions: 0,
-        mention_interactions: 0,
+        bonus_points: 0,
       };
     }
 
-    // Count conversations (1 point each - more conservative)
-    const conversationPoints = conversations.length * 1;
-
-    // Count total messages in all conversations (0.05 points each - more conservative)
+    const conversationPoints = conversations.length;
     const totalMessages = conversations.reduce(
       (sum, conv) => sum + conv.message_count,
       0
     );
     const messagePoints = totalMessages * 0.05;
 
-    // Count direct interactions across all conversations
-    let nameInteractionCount = 0;
-    let mentionInteractionCount = 0;
-
-    conversations.forEach((conv) => {
-      // Count mentions
-      if (conv.interaction_types.includes("mention")) {
-        mentionInteractionCount++;
-      }
-
-      // Count name interactions - only if names were actually used
-      if (conv.has_name_usage) {
-        nameInteractionCount++;
-      }
-    });
-
-    // Calculate interaction bonuses (more conservative)
-    // Name-based: +1 point each, Mentions: +1 point each
-    const interactionBonuses =
-      nameInteractionCount * 1 + mentionInteractionCount * 1;
-
     return {
       conversation_points: conversationPoints,
       message_points: messagePoints,
-      interaction_bonuses: interactionBonuses,
-      total_conversations: conversations.length,
-      total_messages: totalMessages,
-      name_interactions: nameInteractionCount,
-      mention_interactions: mentionInteractionCount,
+      bonus_points: 0,
     };
   }
 
@@ -567,6 +520,27 @@ export class RelationshipMapper {
     }
 
     return cleaned;
+  }
+
+  private getLastInteractionTimestamp(
+    conversations: import("../types").ConversationEntry[]
+  ): Date {
+    if (conversations.length === 0) {
+      return new Date();
+    }
+
+    let latest = conversations[0]
+      ? new Date(conversations[0].end_time || conversations[0].start_time)
+      : new Date();
+
+    for (const convo of conversations) {
+      const endTime = new Date(convo.end_time || convo.start_time);
+      if (endTime > latest) {
+        latest = endTime;
+      }
+    }
+
+    return latest;
   }
 
   /**

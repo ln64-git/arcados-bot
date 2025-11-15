@@ -12,7 +12,8 @@
  */
 
 import type { Message } from "discord.js";
-import type { PostgreSQLManager } from "../database/PostgreSQLManager";
+import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
+import type { AIManager } from "../ai-assistant/AIManager";
 import type {
 	StreamingConversation,
 	FinalizedConversation,
@@ -20,6 +21,7 @@ import type {
 	RelationshipQueryOptions,
 	SemanticSearchOptions,
 	RelationshipEntry,
+	ConversationFeatures,
 	KeywordScore,
 } from "./types";
 
@@ -28,7 +30,8 @@ import { ConversationDetector } from "./conversation-detection/ConversationDetec
 import { RelationshipMapper } from "./relationship-mapping/RelationshipMapper";
 import { KeywordExtractor } from "./semantic-analysis/KeywordExtractor";
 import { EmbeddingService } from "./semantic-analysis/EmbeddingService";
-// import { EnrichmentOrchestrator } from "./enrichment-pipeline/EnrichmentOrchestrator"; // TODO: implement
+import { EnhancementOrchestrator } from "./enrichment-pipeline/EnhancementOrchestrator";
+import { TopicLabeler } from "./semantic-analysis/TopicLabeler";
 
 /**
  * Main orchestrator for Social Intelligence System
@@ -47,17 +50,35 @@ export class SocialIntelligence {
 	private relationshipMapper: RelationshipMapper;
 	private keywordExtractor: KeywordExtractor;
 	private embeddingService: EmbeddingService;
-	// private enrichmentOrchestrator: EnrichmentOrchestrator; // TODO: implement
+	private enhancementOrchestrator?: EnhancementOrchestrator;
+	private topicLabeler?: TopicLabeler;
+	private aiManager?: AIManager; // AIManager instance (optional, for enrichment)
 
-	constructor(db: PostgreSQLManager) {
+	// Relationship rollup queue (shared with LiveEventSync logic)
+	private rollupQueue: Map<string, number> = new Map(); // userId:guildId -> interaction count
+	private rollupTimer?: NodeJS.Timeout;
+	private readonly ROLLUP_SIZE_THRESHOLD = 50;
+	private readonly ROLLUP_TIME_THRESHOLD = 30 * 1000; // 30 seconds
+	private lastRollupTime = Date.now();
+
+	constructor(db: PostgreSQLManager, aiManager?: AIManager) {
 		this.db = db;
+		this.aiManager = aiManager;
 
 		// Initialize components
 		this.conversationDetector = new ConversationDetector(db);
 		this.relationshipMapper = new RelationshipMapper(db);
 		this.keywordExtractor = new KeywordExtractor(db);
 		this.embeddingService = EmbeddingService.getInstance();
-		// this.enrichmentOrchestrator = new EnrichmentOrchestrator(db); // TODO: implement
+
+		// Initialize enhancement orchestrator (requires AIManager for topic labeling)
+		if (aiManager) {
+			this.conversationDetector.setAIManager(aiManager);
+			this.enhancementOrchestrator = new EnhancementOrchestrator(db, aiManager);
+			this.topicLabeler = new TopicLabeler(db, aiManager);
+		}
+
+		this.startRollupTimer();
 	}
 
 	// ============================================================================
@@ -76,24 +97,156 @@ export class SocialIntelligence {
 	 * @param message Discord message
 	 */
 	async processMessage(message: Message): Promise<void> {
-		if (!message.guildId) return;
+		if (!message.guildId || !message.channelId) {
+			return;
+		}
 
-		// TODO: Implement full pipeline
-		// 1. Track interactions
-		// await this.relationshipMapper.recordInteraction(message);
+		const author = message.author;
+		if (!author || author.bot) {
+			// Skip bot authored content for social graph + conversation detection
+			return;
+		}
 
-		// 2. Buffer message
-		// const conversation = await this.conversationDetector.addMessage(message);
+		const guildId = message.guildId;
+		const channelId = message.channelId;
+		const authorId = author.id;
+		const timestamp = message.createdAt ?? new Date();
+		const content = message.content || "";
 
-		// 3. Extract preliminary keywords if conversation updated
-		// if (conversation) {
-		//   const keywords = await this.semanticAnalyzer.extractQuickKeywords(conversation);
-		//   await this.conversationDetector.updateStreamingConversation(conversation.id, { keywords });
-		// }
+		const mentionedUserIds = Array.from(message.mentions.users.values())
+			.filter((user) => !user.bot && user.id !== authorId)
+			.map((user) => user.id);
 
-		console.log(
-			`[SocialIntelligence] processMessage called for message ${message.id} (not yet implemented)`
+		// Track mention interactions first for affinity context
+		await Promise.all(
+			mentionedUserIds.map((mentionedId) =>
+				this.recordInteractionAndQueue(
+					guildId,
+					authorId,
+					mentionedId,
+					"mention",
+					"a_to_b",
+					timestamp
+				)
+			)
 		);
+
+		// Buffer message for conversation detection (streaming + finalization)
+		try {
+			await this.conversationDetector.addMessageToStream({
+				id: message.id,
+				author_id: authorId,
+				content,
+				created_at: timestamp,
+				guild_id: guildId,
+				channel_id: channelId,
+				referenced_message_id: message.reference?.messageId || undefined,
+				mentioned_user_ids: mentionedUserIds,
+			});
+		} catch (error) {
+			console.error(
+				`[SocialIntelligence] Failed to buffer message ${message.id}:`,
+				error
+			);
+		}
+
+		await this.handleReplyInteractions(message, timestamp);
+		await this.handleProximityInteractions(message, timestamp);
+	}
+
+	private async handleReplyInteractions(
+		message: Message,
+		timestamp: Date
+	): Promise<void> {
+		if (!message.guildId || !message.reference?.messageId || !message.author) {
+			return;
+		}
+
+		try {
+			const referencedMessage = await message.channel.messages.fetch(
+				message.reference.messageId
+			);
+			const repliedAuthor = referencedMessage?.author;
+			if (
+				referencedMessage &&
+				repliedAuthor &&
+				!repliedAuthor.bot &&
+				repliedAuthor.id !== message.author.id
+			) {
+				await this.recordInteractionAndQueue(
+					message.guildId,
+					message.author.id,
+					repliedAuthor.id,
+					"reply",
+					"a_to_b",
+					timestamp
+				);
+			}
+
+			if (
+				referencedMessage?.reference?.messageId &&
+				referencedMessage.reference.messageId !== message.reference.messageId
+			) {
+				try {
+					const originalMessage = await message.channel.messages.fetch(
+						referencedMessage.reference.messageId
+					);
+					const originalAuthor = originalMessage?.author;
+					if (
+						originalAuthor &&
+						!originalAuthor.bot &&
+						originalAuthor.id !== message.author.id &&
+						originalAuthor.id !== repliedAuthor?.id
+					) {
+						await this.recordInteractionAndQueue(
+							message.guildId,
+							message.author.id,
+							originalAuthor.id,
+							"message",
+							"a_to_b",
+							timestamp
+						);
+					}
+				} catch {
+					// Nested reference may no longer exist
+				}
+			}
+		} catch {
+			// Ignore missing referenced messages
+		}
+	}
+
+	private async handleProximityInteractions(
+		message: Message,
+		timestamp: Date
+	): Promise<void> {
+		if (!message.guildId || !message.channelId || !message.author) {
+			return;
+		}
+
+		const recentMessages = await this.getRecentChannelMessages(
+			message.guildId,
+			message.channelId,
+			10
+		);
+
+		for (const otherMsg of recentMessages) {
+			if (
+				otherMsg.author_id === message.author.id ||
+				Math.abs(timestamp.getTime() - otherMsg.created_at.getTime()) > 30_000
+			) {
+				continue;
+			}
+
+			await this.recordInteractionAndQueue(
+				message.guildId,
+				message.author.id,
+				otherMsg.author_id,
+				"message",
+				"a_to_b",
+				timestamp
+			);
+		}
 	}
 
 	// ============================================================================
@@ -121,13 +274,69 @@ export class SocialIntelligence {
 			...options,
 		};
 
-		// TODO: Query conversations_unified view
-		// return this.conversationDetector.getConversations(channelId, opts);
+		const conditions: string[] = ["cu.channel_id = $1"];
+		const params: any[] = [channelId];
+		let paramIndex = 2;
 
-		console.log(
-			`[SocialIntelligence] getConversations called for channel ${channelId} (not yet implemented)`
-		);
-		return [];
+		if (!opts.includeStreaming && opts.includeFinalized) {
+			conditions.push("cu.is_streaming = false");
+		} else if (opts.includeStreaming && !opts.includeFinalized) {
+			conditions.push("cu.is_streaming = true");
+		}
+
+		if (opts.minMessages) {
+			conditions.push(`cu.message_count >= $${paramIndex}`);
+			params.push(opts.minMessages);
+			paramIndex++;
+		}
+
+		if (opts.startDate) {
+			conditions.push(`cu.start_time >= $${paramIndex}`);
+			params.push(opts.startDate);
+			paramIndex++;
+		}
+
+		if (opts.endDate) {
+			conditions.push(`cu.end_time <= $${paramIndex}`);
+			params.push(opts.endDate);
+			paramIndex++;
+		}
+
+		if (opts.participants && opts.participants.length > 0) {
+			conditions.push(`cu.participants @> $${paramIndex}::TEXT[]`);
+			params.push(opts.participants);
+			paramIndex++;
+		}
+
+		const query = `
+			SELECT
+				cu.*,
+				sc.created_at AS streaming_created_at,
+				sc.updated_at AS streaming_updated_at,
+				cs.created_at AS finalized_created_at,
+				cs.updated_at AS finalized_updated_at
+			FROM conversations_unified cu
+			LEFT JOIN streaming_conversations sc
+				ON cu.is_streaming = true AND sc.id = cu.id
+			LEFT JOIN conversation_segments cs
+				ON cu.is_streaming = false AND cs.id = cu.id
+			WHERE ${conditions.join(" AND ")}
+			ORDER BY cu.start_time DESC
+			LIMIT 200
+		`;
+
+		const result = await this.db.query(query, params);
+		if (!result.success || !result.data) {
+			return [];
+		}
+
+		return result.data
+			.map((row: any) => this.mapUnifiedConversation(row))
+			.filter(
+				(
+					conv: StreamingConversation | FinalizedConversation | null
+				): conv is StreamingConversation | FinalizedConversation => Boolean(conv)
+			);
 	}
 
 	/**
@@ -141,13 +350,30 @@ export class SocialIntelligence {
 	async getConversation(
 		conversationId: string
 	): Promise<StreamingConversation | FinalizedConversation | null> {
-		// TODO: Implement
-		// return this.conversationDetector.getConversation(conversationId);
-
-		console.log(
-			`[SocialIntelligence] getConversation called for ${conversationId} (not yet implemented)`
+		const result = await this.db.query(
+			`
+			SELECT
+				cu.*,
+				sc.created_at AS streaming_created_at,
+				sc.updated_at AS streaming_updated_at,
+				cs.created_at AS finalized_created_at,
+				cs.updated_at AS finalized_updated_at
+			FROM conversations_unified cu
+			LEFT JOIN streaming_conversations sc
+				ON cu.is_streaming = true AND sc.id = cu.id
+			LEFT JOIN conversation_segments cs
+				ON cu.is_streaming = false AND cs.id = cu.id
+			WHERE cu.id = $1
+			LIMIT 1
+		`,
+			[conversationId]
 		);
-		return null;
+
+		if (!result.success || !result.data || result.data.length === 0) {
+			return null;
+		}
+
+		return this.mapUnifiedConversation(result.data[0]) ?? null;
 	}
 
 	/**
@@ -166,13 +392,113 @@ export class SocialIntelligence {
 		guildId: string,
 		options?: SemanticSearchOptions
 	): Promise<Array<StreamingConversation | FinalizedConversation>> {
-		// TODO: Implement semantic search
-		// return this.semanticAnalyzer.searchBySemanticSimilarity(query, guildId, options);
+		const opts: SemanticSearchOptions = {
+			includeStreaming: true,
+			minSimilarity: 0.3,
+			limit: 20,
+			...options,
+		};
 
-		console.log(
-			`[SocialIntelligence] searchConversationsByTopic called for "${query}" (not yet implemented)`
-		);
-		return [];
+		const baseConditions: string[] = ["cu.guild_id = $1"];
+		const params: any[] = [guildId];
+
+		if (opts.includeStreaming === false) {
+			baseConditions.push("cu.is_streaming = false");
+		}
+
+		const candidateLimit = Math.max((opts.limit ?? 20) * 5, 50);
+		const querySql = `
+			SELECT
+				cu.*,
+				sc.created_at AS streaming_created_at,
+				sc.updated_at AS streaming_updated_at,
+				cs.created_at AS finalized_created_at,
+				cs.updated_at AS finalized_updated_at
+			FROM conversations_unified cu
+			LEFT JOIN streaming_conversations sc
+				ON cu.is_streaming = true AND sc.id = cu.id
+			LEFT JOIN conversation_segments cs
+				ON cu.is_streaming = false AND cs.id = cu.id
+			WHERE ${baseConditions.join(" AND ")}
+			ORDER BY cu.end_time DESC NULLS LAST, cu.start_time DESC
+			LIMIT ${candidateLimit}
+		`;
+
+		const dbResult = await this.db.query(querySql, params);
+		if (!dbResult.success || !dbResult.data || dbResult.data.length === 0) {
+			return [];
+		}
+
+		const rows = dbResult.data;
+		const queryEmbedding = await this.embeddingService.generateEmbedding(query);
+		const queryTokens = query
+			.toLowerCase()
+			.split(/\s+/)
+			.filter((token) => token.trim().length > 2);
+
+		const rowsNeedingEmbedding: Array<{ row: any; text: string }> = [];
+		for (const row of rows) {
+			if (!row.embedding) {
+				const text = this.buildConversationSearchText(row);
+				if (text.trim().length > 0) {
+					rowsNeedingEmbedding.push({ row, text });
+				}
+			}
+		}
+
+		if (rowsNeedingEmbedding.length > 0) {
+			const embeddings = await this.embeddingService.generateBatch(
+				rowsNeedingEmbedding.map((entry) => entry.text)
+			);
+			rowsNeedingEmbedding.forEach((entry, index) => {
+				entry.row.embedding = embeddings[index];
+			});
+		}
+
+		const scoredCandidates: Array<
+			{ score: number; similarity: number; row: any } | null
+		> = rows.map((row: any) => {
+			const embedding = this.ensureNumberArray(row.embedding);
+			if (!embedding || embedding.length === 0) {
+				return null;
+			}
+
+			const similarity = this.cosineSimilarity(queryEmbedding, embedding);
+			const keywordBoost = this.computeKeywordBoost(
+				queryTokens,
+				this.buildConversationSearchText(row)
+			);
+			const score = similarity + keywordBoost;
+
+			return {
+				score,
+				similarity,
+				row,
+			};
+		});
+
+		const scored = scoredCandidates
+			.filter(
+				(
+					entry
+				): entry is { score: number; similarity: number; row: any } =>
+					Boolean(entry && entry.score >= (opts.minSimilarity ?? 0.3))
+			)
+			.sort(
+				(
+					a: { score: number; similarity: number; row: any },
+					b: { score: number; similarity: number; row: any }
+				) => b.score - a.score
+			)
+			.slice(0, opts.limit ?? 20);
+
+		return scored
+			.map((entry) => this.mapUnifiedConversation(entry.row))
+			.filter(
+				(
+					conv: StreamingConversation | FinalizedConversation | null
+				): conv is StreamingConversation | FinalizedConversation => Boolean(conv)
+			);
 	}
 
 	// ============================================================================
@@ -195,12 +521,73 @@ export class SocialIntelligence {
 		guildId: string,
 		options?: RelationshipQueryOptions
 	): Promise<RelationshipEntry[]> {
-		// TODO: Implement live view query
-		// return this.relationshipMapper.getLiveRelationships(userId, guildId, options);
+		const opts: RelationshipQueryOptions = {
+			useLiveView: true,
+			limit: 25,
+			...options,
+		};
 
-		console.log(
-			`[SocialIntelligence] getRelationships called for user ${userId} (not yet implemented)`
+		if (opts.useLiveView !== false) {
+			const liveResult = await this.db.query(
+				`
+				SELECT relationship_network
+				FROM relationship_network_live
+				WHERE guild_id = $1 AND user_id = $2
+				LIMIT 1
+			`,
+				[guildId, userId]
+			);
+
+			if (
+				liveResult.success &&
+				liveResult.data &&
+				liveResult.data.length > 0 &&
+				liveResult.data[0].relationship_network
+			) {
+				const parsed = this.ensureArray<RelationshipEntry>(
+					liveResult.data[0].relationship_network
+				);
+
+				if (parsed.length > 0) {
+					const totalPoints = parsed.reduce(
+						(sum, entry) => sum + (entry.raw_points || 0),
+						0
+					);
+
+					const normalized = parsed
+						.map((entry) => ({
+							user_id: entry.user_id,
+							affinity_percentage:
+								totalPoints > 0
+									? ((entry.raw_points || 0) / totalPoints) * 100
+									: entry.affinity_percentage || 0,
+							interaction_count: entry.interaction_count || 0,
+							last_interaction: entry.last_interaction
+								? new Date(entry.last_interaction)
+								: new Date(),
+							conversations: entry.conversations,
+							display_name: entry.display_name,
+							username: entry.username,
+							raw_points: entry.raw_points,
+							total_messages: entry.total_messages,
+						}))
+						.sort((a, b) => b.affinity_percentage - a.affinity_percentage);
+
+					return this.applyRelationshipFilters(normalized, opts);
+				}
+			}
+		}
+
+		const fallback = await this.relationshipMapper.getTopRelationships(
+			userId,
+			guildId,
+			opts.limit ?? 25
 		);
+
+		if (fallback.success && fallback.data) {
+			return this.applyRelationshipFilters(fallback.data, opts);
+		}
+
 		return [];
 	}
 
@@ -222,13 +609,13 @@ export class SocialIntelligence {
 		user2Id: string,
 		guildId: string
 	): Promise<number> {
-		// TODO: Implement affinity calculation
-		// return this.relationshipMapper.calculateAffinity(user1Id, user2Id, guildId);
-
-		console.log(
-			`[SocialIntelligence] getAffinityScore called for ${user1Id} <-> ${user2Id} (not yet implemented)`
+		const result = await this.relationshipMapper.calculateAffinityScore(
+			user1Id,
+			user2Id,
+			guildId
 		);
-		return 0;
+
+		return this.normalizeAffinity(result.raw_points ?? 0);
 	}
 
 	// ============================================================================
@@ -250,13 +637,28 @@ export class SocialIntelligence {
 		guildId: string,
 		method: "tfidf" | "semantic" | "hybrid" = "hybrid"
 	): Promise<KeywordScore[]> {
-		// TODO: Implement keyword extraction
-		// return this.semanticAnalyzer.extractKeywords(messages, guildId, method);
+		if (messages.length === 0) {
+			return [];
+		}
 
-		console.log(
-			`[SocialIntelligence] extractKeywords called for ${messages.length} messages (not yet implemented)`
-		);
-		return [];
+		const keywordMessages = messages.map((message) => ({
+			id: message.id,
+			content: message.content || "",
+			author_id: message.author_id,
+		}));
+
+			try {
+				const keywords = await this.keywordExtractor.extractKeywords(
+					keywordMessages,
+					guildId,
+					{ method, topN: 12 }
+				);
+
+				return this.coerceKeywordScores(keywords.terms || []);
+			} catch (error) {
+			console.error("[SocialIntelligence] Keyword extraction failed:", error);
+			return [];
+		}
 	}
 
 	/**
@@ -268,13 +670,7 @@ export class SocialIntelligence {
 	 * @returns 768-dimensional embedding vector
 	 */
 	async generateEmbedding(text: string): Promise<number[]> {
-		// TODO: Implement embedding generation
-		// return this.semanticAnalyzer.generateEmbedding(text);
-
-		console.log(
-			`[SocialIntelligence] generateEmbedding called for text "${text.substring(0, 50)}..." (not yet implemented)`
-		);
-		return [];
+		return this.embeddingService.generateEmbedding(text);
 	}
 
 	// ============================================================================
@@ -288,11 +684,135 @@ export class SocialIntelligence {
 	 * @returns Updated conversation
 	 */
 	async enrichConversation(conversationId: string): Promise<void> {
-		// TODO: Implement enrichment
-		// await this.enrichmentOrchestrator.enrichConversation(conversationId);
+		const conversationResult = await this.db.query(
+			`
+			SELECT
+				id,
+				guild_id,
+				channel_id,
+				start_time,
+				end_time,
+				message_ids,
+				message_count,
+				participants,
+				features,
+				summary,
+				topic_label,
+				topic_confidence
+			FROM conversation_segments
+			WHERE id = $1
+			LIMIT 1
+		`,
+			[conversationId]
+		);
 
-		console.log(
-			`[SocialIntelligence] enrichConversation called for ${conversationId} (not yet implemented)`
+		if (!conversationResult.success || !conversationResult.data || conversationResult.data.length === 0) {
+			throw new Error(`Conversation ${conversationId} not found`);
+		}
+
+		const conversation = conversationResult.data[0];
+		const guildId: string = conversation.guild_id;
+		const channelId: string = conversation.channel_id;
+		const messageIds = this.ensureArray<string>(conversation.message_ids);
+
+		let keywordScores: KeywordScore[] = [];
+		if (messageIds.length > 0) {
+			const messagesResult = await this.db.query(
+				`
+				SELECT id, author_id, content
+				FROM messages
+				WHERE id = ANY($1::TEXT[])
+				ORDER BY created_at ASC
+			`,
+				[messageIds]
+			);
+
+			if (messagesResult.success && messagesResult.data) {
+				const keywordMessages = messagesResult.data.map((row: any) => ({
+					id: row.id,
+					content: row.content || "",
+					author_id: row.author_id,
+				}));
+
+					const keywords = await this.keywordExtractor.extractKeywords(
+						keywordMessages,
+						guildId,
+						{ method: "hybrid", topN: 12 }
+					);
+
+					keywordScores = this.coerceKeywordScores(keywords.terms || []);
+			}
+		}
+
+		let topicLabel: string | undefined;
+		let topicConfidence: number | undefined;
+
+		if (this.topicLabeler && messageIds.length > 0) {
+			try {
+				const labelResult = await this.topicLabeler.generateTopicLabel(
+					guildId,
+					channelId,
+					messageIds,
+					{
+						messageCount: conversation.message_count,
+						duration:
+							(new Date(conversation.end_time).getTime() -
+								new Date(conversation.start_time).getTime()) /
+							(60 * 1000),
+						participantCount: (conversation.participants || []).length,
+					}
+				);
+				topicLabel = labelResult.label;
+				topicConfidence = labelResult.confidence;
+			} catch (error) {
+				console.warn(
+					`[SocialIntelligence] Topic labeling failed for ${conversationId}:`,
+					error
+				);
+			}
+		}
+
+		if (!topicLabel && keywordScores.length > 0) {
+			topicLabel = keywordScores
+				.slice(0, 3)
+				.map((score) => score.word)
+				.join(", ");
+			topicConfidence = 0.4;
+		}
+
+		const summary =
+			conversation.summary ||
+			this.buildConversationSummary(
+				topicLabel,
+				conversation.message_count,
+				this.ensureArray<string>(conversation.participants).length,
+				keywordScores
+			);
+
+		const nextFeatures = {
+			...(this.parseJSON<Record<string, any>>(conversation.features) || {}),
+			keywords: keywordScores,
+		};
+
+		await this.db.query(
+			`
+			UPDATE conversation_segments
+			SET
+				features = $2,
+				summary = COALESCE($3, summary),
+				topic_label = COALESCE($4, topic_label),
+				topic_confidence = COALESCE($5, topic_confidence),
+				ai_processing_status = 'completed',
+				ai_processed_at = NOW()
+			WHERE id = $1
+		`,
+			[
+				conversationId,
+				JSON.stringify(nextFeatures),
+				summary,
+				topicLabel,
+				topicConfidence,
+			]
 		);
 	}
 
@@ -304,12 +824,7 @@ export class SocialIntelligence {
 	 * @param guildId Guild ID
 	 */
 	async buildGuildVocabulary(guildId: string): Promise<void> {
-		// TODO: Implement vocabulary building
-		// await this.semanticAnalyzer.buildVocabulary(guildId);
-
-		console.log(
-			`[SocialIntelligence] buildGuildVocabulary called for guild ${guildId} (not yet implemented)`
-		);
+		await this.keywordExtractor.buildVocabulary(guildId);
 	}
 
 	// ============================================================================
@@ -364,6 +879,396 @@ export class SocialIntelligence {
 					? parseInt(vocabResult.data[0].count, 10)
 					: 0,
 		};
+	}
+
+	private async recordInteractionAndQueue(
+		guildId: string,
+		authorId: string,
+		otherId: string,
+		kind: "message" | "mention" | "reply" | "reaction",
+		direction: "a_to_b" | "b_to_a",
+		timestamp: Date
+	): Promise<void> {
+		try {
+			await this.relationshipMapper.recordInteraction(
+				guildId,
+				authorId,
+				otherId,
+				kind,
+				direction,
+				timestamp
+			);
+			this.queueRollup(authorId, guildId);
+			this.queueRollup(otherId, guildId);
+		} catch (error) {
+			console.error(
+				`[SocialIntelligence] Failed to record ${kind} interaction for ${authorId} -> ${otherId}:`,
+				error
+			);
+		}
+	}
+
+	private queueRollup(userId: string, guildId: string): void {
+		if (!userId) {
+			return;
+		}
+		const key = `${guildId}:${userId}`;
+		this.rollupQueue.set(key, (this.rollupQueue.get(key) ?? 0) + 1);
+
+		const now = Date.now();
+		const timeSinceLastRollup = now - this.lastRollupTime;
+
+		if (
+			this.rollupQueue.size >= this.ROLLUP_SIZE_THRESHOLD ||
+			timeSinceLastRollup > this.ROLLUP_TIME_THRESHOLD
+		) {
+			void this.processRollupQueue();
+		}
+	}
+
+	private startRollupTimer(): void {
+		if (this.rollupTimer) {
+			clearInterval(this.rollupTimer);
+		}
+
+		this.rollupTimer = setInterval(() => {
+			void this.processRollupQueue();
+		}, this.ROLLUP_TIME_THRESHOLD);
+	}
+
+	private async processRollupQueue(): Promise<void> {
+		if (this.rollupQueue.size === 0) {
+			return;
+		}
+
+		const entries = Array.from(this.rollupQueue.keys());
+		this.rollupQueue.clear();
+		this.lastRollupTime = Date.now();
+
+		for (const entry of entries) {
+			const [guildId, userId] = entry.split(":");
+			if (!guildId || !userId) {
+				continue;
+			}
+
+			try {
+				await this.relationshipMapper.rollupEdgesToMemberNetwork(
+					userId,
+					guildId
+				);
+			} catch (error) {
+				console.error(
+					`[SocialIntelligence] Failed to roll up relationship network for ${entry}:`,
+					error
+				);
+			}
+		}
+	}
+
+	private async getRecentChannelMessages(
+		guildId: string,
+		channelId: string,
+		limit: number
+	): Promise<Array<{ author_id: string; created_at: Date; id: string }>> {
+		const result = await this.db.query(
+			`
+			SELECT author_id, created_at, id
+			FROM messages
+			WHERE guild_id = $1 AND channel_id = $2
+			ORDER BY created_at DESC
+			LIMIT $3
+		`,
+			[guildId, channelId, limit]
+		);
+
+		if (!result.success || !result.data) {
+			return [];
+		}
+
+		return result.data.map((row: any) => ({
+			author_id: row.author_id,
+			created_at: new Date(row.created_at),
+			id: row.id,
+		}));
+	}
+
+	private mapUnifiedConversation(
+		row: any
+	): StreamingConversation | FinalizedConversation | null {
+		if (!row) {
+			return null;
+		}
+
+		return row.is_streaming
+			? this.mapStreamingConversation(row)
+			: this.mapFinalizedConversation(row);
+	}
+
+	private mapStreamingConversation(row: any): StreamingConversation {
+		const status: StreamingConversation["status"] =
+			row.status === "finalizing" ? "finalizing" : "active";
+
+		return {
+			id: row.id,
+			guild_id: row.guild_id,
+			channel_id: row.channel_id,
+			participants: this.ensureArray<string>(row.participants),
+			message_ids: this.ensureArray<string>(row.message_ids),
+			message_count: Number(row.message_count) || 0,
+			start_time: new Date(row.start_time),
+			last_activity: new Date(
+				row.end_time || row.streaming_updated_at || row.start_time
+			),
+			status,
+			preliminary_keywords: this.normalizeKeywords(row.keywords),
+			preliminary_embedding: this.ensureNumberArray(row.embedding),
+			created_at: row.streaming_created_at
+				? new Date(row.streaming_created_at)
+				: new Date(row.start_time),
+			updated_at: row.streaming_updated_at
+				? new Date(row.streaming_updated_at)
+				: new Date(row.end_time || row.start_time),
+		};
+	}
+
+	private mapFinalizedConversation(row: any): FinalizedConversation {
+		const features =
+			this.parseJSON<ConversationFeatures>(row.features) ||
+			(row.features as ConversationFeatures) ||
+			({});
+
+		return {
+			id: row.id,
+			guild_id: row.guild_id,
+			channel_id: row.channel_id,
+			participants: this.ensureArray<string>(row.participants),
+			message_ids: this.ensureArray<string>(row.message_ids),
+			message_count: Number(row.message_count) || 0,
+			start_time: new Date(row.start_time),
+			end_time: new Date(row.end_time || row.start_time),
+			status: "finalized",
+			features: features,
+			summary: row.summary || undefined,
+			topic_label: row.topic_label || undefined,
+			topic_confidence:
+				row.topic_confidence !== null && row.topic_confidence !== undefined
+					? Number(row.topic_confidence)
+					: undefined,
+			ai_processing_status: row.ai_processing_status || undefined,
+			ai_metadata: row.ai_metadata || undefined,
+		};
+	}
+
+	private coerceKeywordScores(rawScores: any[]): KeywordScore[] {
+		return rawScores
+			.map((item: any) => {
+				const word = item?.word || item?.term || "";
+				if (!word) {
+					return null;
+				}
+
+				const scoreValue =
+					typeof item?.score === "number"
+						? item.score
+						: typeof item?.tfidf === "number"
+						? item.tfidf
+						: Number(item?.tfidf) || 0;
+
+				const keyword: KeywordScore = {
+					word,
+					score: scoreValue,
+					type: this.normalizeKeywordType(item?.type),
+				};
+
+				const frequency = item?.count ?? item?.frequency;
+				if (typeof frequency === "number") {
+					keyword.frequency = frequency;
+				}
+
+				return keyword;
+			})
+			.filter((item): item is KeywordScore => Boolean(item));
+	}
+
+	private normalizeKeywordType(type: unknown): KeywordScore["type"] {
+		return type === "semantic" || type === "tfidf" ? type : "hybrid";
+	}
+
+	private normalizeKeywords(value: any): KeywordScore[] {
+		if (!value) {
+			return [];
+		}
+
+		const parsedArray =
+			(Array.isArray(value) ? value : undefined) ||
+			this.parseJSON<any[]>(value) ||
+			(Array.isArray(value?.terms) ? value.terms : undefined);
+
+		if (!Array.isArray(parsedArray)) {
+			return [];
+		}
+
+		return this.coerceKeywordScores(parsedArray);
+	}
+
+	private parseJSON<T>(value: any): T | undefined {
+		if (!value) {
+			return undefined;
+		}
+		if (typeof value === "object") {
+			return value as T;
+		}
+		if (typeof value === "string") {
+			try {
+				return JSON.parse(value) as T;
+			} catch {
+				return undefined;
+			}
+		}
+		return undefined;
+	}
+
+	private ensureArray<T>(value: any): T[] {
+		if (Array.isArray(value)) {
+			return value as T[];
+		}
+		if (value === null || value === undefined) {
+			return [];
+		}
+		if (typeof value === "string") {
+			if (value.startsWith("{") && value.endsWith("}")) {
+				return value
+					.slice(1, -1)
+					.split(",")
+					.map((entry) => entry.replace(/"/g, "").trim())
+					.filter(Boolean) as T[];
+			}
+
+			try {
+				const parsed = JSON.parse(value);
+				return Array.isArray(parsed) ? parsed : [parsed];
+			} catch {
+				return value ? ([value] as T[]) : [];
+			}
+		}
+
+		return [value as T];
+	}
+
+	private ensureNumberArray(value: any): number[] | undefined {
+		if (!value) {
+			return undefined;
+		}
+
+		const arrayValue = Array.isArray(value) ? value : this.parseJSON<any[]>(value);
+		if (!Array.isArray(arrayValue)) {
+			return undefined;
+		}
+
+		const numbers = arrayValue.map((num) => Number(num)).filter((num) => Number.isFinite(num));
+		return numbers.length > 0 ? numbers : undefined;
+	}
+
+	private cosineSimilarity(a: number[], b: number[]): number {
+		if (a.length === 0 || b.length === 0 || a.length !== b.length) {
+			return 0;
+		}
+
+		let dot = 0;
+		let aNorm = 0;
+		let bNorm = 0;
+
+		for (let i = 0; i < a.length; i++) {
+			dot += a[i]! * b[i]!;
+			aNorm += a[i]! * a[i]!;
+			bNorm += b[i]! * b[i]!;
+		}
+
+		if (aNorm === 0 || bNorm === 0) {
+			return 0;
+		}
+
+		return dot / (Math.sqrt(aNorm) * Math.sqrt(bNorm));
+	}
+
+	private buildConversationSearchText(row: any): string {
+		const keywords = this.normalizeKeywords(row.keywords)
+			.map((k) => k.word)
+			.join(" ");
+		const label = row.topic_label || "";
+		const summary = row.summary || "";
+		return [label, summary, keywords].filter(Boolean).join(" | ");
+	}
+
+	private computeKeywordBoost(tokens: string[], haystack: string): number {
+		if (tokens.length === 0 || !haystack) {
+			return 0;
+		}
+
+		const lowerHaystack = haystack.toLowerCase();
+		let matches = 0;
+		for (const token of tokens) {
+			if (lowerHaystack.includes(token)) {
+				matches++;
+			}
+		}
+
+		return Math.min(matches * 0.02, 0.1);
+	}
+
+	private applyRelationshipFilters(
+		entries: RelationshipEntry[],
+		options: RelationshipQueryOptions
+	): RelationshipEntry[] {
+		let filtered = entries;
+
+		if (options.minAffinity) {
+			filtered = filtered.filter(
+				(entry) => entry.affinity_percentage >= options.minAffinity!
+			);
+		}
+
+		if (options.limit) {
+			filtered = filtered.slice(0, options.limit);
+		}
+
+		return filtered;
+	}
+
+	private normalizeAffinity(points: number): number {
+		if (points <= 0) {
+			return 0;
+		}
+
+		const score = Math.min(100, Math.log10(points + 1) * 25);
+		return Math.round(score * 100) / 100;
+	}
+
+	private buildConversationSummary(
+		topicLabel: string | undefined,
+		messageCount: number,
+		participantCount: number,
+		keywords: KeywordScore[]
+	): string {
+		const fallbackLabel =
+			topicLabel ||
+			keywords
+				.slice(0, 3)
+				.map((keyword) => keyword.word)
+				.join(", ") ||
+			"general discussion";
+
+		const participantText =
+			participantCount > 0
+				? `${participantCount} participant${participantCount === 1 ? "" : "s"}`
+				: "several participants";
+
+		const messageText =
+			messageCount > 0
+				? `${messageCount} message${messageCount === 1 ? "" : "s"}`
+				: "a handful of messages";
+
+		return `Conversation about ${fallbackLabel} with ${participantText} covering ${messageText}.`;
 	}
 }
 

@@ -77,6 +77,7 @@ export class SemanticKeywordExtractor {
 		// Extract terms from each message
 		for (let i = 0; i < messages.length; i++) {
 			const message = messages[i];
+			if (!message) continue;
 			const tokens = this.tokenize(message.content);
 
 			for (const token of tokens) {
@@ -118,7 +119,7 @@ export class SemanticKeywordExtractor {
 
 		for (const { term, messageIndices } of terms) {
 			const embeddings = messageIndices
-				.map((idx) => messages[idx].embedding)
+				.map((idx) => messages[idx]?.embedding)
 				.filter((emb): emb is number[] => emb !== undefined && emb.length > 0);
 
 			if (embeddings.length > 0) {
@@ -171,7 +172,7 @@ export class SemanticKeywordExtractor {
 				).size;
 
 				clusters.push({
-					label: clusterTerms[0], // Use most frequent term as label
+					label: clusterTerms[0] || "", // Use most frequent term as label
 					terms: clusterTerms,
 					centroid,
 					density: avgDensity,
@@ -221,7 +222,10 @@ export class SemanticKeywordExtractor {
 	private averageEmbeddings(embeddings: number[][]): number[] {
 		if (embeddings.length === 0) return [];
 
-		const dim = embeddings[0].length;
+		const firstEmbedding = embeddings[0];
+		if (!firstEmbedding) return [];
+		
+		const dim = firstEmbedding.length;
 		const avg = new Array(dim).fill(0);
 
 		for (const embedding of embeddings) {
@@ -248,9 +252,13 @@ export class SemanticKeywordExtractor {
 		let norm2 = 0;
 
 		for (let i = 0; i < vec1.length; i++) {
-			dotProduct += vec1[i] * vec2[i];
-			norm1 += vec1[i] * vec1[i];
-			norm2 += vec2[i] * vec2[i];
+			const v1 = vec1[i];
+			const v2 = vec2[i];
+			if (v1 === undefined || v2 === undefined) continue;
+			
+			dotProduct += v1 * v2;
+			norm1 += v1 * v1;
+			norm2 += v2 * v2;
 		}
 
 		const magnitude = Math.sqrt(norm1) * Math.sqrt(norm2);

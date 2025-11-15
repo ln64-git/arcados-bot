@@ -1,4 +1,4 @@
-import type { PostgreSQLManager } from "../../database/PostgreSQLManager.js";
+import type { PostgreSQLManager } from "../../../database/PostgreSQLManager";
 import type { AIManager } from "../../ai-assistant/AIManager.js";
 import { KeywordExtractor } from "./KeywordExtractor.js";
 
@@ -132,7 +132,7 @@ export class TopicLabeler {
       );
 
       // extractKeywords returns an object with keywords array
-      const keywords = Array.isArray(result) ? result : result?.keywords || [];
+      const keywords = Array.isArray(result) ? result : (result && 'keywords' in result ? result.keywords : []) || [];
 
       if (keywords.length === 0) {
         return {
@@ -212,7 +212,10 @@ export class TopicLabeler {
 
     for (let i = 0; i < maxSamples; i++) {
       const index = Math.floor(i * step);
-      sampled.push(messages[index]);
+      const message = messages[index];
+      if (message) {
+        sampled.push(message);
+      }
     }
 
     return sampled;
@@ -247,8 +250,14 @@ export class TopicLabeler {
       return "< 1 min";
     }
 
-    const first = messages[0].created_at.getTime();
-    const last = messages[messages.length - 1].created_at.getTime();
+    const firstMessage = messages[0];
+    const lastMessage = messages[messages.length - 1];
+    if (!firstMessage || !lastMessage) {
+      return "< 1 min";
+    }
+
+    const first = firstMessage.created_at.getTime();
+    const last = lastMessage.created_at.getTime();
     const durationMs = last - first;
     const minutes = Math.round(durationMs / (60 * 1000));
 

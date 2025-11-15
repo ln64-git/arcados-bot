@@ -1,4 +1,4 @@
-import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
+import type { PostgreSQLManager } from "../../../database/PostgreSQLManager";
 import type { KeywordScore } from "../semantic-analysis/types";
 
 /**

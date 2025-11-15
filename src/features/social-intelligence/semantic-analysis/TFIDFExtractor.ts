@@ -173,11 +173,15 @@ export class TFIDFExtractor {
 
 		// Extract bigrams (2-word phrases)
 		for (let i = 0; i < tokens.length - 1; i++) {
+			const current = tokens[i];
+			const next = tokens[i + 1];
+			if (!current || !next) continue;
+			
 			if (
-				this.isValidToken(tokens[i]) &&
-				this.isValidToken(tokens[i + 1])
+				this.isValidToken(current) &&
+				this.isValidToken(next)
 			) {
-				const bigram = `${tokens[i]} ${tokens[i + 1]}`;
+				const bigram = `${current} ${next}`;
 				if (this.isValidNgram(bigram)) {
 					terms.push(bigram);
 				}
@@ -187,12 +191,17 @@ export class TFIDFExtractor {
 		// Extract trigrams (3-word phrases)
 		if (this.MAX_NGRAM_LENGTH >= 3) {
 			for (let i = 0; i < tokens.length - 2; i++) {
+				const first = tokens[i];
+				const second = tokens[i + 1];
+				const third = tokens[i + 2];
+				if (!first || !second || !third) continue;
+				
 				if (
-					this.isValidToken(tokens[i]) &&
-					this.isValidToken(tokens[i + 1]) &&
-					this.isValidToken(tokens[i + 2])
+					this.isValidToken(first) &&
+					this.isValidToken(second) &&
+					this.isValidToken(third)
 				) {
-					const trigram = `${tokens[i]} ${tokens[i + 1]} ${tokens[i + 2]}`;
+					const trigram = `${first} ${second} ${third}`;
 					if (this.isValidNgram(trigram)) {
 						terms.push(trigram);
 					}

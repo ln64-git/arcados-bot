@@ -8,8 +8,6 @@ import { config } from "../../../config";
 import { AIManager } from "../AIManager";
 import type { Command } from "../../../types";
 import { startSession } from "../ChatSessionManager";
-import { resolveMentionsInText } from "../utils/MentionResolver";
-import { PostgreSQLManager } from "../../database/PostgreSQLManager";
 
 interface DiscordField {
   name: string;

@@ -6,7 +6,7 @@ import {
 } from "../DatabaseTools";
 import type { ConversationEntry } from "../../social-intelligence/types";
 import { ConversationDetector } from "../../social-intelligence/conversation-detection/ConversationDetector";
-import type { RelationshipEntry } from "../../database/PostgreSQLManager";
+import type { RelationshipEntry } from "../../../database/PostgreSQLManager";
 
 /**
  * Get conversations between two users
@@ -72,7 +72,7 @@ export const getConversationsBetweenTool: DatabaseTool = {
         0
       );
       const totalDuration = conversations.reduce(
-        (sum, conv) => sum + conv.duration_minutes,
+        (sum, conv) => sum + (conv.duration_minutes || 0),
         0
       );
 
@@ -512,10 +512,10 @@ export const analyzeConversationPatternsTool: DatabaseTool = {
         0
       );
       const avgDuration =
-        conversations.reduce((sum, conv) => sum + conv.duration_minutes, 0) /
+        conversations.reduce((sum, conv) => sum + (conv.duration_minutes || 0), 0) /
         totalConversations;
       const totalDuration = conversations.reduce(
-        (sum, conv) => sum + conv.duration_minutes,
+        (sum, conv) => sum + (conv.duration_minutes || 0),
         0
       );
 

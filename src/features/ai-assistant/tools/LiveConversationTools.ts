@@ -750,7 +750,7 @@ export const getServerActivitySummary: DatabaseTool = {
 
 Most Active Channels:
 ${enrichedChannels
-	.map((ch, i) => {
+	.map((ch: { channelName: string; conversationCount: number; totalMessages: number; uniqueParticipants: number; recentTopics: Array<{ summary: string; participantCount: number; messageCount: number }> }, i: number) => {
 		const topicsText =
 			ch.recentTopics.length > 0
 				? ch.recentTopics
@@ -769,7 +769,7 @@ ${enrichedChannels
 	})
 	.join("\n\n")}
 
-Server-wide: ${enrichedChannels.reduce((sum, ch) => sum + ch.conversationCount, 0)} conversations, ${enrichedChannels.reduce((sum, ch) => sum + ch.totalMessages, 0)} messages`;
+Server-wide: ${enrichedChannels.reduce((sum: number, ch: { conversationCount: number }) => sum + ch.conversationCount, 0)} conversations, ${enrichedChannels.reduce((sum: number, ch: { totalMessages: number }) => sum + ch.totalMessages, 0)} messages`;
 
 			return {
 				success: true,

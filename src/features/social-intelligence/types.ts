@@ -60,6 +60,12 @@ export interface ConversationEntry {
 	summary?: string;
 	keywords?: string[];
 	topic_label?: string;
+	channel_id?: string;
+	message_ids?: string[];
+	interaction_types?: InteractionType[];
+	duration_minutes?: number;
+	conversation_id?: string;
+	has_name_usage?: boolean;
 }
 
 // ============================================================================

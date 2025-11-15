@@ -1,5 +1,5 @@
 import type { AIManager } from "../../ai-assistant/AIManager";
-import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
+import type { PostgreSQLManager } from "../../../database/PostgreSQLManager";
 import { EmbeddingService } from "./EmbeddingService";
 import { TFIDFExtractor } from "./TFIDFExtractor";
 import type { KeywordMessage } from "./types";

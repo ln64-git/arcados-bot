@@ -6,7 +6,7 @@
  * Manages vocabulary caching and provides multiple extraction strategies.
  */
 
-import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
+import type { PostgreSQLManager } from "../../../database/PostgreSQLManager";
 import { SemanticKeywordExtractor } from "./SemanticKeywordExtractor";
 import { TFIDFExtractor } from "./TFIDFExtractor";
 import { VocabularyBuilder } from "./VocabularyBuilder";

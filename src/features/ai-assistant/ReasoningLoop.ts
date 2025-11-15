@@ -1,4 +1,4 @@
-import type { PostgreSQLManager } from "../database/PostgreSQLManager";
+import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
 import { RelationshipMapper } from "../social-intelligence/relationship-mapping/RelationshipMapper";
 
 type Message = { role: "system" | "user" | "assistant"; content: string };
@@ -214,7 +214,7 @@ export function createReasoningLoop(
           }
         }
       }
-    } catch {}
+    } catch (e: unknown) {}
   };
 
   return new ReasoningLoop(callModel, tools, memoryWrite);

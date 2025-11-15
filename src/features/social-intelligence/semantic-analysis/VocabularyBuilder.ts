@@ -6,7 +6,7 @@
  * identifies stopwords based on frequency distribution rather than hardcoded lists.
  */
 
-import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
+import type { PostgreSQLManager } from "../../../database/PostgreSQLManager";
 import type {
 	GuildVocabulary,
 	VocabularyBuildOptions,
@@ -86,19 +86,18 @@ export class VocabularyBuilder {
 	private async fetchGuildConversations(
 		options: VocabularyBuildOptions,
 	): Promise<Array<{ id: string; messages: string[] }>> {
-		// Fetch conversation segments with their messages
-		const result = await this.db.query<{
-			id: string;
-			message_ids: string[];
-		}>(`
-      SELECT id, message_ids
-      FROM conversation_segments
-      WHERE guild_id = $1
-        AND status = 'finalized'
-        AND message_count >= 2
-      ORDER BY created_at DESC
-      ${options.sampleSize ? `LIMIT ${options.sampleSize}` : ""}
-    `, [options.guildId]);
+		const result = await this.db.query(
+			`
+        SELECT id, message_ids
+        FROM conversation_segments
+        WHERE guild_id = $1
+          AND status = 'finalized'
+          AND message_count >= 2
+        ORDER BY created_at DESC
+        ${options.sampleSize ? `LIMIT ${options.sampleSize}` : ""}
+      `,
+			[options.guildId],
+		);
 
 		if (!result.success || !result.data) {
 			console.error(
@@ -114,18 +113,21 @@ export class VocabularyBuilder {
 		for (const segment of result.data) {
 			if (segment.message_ids.length === 0) continue;
 
-			const messagesResult = await this.db.query<{ content: string }>(`
-        SELECT content
-        FROM messages
-        WHERE id = ANY($1)
-          AND content IS NOT NULL
-          AND content != ''
-      `, [segment.message_ids]);
+			const messagesResult = await this.db.query(
+				`
+          SELECT content
+          FROM messages
+          WHERE id = ANY($1::TEXT[])
+            AND content IS NOT NULL
+            AND content != ''
+        `,
+				[segment.message_ids],
+			);
 
 			if (messagesResult.success && messagesResult.data) {
 				const messageContents = messagesResult.data
-					.map((m) => m.content)
-					.filter((c) => c && c.trim().length > 0);
+					.map((m: { content: string }) => m.content)
+					.filter((c: string) => c && c.trim().length > 0);
 
 				if (messageContents.length > 0) {
 					conversations.push({
@@ -185,11 +187,12 @@ export class VocabularyBuilder {
 
 		// Extract bigrams (2-word phrases)
 		for (let i = 0; i < tokens.length - 1; i++) {
-			if (
-				this.isValidToken(tokens[i]) &&
-				this.isValidToken(tokens[i + 1])
-			) {
-				const bigram = `${tokens[i]} ${tokens[i + 1]}`;
+			const current = tokens[i];
+			const next = tokens[i + 1];
+			if (!current || !next) continue;
+
+			if (this.isValidToken(current) && this.isValidToken(next)) {
+				const bigram = `${current} ${next}`;
 				// Also validate the combined bigram
 				if (this.isValidNgram(bigram)) {
 					terms.add(bigram);
@@ -200,12 +203,19 @@ export class VocabularyBuilder {
 		// Extract trigrams (3-word phrases)
 		if (this.MAX_NGRAM_LENGTH >= 3) {
 			for (let i = 0; i < tokens.length - 2; i++) {
+				const first = tokens[i];
+				const second = tokens[i + 1];
+				const third = tokens[i + 2];
+				if (!first || !second || !third) {
+					continue;
+				}
+
 				if (
-					this.isValidToken(tokens[i]) &&
-					this.isValidToken(tokens[i + 1]) &&
-					this.isValidToken(tokens[i + 2])
+					this.isValidToken(first) &&
+					this.isValidToken(second) &&
+					this.isValidToken(third)
 				) {
-					const trigram = `${tokens[i]} ${tokens[i + 1]} ${tokens[i + 2]}`;
+					const trigram = `${first} ${second} ${third}`;
 					// Also validate the combined trigram
 					if (this.isValidNgram(trigram)) {
 						terms.add(trigram);
@@ -340,11 +350,11 @@ export class VocabularyBuilder {
 					: 0,
 			median_idf:
 				idfScores.length > 0
-					? idfScores[Math.floor(idfScores.length / 2)]
+					? idfScores[Math.floor(idfScores.length / 2)] ?? 0
 					: 0,
 			p90_idf:
 				idfScores.length > 0
-					? idfScores[Math.floor(idfScores.length * 0.9)]
+					? idfScores[Math.floor(idfScores.length * 0.9)] ?? 0
 					: 0,
 		};
 	}

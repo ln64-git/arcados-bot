@@ -1,7 +1,4 @@
-import {
-  PostgreSQLManager,
-  type DatabaseResult,
-} from "../../database/PostgreSQLManager";
+import { PostgreSQLManager } from "../../../database/PostgreSQLManager";
 
 /**
  * Resolves Discord user mentions (<@userId>) to display names

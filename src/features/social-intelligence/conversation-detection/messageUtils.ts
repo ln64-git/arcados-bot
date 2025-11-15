@@ -31,7 +31,7 @@ export function extractMentionedUserIds(content: string, knownBotIds?: Set<strin
 
 	while ((match = mentionRegex.exec(content)) !== null) {
 		const userId = match[1];
-		if (!knownBotIds || !knownBotIds.has(userId)) {
+		if (userId && (!knownBotIds || !knownBotIds.has(userId))) {
 			mentions.push(userId);
 		}
 	}

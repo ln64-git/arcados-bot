@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { AIManager } from "../AIManager";
-import { PostgreSQLManager } from "../../database/PostgreSQLManager";
+import { PostgreSQLManager } from "../../../database/PostgreSQLManager";
 
 // CLI inputs
 const toolName = process.argv[2];

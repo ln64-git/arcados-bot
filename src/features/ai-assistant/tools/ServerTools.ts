@@ -279,7 +279,7 @@ export const getServerNetworkTool: DatabaseTool = {
         };
       }
 
-      const members = membersResult.data.filter((m) => !m.bot);
+      const members = membersResult.data.filter((m: { bot?: boolean }) => !m.bot);
       let totalRelationships = 0;
       let membersWithRelationships = 0;
       let membersWithoutRelationships = 0;

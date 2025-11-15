@@ -1,5 +1,5 @@
-import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
-import type { DatabaseResult } from "../../database/PostgreSQLManager";
+import type { PostgreSQLManager } from "../../../database/PostgreSQLManager";
+import type { DatabaseResult } from "../../../database/PostgreSQLManager";
 import type { ConversationEntry } from "../types";
 import {
   TopicDriftDetector,
@@ -222,10 +222,10 @@ export class ConversationDetector {
         start_time: new Date(row.start_time),
         end_time: new Date(row.end_time),
         message_count: row.message_count,
+        participants: row.participants || [],
         channel_id: row.channel_id,
         interaction_types: row.interaction_types ? row.interaction_types.split(',') : [],
         duration_minutes: row.duration_minutes || 0,
-        participant_count: row.participant_count || 2,
       }));
 
       return { success: true, data: conversations };
@@ -335,8 +335,18 @@ export class ConversationDetector {
         return { success: true, data: [] };
       }
 
-      const messages = messagesResult.data;
-      const uniqueAuthors = new Set(messages.map((m: any) => m.author_id));
+      type ChannelMessageRow = {
+        id: string;
+        author_id: string;
+        content: string | null;
+        created_at: Date;
+        referenced_message_id?: string | null;
+        display_name?: string | null;
+        username?: string | null;
+      };
+
+      const messages = (messagesResult.data as ChannelMessageRow[]) || [];
+      const uniqueAuthors = new Set<string>(messages.map((m) => m.author_id));
 
       // Build relationship context for all participants
       const relationshipContext = await this.buildRelationshipContextForChannel(
@@ -613,7 +623,6 @@ export class ConversationDetector {
         start_time: convo.startTime,
         end_time: convo.endTime,
         message_count: convo.messages.length,
-        participant_count: convo.participants.size,
         participants,
         channel_id: channelId,
         message_ids: Array.from(convo.messageIds),
@@ -749,11 +758,11 @@ export class ConversationDetector {
       if (conv.message_count < 2) return false;
 
       // Must have messages from both users
-      const hasUser1Messages = conv.message_ids?.some((id) => {
+      const hasUser1Messages = conv.message_ids?.some((id: string) => {
         const message = validMessages.find((m) => m.id === id);
         return message && message.author_id === user1Id;
       });
-      const hasUser2Messages = conv.message_ids?.some((id) => {
+      const hasUser2Messages = conv.message_ids?.some((id: string) => {
         const message = validMessages.find((m) => m.id === id);
         return message && message.author_id === user2Id;
       });
@@ -903,15 +912,11 @@ export class ConversationDetector {
       start_time: startTime,
       end_time: endTime,
       message_count: messages.length,
-      participant_count: 2, // Two users in this conversation
+      participants: [user1Id, user2Id],
       channel_id: messages[0].channel_id, // Assume all messages in same channel
       message_ids: messages.map((m) => m.id),
       interaction_types: hasMentions ? ["mention"] : [],
       duration_minutes: durationMinutes,
-      user_names: {
-        user1: user1Names,
-        user2: user2Names,
-      },
       has_name_usage: hasNameUsage, // Add flag for actual name usage
     };
   }
@@ -2912,13 +2917,15 @@ export class ConversationDetector {
       embedding: parseEmbeddingValue(msg.embedding),
     }));
 
-    const driftMessages: DriftMessage[] = dbMessages.map((msg) => ({
-      id: msg.id,
-      author_id: msg.author_id,
-      content: msg.content,
-      created_at: msg.created_at,
-      embedding: msg.embedding,
-    }));
+    const driftMessages: DriftMessage[] = dbMessages.map(
+      (msg): DriftMessage => ({
+        id: msg.id,
+        author_id: msg.author_id,
+        content: msg.content,
+        created_at: msg.created_at,
+        embedding: msg.embedding,
+      })
+    );
 
     const participants = Array.isArray(row.participants)
       ? row.participants
@@ -4694,12 +4701,11 @@ export class ConversationDetector {
           start_time: convo.startTime,
           end_time: convo.endTime,
           message_count: convo.messages.length,
-          participant_count: convo.participants.size,
+          participants: Array.from(convo.participants),
           channel_id: channelId,
           message_ids: Array.from(convo.messageIds),
           interaction_types: [],
           duration_minutes: Math.round((convo.endTime.getTime() - convo.startTime.getTime()) / (1000 * 60)),
-          participants: Array.from(convo.participants)
         });
       }
 
@@ -5013,7 +5019,6 @@ export class ConversationDetector {
           start_time: startTime,
           end_time: endTime,
           message_count: group.messages.length,
-          participant_count: participants.size,
           participants: Array.from(participants),
           channel_id: channelId,
           message_ids: messageIds,

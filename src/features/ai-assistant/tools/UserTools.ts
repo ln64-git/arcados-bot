@@ -4,7 +4,7 @@ import {
   type DatabaseToolResult,
   formatUserInfo,
 } from "../DatabaseTools";
-import type { MemberData } from "../../database/PostgreSQLManager";
+import type { MemberData } from "../../../database/PostgreSQLManager";
 
 /**
  * Get complete user profile information
@@ -106,12 +106,12 @@ export const getUserInfoTool: DatabaseTool = {
       // Get top relationships with more context
       const network = member.relationship_network || [];
       const topRelationshipsRaw = network
-        .sort((a, b) => b.affinity_percentage - a.affinity_percentage)
+        .sort((a: { affinity_percentage: number }, b: { affinity_percentage: number }) => b.affinity_percentage - a.affinity_percentage)
         .slice(0, 5);
 
       // Enrich relationships with display names if missing
       const enrichedRelationships = await Promise.all(
-        topRelationshipsRaw.map(async (r) => {
+        topRelationshipsRaw.map(async (r: { display_name?: string; username?: string; user_id: string; affinity_percentage: number; interaction_count: number; summary?: string }) => {
           if (r.display_name || r.username) {
             return r; // Already has a name
           }
@@ -152,7 +152,7 @@ export const getUserInfoTool: DatabaseTool = {
       // Also enrich the full network for context (top 10)
       const topNetworkRaw = network.slice(0, 10);
       const enrichedNetwork = await Promise.all(
-        topNetworkRaw.map(async (r) => {
+        topNetworkRaw.map(async (r: { display_name?: string; username?: string; user_id: string; affinity_percentage: number; interaction_count: number }) => {
           if (r.display_name || r.username) {
             return r;
           }
