@@ -55,17 +55,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Feature Layers
 
-#### Guild Synchronization (`src/features/guild-sync/`)
+#### Discord Synchronization (`src/features/discord-sync/`)
 Syncs Discord data to PostgreSQL with real-time updates:
-- **GuildSyncManager**: Batch syncs guilds, channels, roles, members, and messages on demand
-- **DatabaseHealer** (Bot.ts:81-86): Runs at boot and periodically; validates data consistency, backfills missing relationships/segments, repairs reply chains
-- **LiveSyncWatcher** (Bot.ts:90-96): Real-time event listener that incrementally updates PostgreSQL as Discord events occur (messageCreate, reactionAdd, memberJoin, etc.)
+- **StateSyncService**: Coordinates live event sync and background reconciliation
+- **LiveEventSync**: Real-time event listener that incrementally updates PostgreSQL as Discord events occur (messageCreate, reactionAdd, memberJoin, etc.)
+- **ReconciliationSync**: Background healing that validates data consistency, backfills missing data, repairs gaps from bot downtime
+- **SyncCoordinator**: Per-resource locking to prevent race conditions between live sync and reconciliation
 
-#### Relationship Network (`src/features/relationship-network/`)
-Models user interactions as directed edges with interaction counters:
-- **NetworkManager**: Calculates affinity scores between users combining message interactions and conversations
-- **ConversationManager**: Groups messages into multi-participant conversation segments via interaction clustering (5-minute inactivity threshold, minimum 3 messages)
-- **Types** (`types.ts`): Defines `ConversationEntry`, `AffinityScoreResult`, `UserInteractionSummary`
+#### Social Intelligence (`src/features/social-intelligence/`)
+Transforms raw Discord interactions into structured relationship and conversation insights:
+- **Relationship Mapping**: Tracks user interactions, calculates affinity scores, maintains relationship graphs
+- **Conversation Detection**: Groups messages into multi-participant conversation segments using multi-strategy grouping
+- **Semantic Analysis**: Extracts keywords (TF-IDF + semantic), generates embeddings, labels topics with AI
+- **Types** (`types.ts`): Defines `ConversationEntry`, `AffinityScoreResult`, `UserInteractionSummary`, `StreamingConversation`
 
 #### Database (`src/features/database/`)
 - **PostgreSQLManager**: Single connection pool; provides query methods for CRUD operations on guilds, channels, members, messages, relationship edges, conversation segments, and embeddings
@@ -101,19 +103,21 @@ Provides multi-provider LLM chat with tool integration:
 - Conversation tools fetch segments, participants, embeddings
 - Analysis tools provide metadata and trends
 
-**LiveSyncWatcher events**:
-- messageCreate → increments edge counters, buffers message for conversation segment finalization
+**LiveEventSync events**:
+- messageCreate → increments relationship edges, buffers message for conversation detection, creates streaming conversations
 - reactionAdd/reactionRemove → increments edge counters
 - guildMemberAdd/Update → updates member profiles
 - channelCreate/Update/Delete → updates channel records
 - roleCreate/Update/Delete → updates role records
-- Conversation segments auto-finalize after 5 minutes inactivity or segment compaction
+- Streaming conversations created on 2+ messages, finalized after 10-min inactivity
 
-**Conversation Segment Lifecycle**:
-1. ConversationManager detects active conversations via interaction clustering in channel buffers
-2. Segments are finalized when inactivity threshold is reached
-3. Finalized segments are inserted into `conversation_segments` table with message IDs, participant list, timestamps, and optional embeddings
-4. Used for context retrieval (what topics have users discussed)
+**Conversation Lifecycle**:
+1. ConversationDetector buffers messages per channel
+2. On 2+ messages: create `streaming_conversation` (immediately queryable with preliminary keywords)
+3. After 10-min inactivity OR 50-message buffer: multi-strategy grouping + validation
+4. Full enrichment: hybrid keywords, embeddings, AI topic labels
+5. Finalized segments stored in `conversation_segments` table
+6. Used for context retrieval (what topics have users discussed)
 
 ## Configuration
 
@@ -163,24 +167,25 @@ Commands automatically receive guild context and can access AI tools, database m
 ## Key Files to Know
 
 - [Bot.ts](src/Bot.ts) - Main event orchestrator and command dispatcher
-- [PostgreSQLManager.ts](src/features/database/PostgreSQLManager.ts) - Database interface
-- [NetworkManager.ts](src/features/relationship-network/NetworkManager.ts) - Affinity/relationship logic
-- [ConversationManager.ts](src/features/relationship-network/ConversationManager.ts) - Conversation segmentation
-- [DatabaseHealer.ts](src/features/guild-sync/DatabaseHealer.ts) - Boot-time consistency checks
-- [LiveSyncWatcher.ts](src/features/guild-sync/LiveSyncWatcher.ts) - Real-time event sync
+- [PostgreSQLManager.ts](src/database/PostgreSQLManager.ts) - Database interface
+- [StateSyncService.ts](src/features/discord-sync/StateSyncService.ts) - Discord sync coordinator
+- [LiveEventSync.ts](src/features/discord-sync/LiveEventSync.ts) - Real-time Discord event sync
+- [ReconciliationSync.ts](src/features/discord-sync/ReconciliationSync.ts) - Background healing
+- [RelationshipMapper.ts](src/features/social-intelligence/relationship-mapping/RelationshipMapper.ts) - Affinity/relationship logic
+- [ConversationDetector.ts](src/features/social-intelligence/conversation-detection/ConversationDetector.ts) - Conversation detection and grouping
 - [AIManager.ts](src/features/ai-assistant/AIManager.ts) - Multi-provider LLM orchestration
 - [DatabaseTools.ts](src/features/ai-assistant/DatabaseTools.ts) - Tool registry for AI
 
 ## Common Tasks
 
-**Modify AI behavior**: Personas are in AIManager.ts (lines 33-48); persona selection in generateText calls specifies which to use.
+**Modify AI behavior**: Personas are in AIManager.ts; persona selection in generateText calls specifies which to use.
 
 **Add a database schema**: PostgreSQLManager has schema creation methods; update via migration pattern in `recreate:schema` script.
 
-**Track new interaction types**: ConversationManager uses regex patterns (lines 36-54) to classify messages; add new patterns as needed, then regenerate conversation segments.
+**Track new interaction types**: ConversationDetector uses multi-strategy grouping; add new strategies in `conversation-detection/strategies/` directory.
 
 **Integrate new LLM provider**: Create provider class extending BaseAIProvider, register in AIManager.initializeProviders(), add API key to config.
 
-**Debug conversation detection**: ConversationManager buffers messages per channel with inactivity timeouts; add console.log in detectConversations method or watch-db script.
+**Debug conversation detection**: ConversationDetector buffers messages per channel with 10-min inactivity timeouts; check `streaming_conversations` table or add logging.
 
-**Extend bot mention handling**: Message handling logic in Bot.ts lines 169-315; modify sanitization, context resolution, or chunking as needed.
+**Extend bot mention handling**: Message handling logic in Bot.ts; modify sanitization, context resolution, or chunking as needed.

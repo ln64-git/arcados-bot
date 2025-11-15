@@ -25,7 +25,7 @@ import { semanticSearchTools } from "./tools/SemanticSearchTools";
 import { storylineTools } from "./tools/StorylineTools";
 import type { PostgreSQLManager } from "../database/PostgreSQLManager";
 import { computeResponsePolicy, type ConversationMode } from "./utils/ResponseLengthPolicy";
-import { ConversationManager } from "../relationship-network/ConversationManager";
+import { ConversationDetector } from "../social-intelligence/conversation-detection/ConversationDetector";
 
 export class AIManager {
   private static instance: AIManager | null = null;
@@ -729,8 +729,8 @@ export class AIManager {
           // Prefetch live conversation context if in chat mode and channel is provided
           if (mode === "chat" && options?.channelId) {
             try {
-              const conversationManager = new ConversationManager(db);
-              const liveData = conversationManager.getLiveConversationInChannel(
+              const conversationDetector = new ConversationDetector(db);
+              const liveData = conversationDetector.getLiveConversationInChannel(
                 options.channelId,
                 guildId
               );

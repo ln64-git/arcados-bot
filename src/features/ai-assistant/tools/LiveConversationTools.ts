@@ -1,6 +1,6 @@
 import type { DatabaseTool, ToolContext } from "../DatabaseTools";
-import { ConversationManager } from "../../relationship-network/ConversationManager";
-import { RelationshipNetworkManager } from "../../relationship-network/NetworkManager";
+import { ConversationDetector } from "../../social-intelligence/conversation-detection/ConversationDetector";
+import { RelationshipMapper } from "../../social-intelligence/relationship-mapping/RelationshipMapper";
 
 /**
  * Get live conversation context from the current channel
@@ -30,7 +30,7 @@ export const getLiveConversationContext: DatabaseTool = {
 			const channelId = String(params.channelId);
 			const messageLimit = Math.min(params.messageLimit || 10, 20);
 
-			const conversationManager = new ConversationManager(context.db);
+			const conversationManager = new ConversationDetector(context.db);
 			const liveData = conversationManager.getLiveConversationInChannel(
 				channelId,
 				context.guildId,
@@ -192,8 +192,8 @@ export const getConversationParticipantRelationships: DatabaseTool = {
 		try {
 			const channelId = String(params.channelId);
 
-			const conversationManager = new ConversationManager(context.db);
-			const networkManager = new RelationshipNetworkManager(context.db);
+			const conversationManager = new ConversationDetector(context.db);
+			const networkManager = new RelationshipMapper(context.db);
 
 			// Get active participants
 			const participantIds =

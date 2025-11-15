@@ -3,7 +3,7 @@ import {
   type MemberData,
   type RelationshipEntry,
 } from "../database/PostgreSQLManager";
-import type { ConversationEntry } from "../relationship-network/types";
+import type { ConversationEntry } from "../social-intelligence/types";
 
 /**
  * Context passed to tool execution functions

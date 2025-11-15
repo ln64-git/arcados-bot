@@ -7,14 +7,12 @@ import {
 } from "discord.js";
 import type { Interaction } from "discord.js";
 import { config } from "./config";
-import { PostgreSQLManager } from "./features/database/PostgreSQLManager";
 import type { Command } from "./types";
 import { loadCommands } from "./utils/loadCommands";
 import { AIManager } from "./features/ai-assistant/AIManager";
-import { DatabaseHealer } from "./features/guild-sync/DatabaseHealer";
-import { LiveSyncWatcher } from "./features/guild-sync/LiveSyncWatcher";
-import { RelationshipNetworkManager } from "./features/relationship-network/NetworkManager";
-import { ConversationManager } from "./features/relationship-network/ConversationManager";
+import { StateSyncService } from "./features/discord-sync/StateSyncService";
+import { RelationshipMapper } from "./features/social-intelligence/relationship-mapping/RelationshipMapper";
+import { ConversationDetector } from "./features/social-intelligence/conversation-detection/ConversationDetector";
 import {
   getSessionByRepliedMessageId,
   appendUserTurn,
@@ -23,15 +21,15 @@ import {
   startSession,
 } from "./features/ai-assistant/ChatSessionManager";
 import { resolveMentionsInText } from "./features/ai-assistant/utils/MentionResolver";
+import { PostgreSQLManager } from "./features/database/PostgreSQLManager";
 
 export class Bot {
   public client: Client;
   public commands = new Collection<string, Command>();
   public postgresManager: PostgreSQLManager;
-  private databaseHealer?: DatabaseHealer;
-  private liveSyncWatcher?: LiveSyncWatcher;
-  private relationshipManager?: RelationshipNetworkManager;
-  private conversationManager?: ConversationManager;
+  private stateSyncService?: StateSyncService;
+  private relationshipMapper?: RelationshipMapper;
+  private conversationDetector?: ConversationDetector;
 
   constructor() {
     this.client = new Client({
@@ -70,30 +68,22 @@ export class Bot {
       console.log(`🔹 Logged in as ${this.client.user?.tag}`);
 
       // Initialize realtime sync components
-      this.relationshipManager = new RelationshipNetworkManager(
+      this.relationshipMapper = new RelationshipMapper(
         this.postgresManager
       );
-      this.conversationManager = new ConversationManager(this.postgresManager);
+      this.conversationDetector = new ConversationDetector(this.postgresManager);
       // Real-time AI topic splitting removed - now handled by batch enhancement script
-      // See: npm run ai:enhance for post-processing AI conversation enhancement 
+      // See: npm run ai:enhance for post-processing AI conversation enhancement
 
-      // Start database healer and maintenance
-      this.databaseHealer = new DatabaseHealer(
+      // Start unified state sync service (replaces DatabaseHealer + LiveSyncWatcher)
+      this.stateSyncService = new StateSyncService(
         this.client,
         this.postgresManager,
-        this.relationshipManager,
+        this.relationshipMapper,
+        this.conversationDetector,
         false // Set to true for verbose logging
       );
-      this.databaseHealer.startMaintenance();
-
-      // Start live sync watcher
-      this.liveSyncWatcher = new LiveSyncWatcher(
-        this.client,
-        this.postgresManager,
-        this.relationshipManager,
-        this.conversationManager
-      );
-      this.liveSyncWatcher.start();
+      await this.stateSyncService.start();
 
       // Load active conversations for guilds (filtered by config.guildId if set)
       const guilds = this.client.guilds.cache;
@@ -103,7 +93,7 @@ export class Bot {
           console.log(
             `🔹 Limiting sync to guild: ${targetGuild.name} (${config.guildId})`
           );
-          await this.conversationManager!.loadActiveConversations(
+          await this.conversationDetector!.loadActiveConversations(
             targetGuild.id
           );
         } else {
@@ -113,7 +103,7 @@ export class Bot {
         }
       } else {
         for (const [, guild] of guilds) {
-          await this.conversationManager!.loadActiveConversations(guild.id);
+          await this.conversationDetector!.loadActiveConversations(guild.id);
         }
       }
 
@@ -122,13 +112,13 @@ export class Bot {
         if (config.guildId) {
           const targetGuild = this.client.guilds.cache.get(config.guildId);
           if (targetGuild) {
-            await this.conversationManager!.cleanupStaleConversations(
+            await this.conversationDetector!.cleanupStaleConversations(
               targetGuild.id
             );
           }
         } else {
           for (const [, guild] of this.client.guilds.cache) {
-            await this.conversationManager!.cleanupStaleConversations(guild.id);
+            await this.conversationDetector!.cleanupStaleConversations(guild.id);
           }
         }
       }, 15 * 60 * 1000);
@@ -136,7 +126,7 @@ export class Bot {
       // Periodically flush inactive buffers to ensure conversations finalize in real-time
       setInterval(async () => {
         try {
-          await this.conversationManager?.flushInactiveBuffers();
+          await this.conversationDetector?.flushInactiveBuffers();
         } catch (error) {
           console.error("🔸 Failed to flush inactive conversation buffers:", error);
         }
@@ -147,21 +137,18 @@ export class Bot {
         if (config.guildId) {
           const targetGuild = this.client.guilds.cache.get(config.guildId);
           if (targetGuild) {
-            await this.conversationManager!.runSemanticMergingForGuild(
+            await this.conversationDetector!.runSemanticMergingForGuild(
               targetGuild.id
             );
           }
         } else {
           for (const [, guild] of this.client.guilds.cache) {
-            await this.conversationManager!.runSemanticMergingForGuild(
+            await this.conversationDetector!.runSemanticMergingForGuild(
               guild.id
             );
           }
         }
       }, 60 * 60 * 1000);
-
-      // Run initial healing pass (after main functionality is started)
-      await this.databaseHealer.runOnce();
     });
 
     // Interaction event for slash commands
@@ -518,14 +505,9 @@ export class Bot {
   async shutdown(): Promise<void> {
     // Silent shutdown - no console output to prevent lingering logs
 
-    // Finalize all active conversations
-    if (this.conversationManager) {
-      await this.conversationManager.finalizeAllSegments();
-    }
-
-    // Stop live sync watcher
-    if (this.liveSyncWatcher) {
-      await this.liveSyncWatcher.stop();
+    // Stop unified state sync service (handles conversation finalization + cleanup)
+    if (this.stateSyncService) {
+      await this.stateSyncService.stop();
     }
 
     // Immediately destroy Discord client to stop all Discord operations

@@ -4,8 +4,8 @@ import {
   type DatabaseToolResult,
   formatConversation,
 } from "../DatabaseTools";
-import type { ConversationEntry } from "../../relationship-network/types";
-import { ConversationManager } from "../../relationship-network/ConversationManager";
+import type { ConversationEntry } from "../../social-intelligence/types";
+import { ConversationDetector } from "../../social-intelligence/conversation-detection/ConversationDetector";
 import type { RelationshipEntry } from "../../database/PostgreSQLManager";
 
 /**
@@ -39,7 +39,7 @@ export const getConversationsBetweenTool: DatabaseTool = {
   ): Promise<string | DatabaseToolResult> => {
     const { user1Id, user2Id, limit } = params as { user1Id: string; user2Id: string; limit?: number };
     try {
-      const conversationManager = new ConversationManager(context.db);
+      const conversationManager = new ConversationDetector(context.db);
       const result = await conversationManager.detectConversations(
         user1Id,
         user2Id,
@@ -135,7 +135,7 @@ export const getConversationDetailsTool: DatabaseTool = {
       user2Id: string;
     };
     try {
-      const conversationManager = new ConversationManager(context.db);
+      const conversationManager = new ConversationDetector(context.db);
       const result = await conversationManager.detectConversations(
         user1Id,
         user2Id,
@@ -347,7 +347,7 @@ export const getConversationMessagesTool: DatabaseTool = {
     };
     try {
       // First get the conversation to find message IDs
-      const conversationManager = new ConversationManager(context.db);
+      const conversationManager = new ConversationDetector(context.db);
       const convResult = await conversationManager.detectConversations(
         user1Id,
         user2Id,
@@ -477,7 +477,7 @@ export const analyzeConversationPatternsTool: DatabaseTool = {
   ): Promise<string | DatabaseToolResult> => {
     const { user1Id, user2Id } = params as { user1Id: string; user2Id: string };
     try {
-      const conversationManager = new ConversationManager(context.db);
+      const conversationManager = new ConversationDetector(context.db);
       const result = await conversationManager.detectConversations(
         user1Id,
         user2Id,

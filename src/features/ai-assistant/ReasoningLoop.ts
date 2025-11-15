@@ -1,5 +1,5 @@
 import type { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { RelationshipNetworkManager } from "../relationship-network/NetworkManager";
+import { RelationshipMapper } from "../social-intelligence/relationship-mapping/RelationshipMapper";
 
 type Message = { role: "system" | "user" | "assistant"; content: string };
 
@@ -118,7 +118,7 @@ export class ReasoningLoop {
  */
 export function createReasoningLoop(
   db: PostgreSQLManager,
-  relationshipManager: RelationshipNetworkManager,
+  relationshipMapper: RelationshipMapper,
   botUserId: string,
   callModel: (messages: Message[]) => Promise<string>
 ): ReasoningLoop {
@@ -128,7 +128,7 @@ export function createReasoningLoop(
         const userId = args.userId || args.user_id;
         const guildId = args.guildId || args.guild_id;
 
-        const dyadResult = await relationshipManager.getDyadSummary(
+        const dyadResult = await relationshipMapper.getDyadSummary(
           botUserId,
           userId,
           guildId
@@ -158,7 +158,7 @@ export function createReasoningLoop(
           return { ok: false, error: "Need at least 2 participants" };
         }
 
-        const matrixResult = await relationshipManager.getPeerMatrix(
+        const matrixResult = await relationshipMapper.getPeerMatrix(
           participantIds,
           guildId
         );
