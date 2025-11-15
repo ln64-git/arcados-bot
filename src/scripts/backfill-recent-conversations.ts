@@ -29,10 +29,6 @@ export async function backfillRecentConversations(
   if (useTopicSplitting) {
     const aiManager = AIManager.getInstance();
     conversationManager.setAIManager(aiManager);
-  } else {
-    console.log(
-      "🔸 ENABLE_TOPIC_SPLITTING is disabled; skipping AI topic splitting."
-    );
   }
 
   console.log(
@@ -77,7 +73,6 @@ export async function backfillRecentConversations(
     const botUserIdSet = new Set(KNOWN_BOT_USER_IDS);
 
     for (const channelId of channels) {
-      console.log(`\n📍 Channel ${channelId}: clearing recent segments...`);
 
       const deleteResult = await db.query(
         `
@@ -131,9 +126,7 @@ export async function backfillRecentConversations(
         continue;
       }
 
-      console.log(
-        `   🔹 Replaying ${messages.length} messages through ConversationManager...`
-      );
+
 
       for (const message of messages) {
         const mentions = extractMentionedUserIds(
@@ -154,7 +147,6 @@ export async function backfillRecentConversations(
       }
 
       await conversationManager.finalizeAllSegments();
-      console.log("   ✅ Channel backfill complete.");
 
       if (
         options.sleepBetweenChannelsMs &&
@@ -182,7 +174,6 @@ async function runFromCli() {
   }
 
   await backfillRecentConversations(guildId, hours);
-  console.log("\n✅ Backfill complete.");
 }
 
 const invokedDirectly =

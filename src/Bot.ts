@@ -74,14 +74,8 @@ export class Bot {
         this.postgresManager
       );
       this.conversationManager = new ConversationManager(this.postgresManager);
-      if (config.enableTopicSplitting) {
-        const aiManager = AIManager.getInstance();
-        this.conversationManager.setAIManager(aiManager);
-      } else {
-        console.log(
-          "🔸 ENABLE_TOPIC_SPLITTING is disabled; conversations will not be split by Gemini."
-        );
-      }
+      // Real-time AI topic splitting removed - now handled by batch enhancement script
+      // See: npm run ai:enhance for post-processing AI conversation enhancement 
 
       // Start database healer and maintenance
       this.databaseHealer = new DatabaseHealer(

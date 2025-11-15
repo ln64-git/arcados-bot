@@ -61,7 +61,12 @@
 		"conversations:regroup-keywords": "npx tsx src/scripts/regroup-conversations-with-keywords.ts",
 		"conversations:analyze-keyword-groups": "npx tsx src/scripts/analyze-keyword-conversation-groups.ts",
 		"analyze:24h-tuning": "npx tsx src/scripts/analyze-24h-tuning.ts",
-		"gemini:topic-sort": "bun --bun src/scripts/run-gemini-topic-sorting.ts"
+		"gemini:topic-sort": "bun --bun src/scripts/run-gemini-topic-sorting.ts",
+		"ai:enhance": "npx tsx src/scripts/ai-enhance-conversations.ts",
+		"ai:enhance:labels": "npx tsx src/scripts/ai-enhance-conversations.ts -- --labels-only",
+		"ai:enhance:summaries": "npx tsx src/scripts/ai-enhance-conversations.ts -- --summaries-only",
+		"ai:enhance:orphans": "npx tsx src/scripts/ai-enhance-conversations.ts -- --orphans-only",
+		"ai:migrate": "npx tsx src/scripts/migrations/add-ai-enhancement-fields.ts"
 	},
 	"keywords": [
 		"discord",

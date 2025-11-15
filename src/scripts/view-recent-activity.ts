@@ -12,6 +12,9 @@ interface ConversationSegment {
 	end_time: Date;
 	message_count: number;
 	summary?: string;
+	topic_label?: string;
+	topic_confidence?: number;
+	ai_processing_status?: string;
 }
 
 interface RelationshipEdge {
@@ -59,7 +62,7 @@ async function viewRecentActivity() {
 		// Get conversation segments from last 24 hours
 		console.log("💬 Recent Conversation Segments:\n");
 		const segmentsResult = await db.query(
-			`SELECT 
+			`SELECT
 				cs.id,
 				cs.guild_id,
 				cs.channel_id,
@@ -68,12 +71,15 @@ async function viewRecentActivity() {
 				cs.start_time,
 				cs.end_time,
 				cs.message_count,
-				cs.summary
+				cs.summary,
+				cs.topic_label,
+				cs.topic_confidence,
+				cs.ai_processing_status
 			FROM conversation_segments cs
 			LEFT JOIN channels c ON c.id = cs.channel_id
 			WHERE cs.guild_id = $1
-				AND cs.start_time >= $2
-			ORDER BY cs.start_time DESC
+				AND cs.created_at >= $2
+			ORDER BY cs.created_at DESC
 			LIMIT 50`,
 			[guildId, twentyFourHoursAgo]
 		);
@@ -134,6 +140,18 @@ async function viewRecentActivity() {
 
 				console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 				console.log(`📍 ${segment.channel_name || segment.channel_id}`);
+
+				// Display topic label if available
+				if (segment.topic_label) {
+					const statusIcon = segment.ai_processing_status === 'completed' ? '🤖' : '📊';
+					const confidence = segment.topic_confidence ? ` (${(segment.topic_confidence * 100).toFixed(0)}%)` : '';
+					console.log(`   ${statusIcon} Topic: "${segment.topic_label}"${confidence}`);
+				} else if (segment.ai_processing_status === 'pending') {
+					console.log(`   ⏳ Topic: Pending AI labeling`);
+				} else if (segment.ai_processing_status === 'failed') {
+					console.log(`   ⚠️  Topic: AI labeling failed`);
+				}
+
 				console.log(`   Participants: ${participantNames}`);
 				console.log(
 					`   ${segment.message_count} messages • ${duration.toFixed(1)} minutes`

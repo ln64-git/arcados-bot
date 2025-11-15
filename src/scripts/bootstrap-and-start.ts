@@ -29,9 +29,9 @@ async function hasMissingEmbeddings(
 }
 
 async function hasRecentConversationSegments(
-	db: PostgreSQLManager,
-	guildId: string,
-	lookbackHours: number = 24
+  db: PostgreSQLManager,
+  guildId: string,
+  lookbackHours: number = 24
 ): Promise<boolean> {
 	const result = await db.query(
 		`SELECT COUNT(*) AS segment_count
@@ -43,6 +43,28 @@ async function hasRecentConversationSegments(
 
 	if (!result.success || !result.data) {
 		console.warn("🔸 Unable to determine conversation status; defaulting to regenerate.");
+		return false;
+	}
+
+	const count = Number(result.data[0]?.segment_count ?? 0);
+	return count > 0;
+}
+
+async function hasAnyConversationSegments(
+	db: PostgreSQLManager,
+	guildId: string
+): Promise<boolean> {
+	const result = await db.query(
+		`SELECT COUNT(*) AS segment_count
+     FROM conversation_segments
+     WHERE guild_id = $1`,
+		[guildId]
+	);
+
+	if (!result.success || !result.data) {
+		console.warn(
+			"🔸 Unable to determine overall conversation status; defaulting to regenerate."
+		);
 		return false;
 	}
 
@@ -103,11 +125,13 @@ async function main() {
 
 	let needsEmbeddings = true;
 	let hasRecentSegments = false;
+	let hasAnySegments = false;
 	let hasUnassigned = true;
 
 	try {
 		needsEmbeddings = await hasMissingEmbeddings(db, guildId);
 		hasRecentSegments = await hasRecentConversationSegments(db, guildId);
+		hasAnySegments = await hasAnyConversationSegments(db, guildId);
 		hasUnassigned = await hasUnassignedMessages(db, guildId);
 	} catch (error) {
 		console.warn("🔸 Failed to inspect database state; will regenerate everything.", error);
@@ -121,10 +145,14 @@ async function main() {
 		console.log("✅ Embeddings already present – skipping regeneration.");
 	}
 
-	if (!hasRecentSegments) {
+	if (!hasAnySegments) {
 		await regenerateConversationsForGuild(guildId);
 	} else if (hasUnassigned) {
 		await backfillRecentConversations(guildId);
+	} else if (!hasRecentSegments) {
+		console.log(
+			"✅ Conversation segments exist but are older than the freshness window – skipping full regeneration."
+		);
 	} else {
 		console.log("✅ Recent conversation segments already exist – skipping regeneration.");
 	}

@@ -8,4 +8,5 @@ export const KNOWN_BOT_USER_IDS = [
   "678344927997853742", // Sapphire
   "778719049143025664", // Spoticord Music
   "617037497574359050", // tip.cc
+  "1211781489931452447", // Wordle bot (generates game results)
 ];

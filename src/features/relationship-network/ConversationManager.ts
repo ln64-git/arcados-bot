@@ -67,8 +67,8 @@ export class ConversationManager {
   private edgeCache: Map<string, CachedEdgeData> = new Map(); // Cache for edge queries
   private embeddingService = EmbeddingService.getInstance();
   private readonly EDGE_CACHE_TTL = 5 * 60 * 1000; // 5 minute cache TTL
-  private readonly INACTIVITY_MS = 5 * 60 * 1000; // 5 minute base inactivity (increased from 3 to reduce fragmentation)
-  private readonly INACTIVITY_MS_WITH_REPLIES = 15 * 60 * 1000; // 15 minutes when there are active replies/mentions (increased from 10)
+  private readonly INACTIVITY_MS = 10 * 60 * 1000; // 10 minute base inactivity (increased from 5 to better handle natural pauses)
+  private readonly INACTIVITY_MS_WITH_REPLIES = 20 * 60 * 1000; // 20 minutes when there are active replies/mentions (increased from 15)
   private readonly MIN_MESSAGES = 3;
   private readonly PRE_CONVERSATION_GRACE_MS = 3 * 60 * 1000; // Include up to 3 minutes of prelude chatter (increased from 2)
   private topicDriftDetector: TopicDriftDetector;
@@ -82,9 +82,9 @@ export class ConversationManager {
   // Time-based constraints to prevent unrealistic conversation grouping
   private readonly MAX_REPLY_CHAIN_GAP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days - don't follow reply chains older than this
   private readonly MAX_CONVERSATION_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours - conversations can't span more than a day
-  private readonly MAX_MESSAGE_GAP_MS = 4 * 60 * 60 * 1000; // 4 hours - max gap between consecutive messages in a conversation
-  private readonly FORCE_FLUSH_MESSAGE_COUNT = 25; // Force-finalize after 25 buffered messages even if conversation is active
-  private readonly FORCE_FLUSH_DURATION_MS = 15 * 60 * 1000; // Force-finalize after 15 minutes of continuous activity
+  private readonly MAX_MESSAGE_GAP_MS = 8 * 60 * 60 * 1000; // 8 hours - max gap between consecutive messages in a conversation (increased from 4 for async discussions)
+  private readonly FORCE_FLUSH_MESSAGE_COUNT = 50; // Force-finalize after 50 buffered messages even if conversation is active (increased from 25)
+  private readonly FORCE_FLUSH_DURATION_MS = 30 * 60 * 1000; // Force-finalize after 30 minutes of continuous activity (increased from 15)
   private readonly ORPHAN_LOOKBACK_MS = 30 * 60 * 1000; // Look back 30 minutes when reconciling orphan messages
 
   // Pre-compile regex patterns for better performance
@@ -1228,27 +1228,11 @@ export class ConversationManager {
                 embedding: m.embedding,
               }));
 
-            const driftResult = await this.topicDriftDetector.detectTopicDrift(
-              {
-                id: message.id,
-                author_id: message.author_id,
-                content: message.content || "",
-                created_at: message.created_at,
-                embedding: messageEmbedding,
-              },
-              convMessages,
-              bestMatch.topicLabel,
-              message.guild_id || "",
-              message.author_id
-            );
-
-            if (driftResult.shouldSplit) {
-              console.log(`🔸 Topic drift detected: ${driftResult.reason}`);
-              shouldRoute = false; // Don't route to existing conversation, start new one
-            }
+            // Real-time AI topic drift detection removed - now handled by batch enhancement
+            // Topic splitting and labeling will be done in post-processing for better accuracy
+            // and to avoid real-time latency from API calls
           } catch (error) {
-            console.error("🔸 Topic drift detection failed:", error);
-            // On error, fall back to routing based on score alone
+            console.error("🔸 Conversation message extraction failed:", error);
           }
         }
 
@@ -1258,32 +1242,6 @@ export class ConversationManager {
           bestMatch.messageIds.add(message.id);
           bestMatch.lastActivity = message.created_at;
           this.updateConversationTopicEmbedding(bestMatch, messageEmbedding);
-
-          // Generate topic label after 5 messages if not set
-          if (!bestMatch.topicLabel && bestMatch.messageIds.size >= 5) {
-            try {
-              const convMessages = buffer.messages
-                .filter(m => bestMatch.messageIds.has(m.id))
-                .map(m => ({
-                  id: m.id,
-                  author_id: m.author_id,
-                  content: m.content,
-                  created_at: m.created_at,
-                  embedding: m.embedding,
-                }));
-              
-              const topicLabel = await this.topicDriftDetector.generateTopicLabel(
-                convMessages,
-                message.guild_id || "",
-                message.author_id
-              );
-              
-              bestMatch.topicLabel = topicLabel.label;
-              bestMatch.topicConfidence = topicLabel.confidence;
-            } catch (error) {
-              console.error("🔸 Topic label generation failed:", error);
-            }
-          }
         }
       }
     }
@@ -1866,14 +1824,16 @@ export class ConversationManager {
   }
 
   /**
-   * Group unprocessed messages by proximity (within 10-minute windows from same participants)
+   * Group unprocessed messages by proximity (within 5-minute windows from same participants)
    * This catches organic conversations that don't have explicit reply chains or mentions
+   * Reduced from 10 minutes to 5 minutes to reduce false grouping of unrelated messages
    */
   private groupByProximity<T extends { id: string; author_id: string; created_at: Date; content?: string }>(
     allMessages: T[],
     processedMessages: Set<string>
   ): Array<{ messages: T[] }> {
-    const PROXIMITY_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+    const PROXIMITY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes (reduced from 10 to prevent false grouping)
+    const MIN_PARTICIPANTS = 2; // Require at least 2 participants for proximity grouping
     const result: Array<{ messages: T[] }> = [];
 
     // Get unprocessed messages
@@ -1893,15 +1853,15 @@ export class ConversationManager {
 
       // Start new group if:
       // 1. First message
-      // 2. Time gap > 10 minutes
+      // 2. Time gap > 5 minutes
       // 3. No participant overlap with current group
       if (
         lastMessageTime === null ||
         msgTime - lastMessageTime > PROXIMITY_WINDOW_MS ||
         (participantSet.size > 0 && !participantSet.has(msg.author_id))
       ) {
-        // Save previous group if it has at least 2 messages
-        if (currentGroup.length >= 2) {
+        // Save previous group if it has at least 2 messages and 2 participants
+        if (currentGroup.length >= 2 && participantSet.size >= MIN_PARTICIPANTS) {
           result.push({ messages: currentGroup });
         }
         // Start new group
@@ -1917,8 +1877,8 @@ export class ConversationManager {
       lastMessageTime = msgTime;
     }
 
-    // Don't forget the last group
-    if (currentGroup.length >= 2) {
+    // Don't forget the last group (with participant requirement)
+    if (currentGroup.length >= 2 && participantSet.size >= MIN_PARTICIPANTS) {
       result.push({ messages: currentGroup });
     }
 
@@ -2575,11 +2535,6 @@ export class ConversationManager {
       status: "finalized", // Segments created from finalization are finalized
     });
 
-      console.log(
-        `✅ Created segment ${segmentId} (${segmentMessages.length} messages, participants: ${participants.join(
-          ", "
-        )})`
-      );
       createdSegmentIds.push(segmentId);
 
       // Clear finalized conversations from activeConversations
@@ -2785,12 +2740,6 @@ export class ConversationManager {
       }
     }
 
-    if (attached > 0) {
-      console.log(
-        `🔹 Reconciled ${attached} orphaned messages into existing segments (${guildId}:${channelId})`
-      );
-    }
-
     return attached;
   }
 
@@ -2823,28 +2772,18 @@ export class ConversationManager {
     orphan: DriftMessage,
     guildId: string
   ): Promise<boolean> {
-
-    const hasContent = this.hasMeaningfulContent(orphan.content || "");
-    const recentMessages =
-      segment.messages.length > 0
-        ? segment.messages.slice(-10)
-        : [];
-
-    if (hasContent && recentMessages.length >= 2) {
-      const drift = await this.topicDriftDetector.detectTopicDrift(
-        orphan,
-        recentMessages,
-        undefined,
-        guildId,
-        orphan.author_id
-      );
-      if (!drift.shouldSplit && drift.confidence >= 0.4) {
-        return true;
-      }
-    }
+    // AI-based topic drift detection removed - now handled by batch enhancement
+    // Using programmatic heuristics only for real-time orphan attachment
 
     const timeGap = this.timeGapToSegment(segment, orphan.created_at);
+
+    // Attach if same participant and close temporal proximity (5 min)
     if (segment.participants.has(orphan.author_id) && timeGap <= 5 * 60 * 1000) {
+      return true;
+    }
+
+    // Very close temporal proximity (2 min) - likely part of conversation
+    if (timeGap <= 2 * 60 * 1000) {
       return true;
     }
 
@@ -3067,11 +3006,6 @@ export class ConversationManager {
     const originalParticipants = Array.isArray(row.participants)
       ? row.participants
       : [];
-    console.log(
-      `🔹 Splitting segment ${segmentId} (${messageIds.length} messages, participants: ${originalParticipants.join(
-        ", "
-      )}) into ${chunkData.length} topics`
-    );
 
     const firstChunk = chunkData[0];
     if (!firstChunk) {
@@ -3116,11 +3050,7 @@ export class ConversationManager {
         status: "finalized",
       });
       await this.upsertParticipantPairs(guildId, chunk.participants, newSegmentId);
-      console.log(
-        `   ↪ Created topic split ${newSegmentId} (${chunk.messageIds.length} messages, participants: ${chunk.participants.join(
-          ", "
-        )})`
-      );
+
     }
   }
 

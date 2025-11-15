@@ -14,8 +14,6 @@ export async function regenerateConversationsForGuild(guildId: string): Promise<
 	const conversationManager = new ConversationManager(db);
 	if (config.enableTopicSplitting) {
 		conversationManager.setAIManager(AIManager.getInstance());
-	} else {
-		console.log("🔸 ENABLE_TOPIC_SPLITTING is disabled; skipping AI topic splitting.");
 	}
 
 	try {
@@ -91,7 +89,6 @@ export async function regenerateConversationsForGuild(guildId: string): Promise<
 
 		// Process messages chronologically through ConversationManager
 		// This will group them using the hybrid approach (replies, mentions, relationships, semantic)
-		console.log("🔹 Processing messages through ConversationManager...\n");
 
 		let processed = 0;
 

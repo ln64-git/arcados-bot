@@ -45,19 +45,19 @@ export class KeywordExtractor {
 	 * This is the main entry point for keyword extraction. It automatically
 	 * selects the best strategy based on available data and options.
 	 */
-	async extractKeywords(
-		messages: KeywordMessage[],
-		guildId: string,
-		options: KeywordExtractionOptions = {},
-	): Promise<ConversationKeywords> {
-		const startTime = Date.now();
+		async extractKeywords(
+			messages: KeywordMessage[],
+			guildId: string,
+			options: KeywordExtractionOptions = {},
+		): Promise<ConversationKeywords> {
+			const startTime = Date.now();
 
-		if (messages.length === 0) {
-			return this.createEmptyKeywords();
-		}
+			// Determine extraction method
+			const method = options.method || "hybrid";
 
-		// Determine extraction method
-		const method = options.method || "hybrid";
+			if (messages.length === 0) {
+				return this.createEmptyKeywords(method);
+			}
 		const topN = options.topN || 10;
 
 		let keywords: KeywordScore[] = [];
@@ -81,21 +81,17 @@ export class KeywordExtractor {
 			// Take top N keywords
 			keywords = keywords.slice(0, topN);
 
-			console.log(
-				`[KeywordExtractor] Extracted ${keywords.length} keywords in ${Date.now() - startTime}ms (method: ${method})`,
-			);
-
 			return {
 				terms: keywords,
 				extracted_at: new Date().toISOString(),
 				method,
 				version: this.VERSION,
 			};
-		} catch (error) {
-			console.error("[KeywordExtractor] Error extracting keywords:", error);
-			return this.createEmptyKeywords();
+			} catch (error) {
+				console.error("[KeywordExtractor] Error extracting keywords:", error);
+				return this.createEmptyKeywords(method);
+			}
 		}
-	}
 
 	/**
 	 * Extract keywords using TF-IDF only
@@ -189,32 +185,35 @@ export class KeywordExtractor {
 	/**
 	 * Load vocabulary from database
 	 */
-	private async loadVocabularyFromDatabase(
-		guildId: string,
-	): Promise<GuildVocabulary | null> {
-		try {
-			const result = await this.db.query<{
-				term: string;
-				idf_score: number;
-				document_frequency: number;
-				total_documents: number;
-				is_stopword: boolean;
-			}>(`
-        SELECT term, idf_score, document_frequency, total_documents, is_stopword
-        FROM guild_vocabulary
-        WHERE guild_id = $1
-      `, [guildId]);
+		private async loadVocabularyFromDatabase(
+			guildId: string,
+		): Promise<GuildVocabulary | null> {
+			try {
+				const result = await this.db.query(
+					`
+	        SELECT term, idf_score, document_frequency, total_documents, is_stopword
+	        FROM guild_vocabulary
+	        WHERE guild_id = $1
+	      `,
+					[guildId],
+				);
 
-			if (!result.success || !result.data || result.data.length === 0) {
-				return null;
-			}
+				if (!result.success || !result.data || result.data.length === 0) {
+					return null;
+				}
 
-			// Convert to Map
-			const vocabulary = new Map(
-				result.data.map((entry) => [
-					entry.term,
-					{
-						term: entry.term,
+				// Convert to Map
+				const vocabulary = new Map(
+					(result.data as Array<{
+						term: string;
+						idf_score: number;
+						document_frequency: number;
+						total_documents: number;
+						is_stopword: boolean;
+					}>).map((entry) => [
+						entry.term,
+						{
+							term: entry.term,
 						idf_score: entry.idf_score,
 						document_frequency: entry.document_frequency,
 						total_documents: entry.total_documents,
@@ -388,14 +387,16 @@ export class KeywordExtractor {
 	/**
 	 * Create empty keywords result
 	 */
-	private createEmptyKeywords(): ConversationKeywords {
-		return {
-			terms: [],
-			extracted_at: new Date().toISOString(),
-			method: "none",
-			version: this.VERSION,
-		};
-	}
+		private createEmptyKeywords(
+			method: ConversationKeywords["method"] = "hybrid",
+		): ConversationKeywords {
+			return {
+				terms: [],
+				extracted_at: new Date().toISOString(),
+				method,
+				version: this.VERSION,
+			};
+		}
 
 	/**
 	 * Calculate keyword overlap between two conversations

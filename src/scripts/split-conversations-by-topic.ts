@@ -44,7 +44,7 @@ async function main() {
 
 		console.log(`\n📊 Loading conversations since ${cutoffDate.toISOString()}...`);
 
-		const conversationsResult = await db.query<ConversationSegment>(
+		const conversationsResult = await db.query(
 			`SELECT 
 				id,
 				channel_id,
@@ -70,7 +70,7 @@ async function main() {
 			process.exit(1);
 		}
 
-		const conversations = conversationsResult.data;
+		const conversations = conversationsResult.data as ConversationSegment[];
 		console.log(`✓ Found ${conversations.length} conversations to analyze`);
 
 		if (conversations.length === 0) {
@@ -257,9 +257,6 @@ async function main() {
 						]
 					);
 
-					console.log(
-						`  ✓ Created segment ${i + 1}/${newSegments.length}: "${segment.topicLabel}" (${segment.messageIds.length} messages)`
-					);
 				}
 
 				splitCount++;

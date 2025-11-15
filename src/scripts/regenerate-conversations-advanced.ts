@@ -10,8 +10,6 @@ async function regenerateConversationsAdvanced() {
 	const conversationManager = new ConversationManager(db);
 	if (config.enableTopicSplitting) {
 		conversationManager.setAIManager(AIManager.getInstance());
-	} else {
-		console.log("🔸 ENABLE_TOPIC_SPLITTING is disabled; skipping AI topic splitting.");
 	}
 
 	try {
