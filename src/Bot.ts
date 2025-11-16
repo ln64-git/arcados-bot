@@ -1,35 +1,30 @@
-import {
-  Client,
-  Collection,
-  GatewayIntentBits,
-  REST,
-  Routes,
-} from "discord.js";
+/**
+ * Bot
+ *
+ * Main bot coordinator that initializes features and manages lifecycle.
+ * Delegates feature-specific logic to appropriate handlers.
+ */
+
+import { PostgreSQLManager } from "./database/PostgreSQLManager";
+import { Client, Collection, GatewayIntentBits } from "discord.js";
 import type { Interaction } from "discord.js";
 import { config } from "./config";
 import type { Command } from "./types";
-import { loadCommands } from "./utils/loadCommands";
-import { AIManager } from "./features/ai-assistant/AIManager";
+import { CommandDeployer } from "./utils/CommandDeployer";
 import { StateSyncService } from "./features/discord-sync/StateSyncService";
-import { RelationshipMapper } from "./features/social-intelligence/relationship-mapping/RelationshipMapper";
-import { ConversationDetector } from "./features/social-intelligence/conversation-detection/ConversationDetector";
-import {
-  getSessionByRepliedMessageId,
-  appendUserTurn,
-  appendAssistantTurnAndTrackMessage,
-  getSessionHistory,
-  startSession,
-} from "./features/ai-assistant/ChatSessionManager";
-import { resolveMentionsInText } from "./features/ai-assistant/utils/MentionResolver";
-import { PostgreSQLManager } from "./features/database/PostgreSQLManager";
+import { ConversationWorkflowManager } from "./features/social-intelligence";
+import { MessageHandler } from "./features/ai-assistant";
 
 export class Bot {
   public client: Client;
   public commands = new Collection<string, Command>();
-  public postgresManager: PostgreSQLManager;
+  private db: PostgreSQLManager;
+
+  // Feature coordinators
   private stateSyncService?: StateSyncService;
-  private relationshipMapper?: RelationshipMapper;
-  private conversationDetector?: ConversationDetector;
+  private conversationWorkflow?: ConversationWorkflowManager;
+  private messageHandler?: MessageHandler;
+  private commandDeployer?: CommandDeployer;
 
   constructor() {
     this.client = new Client({
@@ -41,14 +36,16 @@ export class Bot {
         GatewayIntentBits.GuildMembers,
       ],
     });
-    // Initialize PostgreSQL manager
-    this.postgresManager = new PostgreSQLManager();
+
+    this.db = new PostgreSQLManager();
   }
 
-  async init() {
-    // Initialize PostgreSQL connection for commands that need it
-    const dbConnected = await this.postgresManager.connect();
-
+  /**
+   * Initialize the bot and all features
+   */
+  async init(): Promise<void> {
+    // Connect to database
+    const dbConnected = await this.db.connect();
     if (dbConnected) {
       console.log("🔹 PostgreSQL connected successfully");
     } else {
@@ -57,465 +54,154 @@ export class Bot {
       );
     }
 
+    // Set up event handlers
     this.setupEventHandlers();
+
+    // Login to Discord
     await this.client.login(config.botToken);
+
+    // Deploy commands
     await this.deployCommands();
   }
 
-  private setupEventHandlers() {
-    // Ready event
+  /**
+   * Set up Discord event handlers
+   */
+  private setupEventHandlers(): void {
+    // Ready event - initialize all features
     this.client.once("ready", async () => {
       console.log(`🔹 Logged in as ${this.client.user?.tag}`);
-
-      // Initialize realtime sync components
-      this.relationshipMapper = new RelationshipMapper(
-        this.postgresManager
-      );
-      this.conversationDetector = new ConversationDetector(this.postgresManager);
-      // Real-time AI topic splitting removed - now handled by batch enhancement script
-      // See: npm run ai:enhance for post-processing AI conversation enhancement
-
-      // Start unified state sync service (replaces DatabaseHealer + LiveSyncWatcher)
-      this.stateSyncService = new StateSyncService(
-        this.client,
-        this.postgresManager,
-        this.relationshipMapper,
-        this.conversationDetector,
-        false // Set to true for verbose logging
-      );
-      await this.stateSyncService.start();
-
-      // Load active conversations for guilds (filtered by config.guildId if set)
-      const guilds = this.client.guilds.cache;
-      if (config.guildId) {
-        const targetGuild = guilds.get(config.guildId);
-        if (targetGuild) {
-          console.log(
-            `🔹 Limiting sync to guild: ${targetGuild.name} (${config.guildId})`
-          );
-          await this.conversationDetector!.loadActiveConversations(
-            targetGuild.id
-          );
-        } else {
-          console.log(
-            `🔸 Warning: Guild ID ${config.guildId} not found in cache`
-          );
-        }
-      } else {
-        for (const [, guild] of guilds) {
-          await this.conversationDetector!.loadActiveConversations(guild.id);
-        }
-      }
-
-      // Start periodic cleanup of stale conversations (every 15 minutes)
-      setInterval(async () => {
-        if (config.guildId) {
-          const targetGuild = this.client.guilds.cache.get(config.guildId);
-          if (targetGuild) {
-            await this.conversationDetector!.cleanupStaleConversations(
-              targetGuild.id
-            );
-          }
-        } else {
-          for (const [, guild] of this.client.guilds.cache) {
-            await this.conversationDetector!.cleanupStaleConversations(guild.id);
-          }
-        }
-      }, 15 * 60 * 1000);
-
-      // Periodically flush inactive buffers to ensure conversations finalize in real-time
-      setInterval(async () => {
-        try {
-          await this.conversationDetector?.flushInactiveBuffers();
-        } catch (error) {
-          console.error("🔸 Failed to flush inactive conversation buffers:", error);
-        }
-      }, 2 * 60 * 1000);
-
-      // Start periodic semantic merging of related conversations (every hour)
-      setInterval(async () => {
-        if (config.guildId) {
-          const targetGuild = this.client.guilds.cache.get(config.guildId);
-          if (targetGuild) {
-            await this.conversationDetector!.runSemanticMergingForGuild(
-              targetGuild.id
-            );
-          }
-        } else {
-          for (const [, guild] of this.client.guilds.cache) {
-            await this.conversationDetector!.runSemanticMergingForGuild(
-              guild.id
-            );
-          }
-        }
-      }, 60 * 60 * 1000);
+      await this.initializeFeatures();
     });
 
-    // Interaction event for slash commands
+    // Slash command interactions
     this.client.on("interactionCreate", async (interaction: Interaction) => {
-      if (!interaction.isChatInputCommand()) return;
-
-      const command = this.commands.get(interaction.commandName);
-      if (!command) {
-        return;
-      }
-
-      try {
-        await command.execute(interaction);
-      } catch (error) {
-        console.error(
-          `🔸 Error executing command ${interaction.commandName}:`,
-          error
-        );
-        const errorMessage = "There was an error while executing this command!";
-        try {
-          if (interaction.replied || interaction.deferred) {
-            await interaction.followUp({
-              content: errorMessage,
-              ephemeral: true,
-            });
-          } else {
-            await interaction.reply({ content: errorMessage, ephemeral: true });
-          }
-        } catch (err) {
-          // If sending the error message fails, just log it - don't try again
-          console.error("🔸 Failed to send error message to interaction:", err);
-        }
-      }
+      await this.handleInteraction(interaction);
     });
 
-    // Handle bot mentions and continue chat sessions when users reply to bot messages
+    // Message events (for AI assistant)
     this.client.on("messageCreate", async (message) => {
-      try {
-        // Ignore bot messages
-        if (message.author.bot) return;
-
-        if (!message.guildId) return;
-
-        const manager = AIManager.getInstance();
-        const provider = "grok"; // default provider for chat
-        const botUserId = this.client.user?.id;
-
-        if (!botUserId) {
-          console.log("🔸 Bot user ID not available yet");
-          return;
-        }
-
-        // Check if bot is mentioned (not a reply, just a mention in content)
-        // Check both mentions.users and the message content for mention patterns
-        const isBotMentionedInUsers = message.mentions.users.has(botUserId);
-        const mentionPattern = new RegExp(`<@!?${botUserId}>`);
-        const isBotMentionedInContent = mentionPattern.test(message.content);
-        const isBotMentioned =
-          (isBotMentionedInUsers || isBotMentionedInContent) &&
-          !message.reference;
-
-        // Debug logging (can be removed later)
-
-        // Prevent mass-mention pings from bot output (usable in all branches)
-        const sanitizeEveryone = (input: string | undefined | null): string => {
-          if (!input) return "";
-          return input.replace(/@everyone/gi, "@\u200Beveryone");
-        };
-
-        if (isBotMentioned) {
-          // Extract message content without the mention
-          let userContent = message.content
-            .replace(new RegExp(`<@!?${botUserId}>`, "g"), "")
-            .trim();
-
-          // If empty after removing mention, use a default prompt
-          if (!userContent) {
-            userContent = "Hello!";
-          }
-
-          // Map self-referential queries to an explicit self-mention so tools can resolve the user
-          const selfQueryRegex =
-            /(who\s+am\s+i\b|whoami\b|tell\s+me\s+about\s+me\b|what\s+do\s+you\s+know\s+about\s+me\b|who\s+is\s+me\b)/i;
-          if (selfQueryRegex.test(userContent)) {
-            userContent = `tell me about <@${message.author.id}>`;
-          }
-
-          // For AI, keep the raw content (with <@id> intact) so tools can extract IDs reliably
-          const rawForAI = userContent;
-
-          // Optionally resolve mentions for display/session context only
-          let resolvedContent = userContent;
-          if (this.postgresManager.isConnected()) {
-            try {
-              resolvedContent = await resolveMentionsInText(
-                userContent,
-                message.guildId,
-                this.postgresManager
-              );
-            } catch (err) {
-              console.error("🔸 Error resolving mentions:", err);
-            }
-          }
-
-          // Helper to split and send long messages safely under Discord's 2000-char limit
-          const sendChunked = async (
-            text: string
-          ): Promise<{ message: any; sentText: string }> => {
-            const limit = 1900; // leave headroom for safety
-            const chunks: string[] = [];
-            let remaining = text;
-            while (remaining.length > limit) {
-              // Try to split on paragraph, sentence, or newline boundaries
-              let idx = Math.max(
-                remaining.lastIndexOf("\n\n", limit),
-                remaining.lastIndexOf("\n", limit),
-                remaining.lastIndexOf(". ", limit)
-              );
-              if (idx < limit * 0.6) idx = limit; // fallback to hard split
-              chunks.push(remaining.slice(0, idx).trim());
-              remaining = remaining.slice(idx).trimStart();
-            }
-            if (remaining.length) chunks.push(remaining);
-            let lastMessage = message as any;
-            const sentParts: string[] = [];
-            for (let i = 0; i < chunks.length; i++) {
-              const chunk = chunks[i];
-              try {
-                if (i === 0) {
-                  // First chunk: reply to the user's message to start the thread
-                  lastMessage = await lastMessage.reply({
-                    content: sanitizeEveryone(chunk),
-                    allowedMentions: {
-                      parse: ["users", "roles"],
-                      repliedUser: false,
-                    },
-                  });
-                } else {
-                  // Subsequent chunks: send to channel to avoid stale message_reference errors
-                  lastMessage = await (message.channel as any).send({
-                    content: sanitizeEveryone(chunk),
-                    allowedMentions: {
-                      parse: ["users", "roles"],
-                      repliedUser: false,
-                    },
-                  });
-                }
-              } catch (err: any) {
-                // Fallback: if replying failed due to unknown message reference, send to channel
-                lastMessage = await (message.channel as any).send({
-                  content: sanitizeEveryone(chunk),
-                  allowedMentions: {
-                    parse: ["users", "roles"],
-                    repliedUser: false,
-                  },
-                });
-              }
-              sentParts.push(
-                (lastMessage as any).content || sanitizeEveryone(chunk)
-              );
-            }
-            return { message: lastMessage, sentText: sentParts.join("\n\n") };
-          };
-
-          await manager.runWithGuildContext(message.guildId, async () => {
-            const contentResponse = await manager.generateText(
-              rawForAI,
-              message.author.id,
-              provider,
-              {
-                persona: "casual",
-                useDiscordFormatting: false,
-                mode: "chat",
-                channelId: message.channel.id,
-                messageId: message.id,
-              }
-            );
-
-            if (!contentResponse?.success || !contentResponse.content) {
-              console.error(
-                "🔸 Failed to generate response for bot mention:",
-                contentResponse?.error
-              );
-              return;
-            }
-
-            // Send response using chunking (handles long responses automatically)
-            const { message: reply, sentText } = await sendChunked(
-              contentResponse.content
-            );
-
-            // Start a new chat session, storing exactly what was sent
-            startSession({
-              initialBotMessage: reply,
-              userId: message.author.id,
-              initialUserMessage: resolvedContent,
-              initialAssistantMessage: sentText,
-            });
-          });
-
-          return;
-        }
-
-        // Continue existing chat sessions when users reply to bot messages
-        const refId = message.reference?.messageId;
-        if (!refId) return;
-
-        const found = getSessionByRepliedMessageId(refId);
-        if (!found) return;
-
-        // Ignore replies with no meaningful text (attachments only or mentions only)
-        const rawReplyText = (message.content || "").trim();
-        if (!rawReplyText) return;
-        const textWithoutUserMentions = rawReplyText.replace(/<@!?\d+>/g, "");
-        if (textWithoutUserMentions.trim().length === 0) return;
-
-        // Resolve mentions in user message
-        let resolvedContent = message.content;
-        // Map self-referential queries to an explicit self-mention so tools can resolve the user
-        const selfQueryRegex =
-          /(who\s+am\s+i\b|whoami\b|tell\s+me\s+about\s+me\b|what\s+do\s+you\s+know\s+about\s+me\b|who\s+is\s+me\b)/i;
-        if (selfQueryRegex.test(resolvedContent)) {
-          resolvedContent = `tell me about <@${message.author.id}>`;
-        }
-        const rawForAI = resolvedContent; // keep raw (with <@id>) for AI
-        if (this.postgresManager.isConnected()) {
-          try {
-            resolvedContent = await resolveMentionsInText(
-              message.content,
-              message.guildId,
-              this.postgresManager
-            );
-          } catch (err) {
-            console.error("🔸 Error resolving mentions in reply:", err);
-          }
-        }
-
-        // Get session history for context
-        const history = getSessionHistory(found.sessionId);
-
-        // Use tool-enabled generation with history context
-        await manager.runWithGuildContext(message.guildId, async () => {
-          const contentResponse = await manager.generateText(
-            rawForAI,
-            message.author.id,
-            provider,
-            {
-              persona: "casual",
-              history,
-              useDiscordFormatting: false,
-              mode: "chat",
-              channelId: message.channel.id,
-              messageId: message.id,
-            }
-          );
-
-          if (!contentResponse?.success || !contentResponse.content) return;
-
-          // Append user's turn to session (store resolved version)
-          appendUserTurn(found.sessionId, resolvedContent);
-
-          // Helper to split and send long reply messages (reuse chunking logic)
-          const sendReplyChunked = async (
-            text: string
-          ): Promise<{ message: any; sentText: string }> => {
-            const limit = 1900;
-            const chunks: string[] = [];
-            let remaining = text;
-            while (remaining.length > limit) {
-              let idx = Math.max(
-                remaining.lastIndexOf("\n\n", limit),
-                remaining.lastIndexOf("\n", limit),
-                remaining.lastIndexOf(". ", limit)
-              );
-              if (idx < limit * 0.6) idx = limit;
-              chunks.push(remaining.slice(0, idx).trim());
-              remaining = remaining.slice(idx).trimStart();
-            }
-            if (remaining.length) chunks.push(remaining);
-            let lastMessage = message as any;
-            const sentParts: string[] = [];
-            for (let i = 0; i < chunks.length; i++) {
-              const chunk = chunks[i];
-              try {
-                if (i === 0) {
-                  lastMessage = await lastMessage.reply({
-                    content: sanitizeEveryone(chunk),
-                    allowedMentions: {
-                      parse: ["users", "roles"],
-                      repliedUser: false,
-                    },
-                  });
-                } else {
-                  lastMessage = await (message.channel as any).send({
-                    content: sanitizeEveryone(chunk),
-                    allowedMentions: {
-                      parse: ["users", "roles"],
-                      repliedUser: false,
-                    },
-                  });
-                }
-              } catch (err: any) {
-                lastMessage = await (message.channel as any).send({
-                  content: sanitizeEveryone(chunk),
-                  allowedMentions: {
-                    parse: ["users", "roles"],
-                    repliedUser: false,
-                  },
-                });
-              }
-              sentParts.push(
-                (lastMessage as any).content || sanitizeEveryone(chunk)
-              );
-            }
-            return { message: lastMessage, sentText: sentParts.join("\n\n") };
-          };
-
-          // Send response using chunking (handles long responses automatically)
-          const { message: reply, sentText } = await sendReplyChunked(
-            contentResponse.content
-          );
-
-          // Store exactly what was sent in session history
-          appendAssistantTurnAndTrackMessage(found.sessionId, reply, sentText);
-        });
-      } catch (err) {
-        // Log errors but don't send to channel to avoid spam
-        console.error("🔸 Error in messageCreate handler:", err);
-      }
+      await this.messageHandler?.handleMessage(message);
     });
   }
 
-  private async deployCommands() {
-    const rest = new REST({ version: "10" }).setToken(config.botToken);
-    const commands = await loadCommands(this.commands);
+  /**
+   * Initialize all feature services
+   */
+  private async initializeFeatures(): Promise<void> {
+    console.log("🔹 Initializing features...");
 
+    // Initialize conversation detection workflow
+    // Handles relationship mapping, conversation detection, and maintenance
+    this.conversationWorkflow = new ConversationWorkflowManager(
+      this.client,
+      this.db,
+      {
+        guildId: config.guildId,
+        verbose: false, // Set to true for debugging
+      }
+    );
+    await this.conversationWorkflow.start();
+
+    // Initialize state sync service
+    // Handles real-time Discord state synchronization
+    this.stateSyncService = new StateSyncService(
+      this.client,
+      this.db,
+      this.conversationWorkflow.getRelationshipMapper()!,
+      this.conversationWorkflow.getConversationDetector()!,
+      false // Set to true for verbose logging
+    );
+    await this.stateSyncService.start();
+
+    // Initialize message handler
+    // Handles AI assistant interactions
+    this.messageHandler = new MessageHandler(this.client, this.db);
+
+    console.log("✅ All features initialized successfully");
+  }
+
+  /**
+   * Handle slash command interactions
+   */
+  private async handleInteraction(interaction: Interaction): Promise<void> {
+    if (!interaction.isChatInputCommand()) {
+      return;
+    }
+
+    const command = this.commands.get(interaction.commandName);
+    if (!command) {
+      return;
+    }
+
+    try {
+      await command.execute(interaction);
+    } catch (error) {
+      console.error(
+        `🔸 Error executing command ${interaction.commandName}:`,
+        error
+      );
+
+      const errorMessage = "There was an error while executing this command!";
+
+      try {
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp({
+            content: errorMessage,
+            ephemeral: true,
+          });
+        } else {
+          await interaction.reply({
+            content: errorMessage,
+            ephemeral: true,
+          });
+        }
+      } catch (err) {
+        // If sending the error message fails, just log it
+        console.error("🔸 Failed to send error message to interaction:", err);
+      }
+    }
+  }
+
+  /**
+   * Deploy commands to Discord
+   */
+  private async deployCommands(): Promise<void> {
     const appId = this.client.application?.id;
     if (!appId) {
       throw new Error(
         "Application ID is missing. Make sure the client is fully logged in."
       );
     }
-    if (config.guildId) {
-      // Fast guild-specific deployment for testing
-      await rest.put(Routes.applicationGuildCommands(appId, config.guildId), {
-        body: commands,
-      });
-    } else {
-      // Global deployment (takes up to an hour)
-      await rest.put(Routes.applicationCommands(appId), { body: commands });
-    }
+
+    this.commandDeployer = new CommandDeployer(config.botToken, this.commands);
+    await this.commandDeployer.deploy(appId, config.guildId);
   }
 
+  /**
+   * Gracefully shutdown the bot and all features
+   */
   async shutdown(): Promise<void> {
-    // Silent shutdown - no console output to prevent lingering logs
+    console.log("🔹 Shutting down bot...");
 
-    // Stop unified state sync service (handles conversation finalization + cleanup)
+    // Stop conversation workflow (handles conversation finalization + cleanup)
+    if (this.conversationWorkflow) {
+      await this.conversationWorkflow.stop();
+    }
+
+    // Stop state sync service
     if (this.stateSyncService) {
       await this.stateSyncService.stop();
     }
 
-    // Immediately destroy Discord client to stop all Discord operations
+    // Destroy Discord client
     this.client.destroy();
 
-    // Disconnect from PostgreSQL
-    if (this.postgresManager.isConnected()) {
-      await this.postgresManager.disconnect();
+    // Disconnect from database
+    if (this.db.isConnected()) {
+      await this.db.disconnect();
     }
+
+    console.log("✅ Bot shutdown complete");
   }
 }

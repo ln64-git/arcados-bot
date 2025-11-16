@@ -1274,3 +1274,6 @@ export class SocialIntelligence {
 
 // Export types for convenience
 export * from "./types";
+
+// Export workflow manager for bot initialization
+export { ConversationWorkflowManager } from "./conversation-detection/ConversationWorkflowManager";
