@@ -6,6 +6,7 @@ import { parseEmbedding } from "../social-intelligence/conversation-detection/me
 import { config } from "../../config/index.js";
 import type { SyncCoordinator } from "./SyncCoordinator";
 import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
+import { timeOperation } from "../../utils/timing";
 
 /**
  * Background reconciliation and healing for Discord state
@@ -124,10 +125,12 @@ export class ReconciliationSync {
       releaseLock();
     }
 
-    // Run reconciliation tasks
     await this.reconcileChannels(guild);
+
     await this.reconcileMembers(guild);
+
     await this.reconcileMessages(guild);
+
     await this.reconcileConversationKeywords(guild);
 
     if (this.verbose) {
@@ -249,43 +252,147 @@ export class ReconciliationSync {
       (ch) => ch.isTextBased() && !ch.isDMBased()
     );
 
-    if (this.verbose) {
-      console.log(
-        `   💬 ReconciliationSync: Checking ${channels.length} channels for gaps...`
+    let channelsProcessed = 0;
+    let channelsWithGaps = 0;
+    let channelsBackfilled = 0;
+
+    // Process channels in parallel with concurrency limit
+    const concurrency = 10; // Process 10 channels simultaneously
+    const results = await this.processChannelsConcurrently(
+      channels,
+      guild.id,
+      concurrency
+    );
+
+    channelsProcessed = results.processed;
+    channelsBackfilled = results.backfilled;
+    channelsWithGaps = results.gapChecks;
+  }
+
+  /**
+   * Process multiple channels concurrently with rate limiting
+   */
+  private async processChannelsConcurrently(
+    channels: any[],
+    guildId: string,
+    concurrency: number
+  ): Promise<{
+    processed: number;
+    backfilled: number;
+    gapChecks: number;
+  }> {
+    let processed = 0;
+    let backfilled = 0;
+    let gapChecks = 0;
+
+    // Process channels in batches of 'concurrency' size
+    for (let i = 0; i < channels.length; i += concurrency) {
+      const batch = channels.slice(i, i + concurrency);
+
+      // Process batch concurrently
+      const batchResults = await Promise.allSettled(
+        batch.map(async (channel) => {
+          const channelStart = performance.now();
+          try {
+            const watermarkResult = await this.db.getChannelWatermark(
+              channel.id
+            );
+
+            if (!watermarkResult.success || !watermarkResult.data) {
+              // No watermark = channel never synced, backfill all messages
+              await this.backfillChannel(guildId, channel.id, null);
+              return { type: "backfilled" as const };
+            } else {
+              const watermark = watermarkResult.data.last_message_id;
+
+              if (!watermark) {
+                // Watermark exists but NULL (messages cleared), backfill all
+                await this.backfillChannel(guildId, channel.id, null);
+                return { type: "backfilled" as const };
+              } else {
+                // OPTIMIZATION: Quick check if watermark is still current
+                const isUpToDate = await this.isChannelUpToDate(
+                  channel,
+                  watermark
+                );
+                if (isUpToDate) {
+                  return { type: "skip" as const };
+                }
+
+                // Watermark exists but outdated, check for gaps
+                await this.detectAndFillGaps(guildId, channel.id, watermark);
+                return { type: "gapCheck" as const };
+              }
+            }
+          } catch (error: any) {
+            if (error.code === 50001 || error.status === 403) {
+              // Missing permissions, skip silently
+              return { type: "skip" as const };
+            }
+
+            if (this.verbose) {
+              console.error(
+                `   🔸 ReconciliationSync: Error reconciling channel ${channel.id}:`,
+                error
+              );
+            }
+            return { type: "error" as const };
+          } finally {
+            const channelDuration = performance.now() - channelStart;
+
+            // Log slow channels (> 10 seconds)
+            if (channelDuration > 10000) {
+              const channelName = (channel as any).name || channel.id;
+              console.log(
+                `      ⚠️  Slow channel: #${channelName} took ${(
+                  channelDuration / 1000
+                ).toFixed(1)}s`
+              );
+            }
+          }
+        })
       );
-    }
 
-    for (const channel of channels) {
-      try {
-        const watermarkResult = await this.db.getChannelWatermark(channel.id);
-
-        if (!watermarkResult.success || !watermarkResult.data) {
-          // No watermark = channel never synced, backfill all messages
-          await this.backfillChannel(guild.id, channel.id, null);
-        } else {
-          const watermark = watermarkResult.data.last_message_id;
-
-          if (!watermark) {
-            // Watermark exists but NULL (messages cleared), backfill all
-            await this.backfillChannel(guild.id, channel.id, null);
-          } else {
-            // Watermark exists, check for gaps (messages before watermark)
-            await this.detectAndFillGaps(guild.id, channel.id, watermark);
+      // Count results
+      for (const result of batchResults) {
+        if (result.status === "fulfilled") {
+          processed++;
+          if (result.value.type === "backfilled") {
+            backfilled++;
+          } else if (result.value.type === "gapCheck") {
+            gapChecks++;
           }
         }
-      } catch (error: any) {
-        if (error.code === 50001 || error.status === 403) {
-          // Missing permissions, skip silently
-          continue;
-        }
-
-        if (this.verbose) {
-          console.error(
-            `   🔸 ReconciliationSync: Error reconciling channel ${channel.id}:`,
-            error
-          );
-        }
       }
+    }
+
+    return { processed, backfilled, gapChecks };
+  }
+
+  /**
+   * Quick check if channel's watermark points to the most recent message
+   * Returns true if channel is up-to-date (no reconciliation needed)
+   */
+  private async isChannelUpToDate(
+    channel: any,
+    watermark: string
+  ): Promise<boolean> {
+    try {
+      // Fetch only the most recent message from Discord
+      const messages = await channel.messages.fetch({ limit: 1 });
+
+      if (!messages || messages.size === 0) {
+        // No messages in channel, up-to-date
+        return true;
+      }
+
+      const latestMessage = messages.first();
+
+      // If watermark matches latest message, no gaps possible
+      return latestMessage?.id === watermark;
+    } catch (error) {
+      // On error, assume not up-to-date to be safe
+      return false;
     }
   }
 
@@ -301,12 +408,6 @@ export class ReconciliationSync {
     if (!channel || !channel.isTextBased()) return;
 
     const channelName = `#${(channel as any).name || channelId}`;
-
-    if (this.verbose) {
-      console.log(
-        `   📥 ReconciliationSync: Backfilling channel ${channelName}...`
-      );
-    }
 
     let lastId: string | null = null;
     let synced = 0;
@@ -420,11 +521,71 @@ export class ReconciliationSync {
 
     const oldestInDb = oldestResult.data[0].id;
 
-    // Backfill from watermark backward to oldest in DB
+    // OPTIMIZATION: Sample first few batches to detect if gaps exist
+    // This avoids fetching 50+ batches when channel has continuous history
     let lastId: string | null = watermark;
     let synced = 0;
     const batchSize = 100;
-    const maxBatches = 50; // Limit to prevent infinite loops
+    const sampleSize = 3; // Check first 300 messages
+    const maxBatches = 50; // Safety limit
+
+    // Quick sample pass to detect gaps
+    let gapDetected = false;
+    let reachedOldestInSample = false;
+    let consecutiveBatchesWithNoGaps = 0;
+
+    for (let i = 0; i < sampleSize && i < maxBatches; i++) {
+      const options: any = { limit: batchSize, before: lastId };
+      const messages = await (channel as any).messages.fetch(options);
+
+      if (!messages || messages.size === 0) break;
+
+      // Check if we've reached the oldest message in DB
+      for (const [, msg] of messages) {
+        if (msg.id === oldestInDb) {
+          reachedOldestInSample = true;
+          break;
+        }
+      }
+
+      // Check if these messages exist in DB
+      const messageIds = Array.from(messages.keys());
+      const existingResult = await this.db.query(
+        `SELECT id FROM messages WHERE id = ANY($1) AND active = true`,
+        [messageIds]
+      );
+
+      const existingCount =
+        existingResult.success && existingResult.data
+          ? existingResult.data.length
+          : 0;
+
+      // If any messages missing, we have a gap
+      if (existingCount < messageIds.length) {
+        gapDetected = true;
+        break; // Exit early - we found a gap
+      } else {
+        consecutiveBatchesWithNoGaps++;
+        // If we have 2+ consecutive batches with all messages present,
+        // very high confidence there are no gaps
+        if (consecutiveBatchesWithNoGaps >= 2 && !reachedOldestInSample) {
+          break;
+        }
+      }
+
+      lastId = messages.last()?.id || null;
+      if (reachedOldestInSample || messages.size < batchSize || !lastId) break;
+    }
+
+    // If no gaps in sample and we didn't reach oldest message, skip full scan
+    if (!gapDetected && !reachedOldestInSample) {
+      return;
+    }
+
+    // Full scan needed: either gaps detected or reached oldest message in sample
+    // Reset and do complete processing
+    lastId = watermark;
+    synced = 0;
 
     for (let i = 0; i < maxBatches; i++) {
       const options: any = { limit: batchSize, before: lastId };
@@ -628,14 +789,6 @@ export class ReconciliationSync {
         if (updatedThisBatch === 0) {
           break;
         }
-      }
-
-      if (totalUpdated > 0) {
-        console.log(
-          `   ✅ ReconciliationSync: Added keywords to ${totalUpdated} conversation segment${
-            totalUpdated === 1 ? "" : "s"
-          } in ${guild.name}`
-        );
       }
     } catch (error) {
       console.error(

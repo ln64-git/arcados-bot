@@ -5,6 +5,7 @@ import { LiveEventSync } from "./LiveEventSync";
 import { ReconciliationSync } from "./ReconciliationSync";
 import { SyncCoordinator } from "./SyncCoordinator";
 import { PostgreSQLManager } from "../../database/PostgreSQLManager";
+import { timeOperation } from "../../utils/timing";
 
 /**
  * Unified state synchronization service that manages both real-time event sync
@@ -22,161 +23,165 @@ import { PostgreSQLManager } from "../../database/PostgreSQLManager";
  * 4. Graceful Degradation: System continues working if either component fails
  */
 export class StateSyncService {
-	private client: Client;
-	private db: PostgreSQLManager;
-	private relationshipMapper: RelationshipMapper;
-	private conversationDetector: ConversationDetector;
+  private client: Client;
+  private db: PostgreSQLManager;
+  private relationshipMapper: RelationshipMapper;
+  private conversationDetector: ConversationDetector;
 
-	private liveEventSync: LiveEventSync;
-	private reconciliationSync: ReconciliationSync;
-	private coordinator: SyncCoordinator;
+  private liveEventSync: LiveEventSync;
+  private reconciliationSync: ReconciliationSync;
+  private coordinator: SyncCoordinator;
 
-	private maintenanceTimer?: NodeJS.Timeout;
-	private verbose: boolean;
+  private maintenanceTimer?: NodeJS.Timeout;
+  private verbose: boolean;
 
-	constructor(
-		client: Client,
-		db: PostgreSQLManager,
-		relationshipMapper: RelationshipMapper,
-		conversationDetector: ConversationDetector,
-		verbose: boolean = false
-	) {
-		this.client = client;
-		this.db = db;
-		this.relationshipMapper = relationshipMapper;
-		this.conversationDetector = conversationDetector;
-		this.verbose = verbose;
+  constructor(
+    client: Client,
+    db: PostgreSQLManager,
+    relationshipMapper: RelationshipMapper,
+    conversationDetector: ConversationDetector,
+    verbose: boolean = false
+  ) {
+    this.client = client;
+    this.db = db;
+    this.relationshipMapper = relationshipMapper;
+    this.conversationDetector = conversationDetector;
+    this.verbose = verbose;
 
-		// Initialize coordinator first (shared state manager)
-		this.coordinator = new SyncCoordinator(db, verbose);
+    // Initialize coordinator first (shared state manager)
+    this.coordinator = new SyncCoordinator(db, verbose);
 
-		// Initialize sync components
-		this.liveEventSync = new LiveEventSync(
-			client,
-			db,
-			relationshipMapper,
-			conversationDetector,
-			this.coordinator,
-			verbose
-		);
+    // Initialize sync components
+    this.liveEventSync = new LiveEventSync(
+      client,
+      db,
+      relationshipMapper,
+      conversationDetector,
+      this.coordinator,
+      verbose
+    );
 
-		this.reconciliationSync = new ReconciliationSync(
-			client,
-			db,
-			relationshipMapper,
-			this.coordinator,
-			verbose
-		);
-	}
+    this.reconciliationSync = new ReconciliationSync(
+      client,
+      db,
+      relationshipMapper,
+      this.coordinator,
+      verbose
+    );
+  }
 
-	/**
-	 * Start the sync service
-	 */
-	async start(): Promise<void> {
-		console.log("🔹 StateSyncService: Starting unified sync...");
+  /**
+   * Start the sync service
+   */
+  async start(): Promise<void> {
+    console.log("🔹 StateSyncService: Starting unified sync...");
 
-		// Start live event sync first (higher priority)
-		this.liveEventSync.start();
+    // Start live event sync first (higher priority)
+    this.liveEventSync.start();
 
-		// Run initial reconciliation pass (after live sync is active)
-		await this.runInitialReconciliation();
+    // Run initial reconciliation pass (after live sync is active)
+    await this.runInitialReconciliation();
 
-		// Start periodic maintenance
-		this.startMaintenance();
+    // Start periodic maintenance
+    this.startMaintenance();
 
-		console.log("✅ StateSyncService: Unified sync started");
-	}
+    console.log("✅ StateSyncService: Unified sync started");
+  }
 
-	/**
-	 * Run initial reconciliation pass on boot
-	 */
-	private async runInitialReconciliation(): Promise<void> {
-		console.log("🔹 StateSyncService: Running initial reconciliation...");
+  /**
+   * Run initial reconciliation pass on boot
+   */
+  private async runInitialReconciliation(): Promise<void> {
+    console.log("🔹 StateSyncService: Running initial reconciliation...");
 
-		try {
-			await this.reconciliationSync.runOnce();
-			console.log("✅ StateSyncService: Initial reconciliation completed");
-		} catch (error) {
-			console.error("🔸 StateSyncService: Error during initial reconciliation:", error);
-		}
-	}
+    try {
+      await this.reconciliationSync.runOnce();
+    } catch (error) {
+      console.error(
+        "🔸 StateSyncService: Error during initial reconciliation:",
+        error
+      );
+    }
+  }
 
-	/**
-	 * Start periodic maintenance (every 10 minutes)
-	 */
-	private startMaintenance(): void {
-		this.maintenanceTimer = setInterval(async () => {
-			await this.runMaintenance();
-		}, 10 * 60 * 1000);
+  /**
+   * Start periodic maintenance (every 10 minutes)
+   */
+  private startMaintenance(): void {
+    this.maintenanceTimer = setInterval(async () => {
+      await this.runMaintenance();
+    }, 10 * 60 * 1000);
 
-		if (this.verbose) {
-			console.log("🔹 StateSyncService: Periodic maintenance started (every 10 minutes)");
-		}
-	}
+    if (this.verbose) {
+      console.log(
+        "🔹 StateSyncService: Periodic maintenance started (every 10 minutes)"
+      );
+    }
+  }
 
-	/**
-	 * Run periodic maintenance tasks
-	 */
-	private async runMaintenance(): Promise<void> {
-		try {
-			if (this.verbose) {
-				console.log("🔹 StateSyncService: Running periodic maintenance...");
-			}
+  /**
+   * Run periodic maintenance tasks
+   */
+  private async runMaintenance(): Promise<void> {
+    try {
+      if (this.verbose) {
+        console.log("🔹 StateSyncService: Running periodic maintenance...");
+      }
 
-			// Run reconciliation tasks
-			await this.reconciliationSync.runMaintenance();
+      // Run reconciliation tasks
+      await this.reconciliationSync.runMaintenance();
 
-			if (this.verbose) {
-				console.log("✅ StateSyncService: Periodic maintenance completed");
-			}
-		} catch (error) {
-			console.error("🔸 StateSyncService: Error during maintenance:", error);
-		}
-	}
+      if (this.verbose) {
+        console.log("✅ StateSyncService: Periodic maintenance completed");
+      }
+    } catch (error) {
+      console.error("🔸 StateSyncService: Error during maintenance:", error);
+    }
+  }
 
-	/**
-	 * Stop the sync service
-	 */
-	async stop(): Promise<void> {
-		console.log("🔹 StateSyncService: Stopping unified sync...");
+  /**
+   * Stop the sync service
+   */
+  async stop(): Promise<void> {
+    console.log("🔹 StateSyncService: Stopping unified sync...");
 
-		// Stop maintenance timer
-		if (this.maintenanceTimer) {
-			clearInterval(this.maintenanceTimer);
-		}
+    // Stop maintenance timer
+    if (this.maintenanceTimer) {
+      clearInterval(this.maintenanceTimer);
+    }
 
-		// Stop live event sync
-		await this.liveEventSync.stop();
+    // Stop live event sync
+    await this.liveEventSync.stop();
 
-		// Final reconciliation pass (optional, can be skipped for fast shutdown)
-		// await this.reconciliationSync.runOnce();
+    // Final reconciliation pass (optional, can be skipped for fast shutdown)
+    // await this.reconciliationSync.runOnce();
 
-		console.log("✅ StateSyncService: Unified sync stopped");
-	}
+    console.log("✅ StateSyncService: Unified sync stopped");
+  }
 
-	/**
-	 * Get sync statistics for monitoring
-	 */
-	getStats(): {
-		liveEvents: {
-			messagesProcessed: number;
-			reactionsSynced: number;
-			membersSynced: number;
-		};
-		reconciliation: {
-			lastRunTime: Date | null;
-			gapsDetected: number;
-			messagesFilled: number;
-		};
-		coordinator: {
-			activeLocks: number;
-			totalConflicts: number;
-		};
-	} {
-		return {
-			liveEvents: this.liveEventSync.getStats(),
-			reconciliation: this.reconciliationSync.getStats(),
-			coordinator: this.coordinator.getStats(),
-		};
-	}
+  /**
+   * Get sync statistics for monitoring
+   */
+  getStats(): {
+    liveEvents: {
+      messagesProcessed: number;
+      reactionsSynced: number;
+      membersSynced: number;
+    };
+    reconciliation: {
+      lastRunTime: Date | null;
+      gapsDetected: number;
+      messagesFilled: number;
+    };
+    coordinator: {
+      activeLocks: number;
+      totalConflicts: number;
+    };
+  } {
+    return {
+      liveEvents: this.liveEventSync.getStats(),
+      reconciliation: this.reconciliationSync.getStats(),
+      coordinator: this.coordinator.getStats(),
+    };
+  }
 }
