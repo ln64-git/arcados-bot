@@ -158,7 +158,7 @@ export class EnhancementOrchestrator {
       FROM conversation_segments cs
       WHERE cs.guild_id = $1
         AND ${summaryCondition}
-        AND cs.message_count >= 3
+        AND cs.message_count >= 2
         AND cs.start_time >= $2
         AND cs.status = 'finalized'
       ORDER BY cs.start_time DESC
@@ -232,6 +232,10 @@ export class EnhancementOrchestrator {
           const messagePreview = sampledMessages
             .map((m: any) => {
               const content = (m.content || "").trim();
+              // Skip bot commands (m!p, !play, .spin, etc.)
+              if (content.match(/^(m!|!|\.)\w+/i)) {
+                return "(bot command)";
+              }
               return content.length > 0 ? content : "(no text content)";
             })
             .join("\n")
@@ -246,29 +250,33 @@ export class EnhancementOrchestrator {
             (60 * 1000);
 
           // Generate summary using AI
-          const prompt = `Summarize this Discord conversation in 1-2 concise sentences. Focus on the main topics discussed.
+          const prompt = `Summarize this Discord conversation in 1-2 concise sentences. State the key topics/actions directly.
 
 BAD EXAMPLES (DO NOT USE):
-❌ "Smell the stench and recoil—Sheldon Cooper sprays sanitizer..." (flowery language)
-❌ "Capture the essence: A casual conversation unfolds..." (narrative style)
-❌ "User <@886340655671046176> mentioned..." (Discord user IDs)
-❌ "Dive into the chaos of this conversation..." (unnecessary drama)
+❌ "Discussed suggestive humor and innuendos..." (generic "discussed", euphemistic)
+❌ "Talked about politics..." (vague "talked about")
 ❌ "Shared a YouTube link" (too vague, missing context)
+❌ "Mentioned food and feelings" (passive "mentioned")
+❌ "User <@886340655671046176> said..." (Discord user IDs)
 
 GOOD EXAMPLES (USE THIS STYLE):
-✅ "Complained about bad smell, questioned if someone was sick"
-✅ "Discussed Trump allegedly performing oral sex on Bill Clinton; joked about Hitler's micropenis; noted difficulties for white supremacists"
-✅ "Shared YouTube video of flying fish, made joke about fish spinning"
-✅ "Expressed frustration for not being invited to watch BattleBots, called friends 'fakes'"
-✅ "Discussed getting halal food from boyfriend, listed recent meals including steak and Hawaiian rolls, joked about alcohol discovery"
+✅ "Trump allegedly performed oral sex on Bill Clinton; Hitler had a micropenis; white supremacists struggling"
+✅ "Boyfriend getting halal food; recent meals included steak, rice, green beans, Hawaiian rolls"
+✅ "Invited to walk to gas station; jokingly called 'a bit gay'"
+✅ "Not invited to watch BattleBots; called friends 'fakes'"
+✅ "Shared flying fish video; joked about fish spinning"
+✅ "Joked about ejaculation ('nuttin'), putting it on someone's face; described 11lb processed ham as unnatural abhorrence"
+✅ "Flirting in public as turn-on; already met up for sex"
+✅ "Masturbation jokes, sexual positions, graphic descriptions; compared sex to Jason Statham's Transporter role"
 
 RULES:
-1. Capture the MAIN topic/theme, not just the last message
-2. Include important context (what, why, who if it's a public figure)
-3. Avoid Discord user IDs like <@123456> or usernames
-4. Public figures (Trump, celebrities, etc.) CAN be mentioned by name
-5. Be factual and specific, not vague
-6. Focus on conversation content, not individual users
+1. Use ACTIVE, SPECIFIC language - avoid generic verbs like "discussed", "talked about", "mentioned"
+2. Use semicolons to separate multiple topics within the summary
+3. For sexual/crude content: state it plainly (e.g., "joked about masturbation", "made crude sexual remarks")
+4. Public figures (Trump, celebrities) CAN be mentioned by name
+5. Avoid Discord user IDs like <@123456> or usernames
+6. IGNORE bot commands (lines marked as "(bot command)")
+7. Start directly with the content - no meta-commentary like "The conversation was about..."
 
 Conversation (${messages.length} messages, ${participantCount} participants):
 ${messagePreview}

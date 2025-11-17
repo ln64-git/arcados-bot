@@ -311,7 +311,9 @@ async function main() {
   }
 
   // Duration analysis
-  const durations = conversations.map((c) => c.duration_minutes);
+  const durations = conversations
+    .map((c) => Number(c.duration_minutes))
+    .filter((d) => !isNaN(d) && isFinite(d));
   if (durations.length > 0) {
     const avgDuration = durations.reduce((a, b) => a + b, 0) / durations.length;
     const maxDuration = Math.max(...durations);
