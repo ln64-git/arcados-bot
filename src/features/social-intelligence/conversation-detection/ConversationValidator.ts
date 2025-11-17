@@ -123,12 +123,14 @@ export class ConversationValidator {
     }
   >(messages: T[], messageIds: Set<string>): boolean {
     // Messages must be sorted by created_at before calling this method
+    // TUNED: Removed strict connection requirement to allow natural conversations
+    // Connection requirement was too strict - same reply/mention rate in mapped vs unmapped (18%)
     return (
       this.validateMinimumMessages(messages, messageIds) &&
       this.validateParticipants(messages) &&
       this.validateDuration(messages) &&
-      this.validateGaps(messages) &&
-      this.validateConnections(messages, messageIds)
+      this.validateGaps(messages)
+      // this.validateConnections(messages, messageIds) // DISABLED: Too strict, allows natural chat
     );
   }
 

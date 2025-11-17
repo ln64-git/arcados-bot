@@ -20,6 +20,17 @@ export class TFIDFExtractor {
 	private readonly DEFAULT_TOP_N = 10;
 	private readonly DEFAULT_MIN_SCORE = 0.1;
 	private readonly MAX_NGRAM_LENGTH = 3;
+	// Minimum IDF threshold to filter out generic words (appearing in many documents)
+	private readonly MIN_IDF_THRESHOLD = 0.5; // Filter words appearing in >60% of conversations (more permissive)
+
+	// Hardcoded list of common English stopwords that should always be filtered
+	// Keep this minimal for Discord conversations - only filter the most generic words
+	private readonly COMMON_STOPWORDS = new Set([
+		"a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
+		"by", "from", "as", "is", "was", "are", "were", "be", "been", "being",
+		"i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
+		"my", "your", "his", "her", "its", "our", "their", "this", "that", "these", "those"
+	]);
 
 	/**
 	 * Extract keywords from messages using TF-IDF
@@ -123,6 +134,12 @@ export class TFIDFExtractor {
 				continue;
 			}
 
+			// Filter out common stopwords (hardcoded list)
+			const termWords = term.toLowerCase().split(" ");
+			if (termWords.some(word => this.COMMON_STOPWORDS.has(word))) {
+				continue;
+			}
+
 			// Get IDF from vocabulary, or use default if not available
 			let idf = 1.0; // Default IDF for unknown terms
 
@@ -133,6 +150,13 @@ export class TFIDFExtractor {
 					if (vocabEntry.is_stopword) continue;
 
 					idf = vocabEntry.idf_score;
+
+					// Filter out words with very low IDF (appearing in many documents = generic)
+					// Lower IDF means the word appears in more documents, making it less distinctive
+					// IDF < 1.5 means the word appears in >22% of conversations
+					if (idf < this.MIN_IDF_THRESHOLD) {
+						continue;
+					}
 				}
 			}
 
@@ -157,8 +181,11 @@ export class TFIDFExtractor {
 	private extractTermsFromDocument(text: string): string[] {
 		const terms: string[] = [];
 
+		// Strip URLs before processing
+		const textWithoutUrls = this.stripUrls(text);
+
 		// Tokenize: lowercase, remove special chars except spaces, split on whitespace
-		const tokens = text
+		const tokens = textWithoutUrls
 			.toLowerCase()
 			.replace(/[^\w\s'-]/g, " ") // Keep hyphens and apostrophes
 			.split(/\s+/)
@@ -213,6 +240,26 @@ export class TFIDFExtractor {
 	}
 
 	/**
+	 * Strip URLs from text to prevent URL fragments from being extracted as keywords
+	 */
+	private stripUrls(text: string): string {
+		// Remove complete URLs (http://, https://, www.)
+		let cleaned = text.replace(/https?:\/\/[^\s]+/gi, " ");
+		cleaned = cleaned.replace(/www\.[^\s]+/gi, " ");
+		
+		// Remove discord CDN URLs that might not have http://
+		cleaned = cleaned.replace(/cdn\.discordapp\.com[^\s]*/gi, " ");
+		
+		// Remove tenor.com URLs
+		cleaned = cleaned.replace(/tenor\.com[^\s]*/gi, " ");
+		
+		// Remove common short URL patterns
+		cleaned = cleaned.replace(/youtu\.be\/[^\s]*/gi, " ");
+		
+		return cleaned;
+	}
+
+	/**
 	 * Validate if an n-gram should be included (checks for URL fragments in the phrase)
 	 */
 	private isValidNgram(ngram: string): boolean {
@@ -250,6 +297,29 @@ export class TFIDFExtractor {
 
 		// Skip tokens that are mostly special characters
 		if (token.replace(/[\w-]/g, "").length > token.length / 2) return false;
+
+		// Skip tokens that look like random URL IDs/hashes
+		// These typically have mixed case, numbers, and are 8+ characters
+		// Examples: "pb29ggnux3s", "dQw4w9WgXcQ", "17410154"
+		if (token.length >= 8) {
+			// Check if it has both letters and numbers (likely an ID)
+			const hasLetters = /[a-z]/.test(token);
+			const hasNumbers = /\d/.test(token);
+			const isAllLowercase = token === token.toLowerCase();
+			const hasConsecutiveDigits = /\d{4,}/.test(token); // 4+ consecutive digits
+			
+			// Skip if it looks like a random ID
+			if (hasLetters && hasNumbers && (hasConsecutiveDigits || !isAllLowercase)) {
+				return false;
+			}
+			
+			// Skip tokens with very low vowel density (random strings)
+			const vowels = token.match(/[aeiou]/g);
+			const vowelRatio = vowels ? vowels.length / token.length : 0;
+			if (vowelRatio < 0.2) { // Less than 20% vowels
+				return false;
+			}
+		}
 
 		// Skip URL/link-related tokens
 		const urlTokens = new Set([
@@ -335,7 +405,7 @@ export class TFIDFExtractor {
 
 		// Sort by raw TF and count (no IDF available)
 		const topTerms = Array.from(termFrequency.values())
-			.filter((score) => score.count >= 2) // Must appear at least twice
+			.filter((score) => score.count >= 1) // Accept all terms (even single occurrence)
 			.sort((a, b) => {
 				// Prefer higher frequency and higher count
 				const scoreA = a.tf * Math.log(a.count + 1);

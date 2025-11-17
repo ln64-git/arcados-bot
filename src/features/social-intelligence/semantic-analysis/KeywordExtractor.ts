@@ -9,6 +9,7 @@
 import type { PostgreSQLManager } from "../../../database/PostgreSQLManager";
 import { SemanticKeywordExtractor } from "./SemanticKeywordExtractor";
 import { TFIDFExtractor } from "./TFIDFExtractor";
+import { SimpleKeywordExtractor } from "./SimpleKeywordExtractor";
 import { VocabularyBuilder } from "./VocabularyBuilder";
 import type {
 	ConversationKeywords,
@@ -23,6 +24,7 @@ export class KeywordExtractor {
 	private vocabularyBuilder: VocabularyBuilder;
 	private tfidfExtractor: TFIDFExtractor;
 	private semanticExtractor: SemanticKeywordExtractor;
+	private simpleExtractor: SimpleKeywordExtractor;
 
 	// In-memory vocabulary cache (guild_id -> vocabulary)
 	private vocabularyCache: Map<string, GuildVocabulary>;
@@ -36,6 +38,7 @@ export class KeywordExtractor {
 		this.vocabularyBuilder = new VocabularyBuilder(db);
 		this.tfidfExtractor = new TFIDFExtractor();
 		this.semanticExtractor = new SemanticKeywordExtractor();
+		this.simpleExtractor = new SimpleKeywordExtractor();
 		this.vocabularyCache = new Map();
 	}
 
@@ -53,7 +56,7 @@ export class KeywordExtractor {
 			const startTime = Date.now();
 
 			// Determine extraction method
-			const method = options.method || "hybrid";
+			const method = options.method || "simple";
 
 			if (messages.length === 0) {
 				return this.createEmptyKeywords(method);
@@ -72,9 +75,15 @@ export class KeywordExtractor {
 					keywords = await this.extractSemantic(messages, options);
 					break;
 
+				case "simple":
+					// Use the simple frequency-based approach (best for Discord)
+					keywords = this.simpleExtractor.extractHybrid(messages, topN);
+					break;
+
 				case "hybrid":
 				default:
-					keywords = await this.extractHybrid(messages, guildId, options);
+					// For hybrid, use simple extractor (TF-IDF is too restrictive)
+					keywords = this.simpleExtractor.extractHybrid(messages, topN);
 					break;
 			}
 

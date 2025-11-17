@@ -37,8 +37,6 @@ export interface FinalizedConversation {
 	status: "finalized";
 	features: ConversationFeatures;
 	summary?: string;
-	topic_label?: string;
-	topic_confidence?: number;
 	ai_processing_status?: string;
 	ai_metadata?: Record<string, any>;
 }
@@ -59,7 +57,6 @@ export interface ConversationEntry {
 	message_count: number;
 	summary?: string;
 	keywords?: string[];
-	topic_label?: string;
 	channel_id?: string;
 	message_ids?: string[];
 	interaction_types?: InteractionType[];
@@ -93,13 +90,6 @@ export interface GuildVocabulary {
 	total_documents: number;
 	is_stopword: boolean;
 	updated_at: Date;
-}
-
-export interface TopicLabel {
-	label: string;
-	confidence: number;
-	method: "ai" | "keyword_fallback";
-	keywords_used?: string[];
 }
 
 // ============================================================================

@@ -126,13 +126,11 @@ Message → Buffer → [2 messages] → Create Streaming → Preliminary Keyword
 - `SemanticKeywordExtractor.ts` - Semantic clustering
 - `VocabularyBuilder.ts` - Build guild IDF vocabulary
 - `EmbeddingService.ts` - Local transformer model (singleton)
-- `TopicLabeler.ts` - AI topic labeling with fallback
 - `TopicDriftDetector.ts` - Detect topic changes
 
 **Extraction Timing**:
 - **Preliminary Keywords** (streaming): Fast TF-IDF only (<5 seconds)
 - **Full Keywords** (finalized): Hybrid TF-IDF + semantic (10 minutes)
-- **Topic Labels** (finalized): AI-generated labels (10+ minutes)
 
 **Data Flow**:
 ```
@@ -140,9 +138,9 @@ Streaming Conversation → Quick TF-IDF → preliminary_keywords (JSONB)
                               ↓
                       [10-min finalization]
                               ↓
-                  Hybrid Keywords + Embeddings + AI Label
+                  Hybrid Keywords + Embeddings
                               ↓
-                  features.keywords (JSONB) + topic_label (TEXT)
+                  features.keywords (JSONB)
 ```
 
 ---
@@ -217,10 +215,6 @@ Message with @mention → InteractionTracker.recordInteraction()
 ```
 Finalized Conversation → ConversationEnricher.enrich()
                               ↓
-              TopicLabeler.generateTopicLabel() (AI)
-                              ↓
-         Update conversation_segments.topic_label
-                              ↓
       ProfileEnricher.updateUserProfile()
                               ↓
    Update members table (keywords, relationship network summary)
@@ -252,8 +246,7 @@ preliminary_keywords (JSONB), preliminary_embedding (FLOAT[])
 **conversation_segments** (finalized conversations)
 ```sql
 id, guild_id, channel_id, participants[], message_ids[],
-start_time, end_time, status, features (JSONB),
-topic_label, topic_confidence, summary
+start_time, end_time, status, features (JSONB), summary
 ```
 
 **relationship_edges** (raw interaction counts)
@@ -390,9 +383,6 @@ keywords/KeywordExtractor.ts
 
 embeddings/EmbeddingService.ts
   → semantic-analysis/EmbeddingService.ts
-
-conversation-enhancement/TopicLabeler.ts
-  → semantic-analysis/TopicLabeler.ts
 ```
 
 **Database Changes**:

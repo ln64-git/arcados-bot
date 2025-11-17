@@ -102,7 +102,7 @@ export class SemanticKeywordExtractor {
 				messageIndices: Array.from(data.messageIndices),
 				count: data.count,
 			}))
-			.filter((entry) => entry.count >= 2); // Must appear at least twice
+			.filter((entry) => entry.count >= 1); // Accept all terms (even single occurrence)
 	}
 
 	/**
@@ -268,8 +268,31 @@ export class SemanticKeywordExtractor {
 	/**
 	 * Tokenize text into words
 	 */
+	/**
+	 * Strip URLs from text to prevent URL fragments from being extracted as keywords
+	 */
+	private stripUrls(text: string): string {
+		// Remove complete URLs (http://, https://, www.)
+		let cleaned = text.replace(/https?:\/\/[^\s]+/gi, " ");
+		cleaned = cleaned.replace(/www\.[^\s]+/gi, " ");
+		
+		// Remove discord CDN URLs that might not have http://
+		cleaned = cleaned.replace(/cdn\.discordapp\.com[^\s]*/gi, " ");
+		
+		// Remove tenor.com URLs
+		cleaned = cleaned.replace(/tenor\.com[^\s]*/gi, " ");
+		
+		// Remove common short URL patterns
+		cleaned = cleaned.replace(/youtu\.be\/[^\s]*/gi, " ");
+		
+		return cleaned;
+	}
+
 	private tokenize(text: string): string[] {
-		return text
+		// Strip URLs before tokenizing
+		const textWithoutUrls = this.stripUrls(text);
+		
+		return textWithoutUrls
 			.toLowerCase()
 			.replace(/[^\w\s'-]/g, " ")
 			.split(/\s+/)
@@ -283,6 +306,26 @@ export class SemanticKeywordExtractor {
 		if (token.length < 2) return false;
 		if (/^\d+$/.test(token)) return false;
 		if (token.replace(/[\w-]/g, "").length > token.length / 2) return false;
+		
+		// Skip tokens that look like random URL IDs/hashes
+		if (token.length >= 8) {
+			const hasLetters = /[a-z]/.test(token);
+			const hasNumbers = /\d/.test(token);
+			const isAllLowercase = token === token.toLowerCase();
+			const hasConsecutiveDigits = /\d{4,}/.test(token);
+			
+			if (hasLetters && hasNumbers && (hasConsecutiveDigits || !isAllLowercase)) {
+				return false;
+			}
+			
+			// Skip tokens with very low vowel density
+			const vowels = token.match(/[aeiou]/g);
+			const vowelRatio = vowels ? vowels.length / token.length : 0;
+			if (vowelRatio < 0.2) {
+				return false;
+			}
+		}
+		
 		return true;
 	}
 

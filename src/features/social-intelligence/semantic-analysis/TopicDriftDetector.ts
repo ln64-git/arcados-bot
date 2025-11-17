@@ -2,7 +2,8 @@ import type { AIManager } from "../../ai-assistant/AIManager";
 import type { PostgreSQLManager } from "../../../database/PostgreSQLManager";
 import { EmbeddingService } from "./EmbeddingService";
 import { TFIDFExtractor } from "./TFIDFExtractor";
-import type { KeywordMessage } from "./types";
+import { KeywordExtractor } from "./KeywordExtractor";
+import type { KeywordMessage, KeywordScore } from "./types";
 
 export interface Message {
   id: string;
@@ -47,6 +48,7 @@ export class TopicDriftDetector {
   private embeddingService: EmbeddingService;
   private db: PostgreSQLManager;
   private tfidfExtractor: TFIDFExtractor;
+  private keywordExtractor: KeywordExtractor;
   private readonly aiFailureCooldownMs: number;
   private aiCooldownUntil: number | null = null;
 
@@ -54,6 +56,10 @@ export class TopicDriftDetector {
   private readonly BASE_SEMANTIC_THRESHOLD = 0.5;
   private readonly HIGH_CONFIDENCE_THRESHOLD = 0.8; // Raised to 80% to check more windows
   private readonly LOW_CONFIDENCE_THRESHOLD = 0.4;
+
+  // Keyword-based drift detection thresholds
+  private readonly KEYWORD_HIGH_OVERLAP = 0.4; // High keyword overlap = same topic
+  private readonly KEYWORD_LOW_OVERLAP = 0.15; // Low keyword overlap = different topic
 
   // Use Gemini Flash for topic labeling (fast, free tier, good for utility work)
   // Final AI assistant responses use Grok
@@ -73,6 +79,7 @@ export class TopicDriftDetector {
     this.embeddingService = EmbeddingService.getInstance();
     this.db = db;
     this.tfidfExtractor = new TFIDFExtractor();
+    this.keywordExtractor = new KeywordExtractor(db);
     this.aiFailureCooldownMs = options.aiFailureCooldownMs ?? 30 * 60 * 1000;
   }
 
@@ -231,7 +238,8 @@ Respond with ONLY the topic label, nothing else. Examples: "planning dinner", "g
     conversationMessages: Message[],
     currentTopicLabel?: string,
     guildId: string = "",
-    userId: string = "system"
+    userId: string = "system",
+    conversationKeywords?: KeywordScore[]
   ): Promise<DriftDetectionResult> {
     // Need at least 3 messages to establish a topic
     if (conversationMessages.length < 3) {
@@ -243,6 +251,34 @@ Respond with ONLY the topic label, nothing else. Examples: "planning dinner", "g
       };
     }
 
+    // Fast first-pass: Keyword-based drift detection
+    if (conversationKeywords && conversationKeywords.length > 0) {
+      const keywordOverlap = await this.calculateKeywordOverlap(
+        newMessage,
+        conversationKeywords,
+        conversationMessages,
+        guildId
+      );
+
+      // High keyword overlap = clearly same topic (fast path)
+      if (keywordOverlap >= this.KEYWORD_HIGH_OVERLAP) {
+        return {
+          shouldSplit: false,
+          driftScore: 1 - keywordOverlap,
+          confidence: 0.85,
+          reason: `High keyword overlap (${(keywordOverlap * 100).toFixed(1)}%) - same topic`,
+        };
+      }
+
+      // Very low keyword overlap = likely different topic (fast path)
+      if (keywordOverlap < this.KEYWORD_LOW_OVERLAP) {
+        // Still check with embeddings/AI for final confirmation
+        // but this is a strong signal
+      }
+      // Moderate overlap (0.15-0.4) falls through to embeddings/AI
+    }
+
+    // Second-pass: Semantic similarity using embeddings
     await this.ensureEmbeddings([
       ...conversationMessages.slice(-10),
       newMessage,
@@ -453,6 +489,58 @@ Respond with ONLY the topic label, nothing else. Examples: "planning dinner", "g
     }
 
     return splits;
+  }
+
+  /**
+   * Calculate keyword overlap between new message and conversation keywords
+   * Returns Jaccard similarity (0-1) between keyword sets
+   */
+  private async calculateKeywordOverlap(
+    newMessage: Message,
+    conversationKeywords: KeywordScore[],
+    conversationMessages: Message[],
+    guildId: string
+  ): Promise<number> {
+    try {
+      // Extract keywords from new message (fast TF-IDF)
+      const newMessageKeywordData: KeywordMessage = {
+        id: newMessage.id,
+        content: newMessage.content,
+        author_id: newMessage.author_id,
+      };
+
+      // Use fast TF-IDF extraction (no vocabulary needed for single message)
+      const newMessageKeywords = await this.keywordExtractor.extractKeywords(
+        [newMessageKeywordData],
+        guildId,
+        { method: "tfidf", topN: 10 } // Fast TF-IDF, top 10 keywords
+      );
+
+      // Get keyword terms as sets (normalize to lowercase for comparison)
+      const conversationTerms = new Set(
+        conversationKeywords.map((k) => k.word.toLowerCase().trim())
+      );
+      const newMessageTerms = new Set(
+        newMessageKeywords.terms.map((k) => k.word.toLowerCase().trim())
+      );
+
+      // Calculate Jaccard similarity (intersection / union)
+      const intersection = new Set(
+        [...conversationTerms].filter((term) => newMessageTerms.has(term))
+      );
+      const union = new Set([...conversationTerms, ...newMessageTerms]);
+
+      if (union.size === 0) {
+        return 0; // No keywords in either set
+      }
+
+      const overlap = intersection.size / union.size;
+      return overlap;
+    } catch (error) {
+      console.error("🔸 Failed to calculate keyword overlap:", error);
+      // Fallback: return moderate overlap to let embeddings handle it
+      return 0.25;
+    }
   }
 
   /**

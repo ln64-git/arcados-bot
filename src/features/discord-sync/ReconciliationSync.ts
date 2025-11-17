@@ -1,6 +1,7 @@
 import type { Client, Guild } from "discord.js";
 import type { KeywordMessage } from "../social-intelligence/semantic-analysis/types";
 import { KeywordExtractor } from "../social-intelligence/semantic-analysis/KeywordExtractor";
+import { EmbeddingService } from "../social-intelligence/semantic-analysis/EmbeddingService";
 import { RelationshipMapper } from "../social-intelligence/relationship-mapping/RelationshipMapper";
 import { parseEmbedding } from "../social-intelligence/conversation-detection/messageUtils";
 import { config } from "../../config/index.js";
@@ -29,6 +30,7 @@ export class ReconciliationSync {
   private coordinator: SyncCoordinator;
   private verbose: boolean;
   private keywordExtractor: KeywordExtractor;
+  private embeddingService: EmbeddingService;
 
   private readonly KEYWORD_HEAL_SEGMENT_LIMIT = 200;
 
@@ -54,6 +56,7 @@ export class ReconciliationSync {
     this.coordinator = coordinator;
     this.verbose = verbose;
     this.keywordExtractor = new KeywordExtractor(db);
+    this.embeddingService = EmbeddingService.getInstance();
   }
 
   /**
@@ -130,6 +133,8 @@ export class ReconciliationSync {
     await this.reconcileMembers(guild);
 
     await this.reconcileMessages(guild);
+
+    await this.reconcileMessageEmbeddings(guild);
 
     await this.reconcileConversationKeywords(guild);
 
@@ -310,16 +315,25 @@ export class ReconciliationSync {
                 await this.backfillChannel(guildId, channel.id, null);
                 return { type: "backfilled" as const };
               } else {
-                // OPTIMIZATION: Quick check if watermark is still current
+                // Quick check: if watermark is current, channel is likely up-to-date
                 const isUpToDate = await this.isChannelUpToDate(
                   channel,
                   watermark
                 );
+
                 if (isUpToDate) {
-                  return { type: "skip" as const };
+                  // Watermark is current, but do a quick sanity check (first 200 messages)
+                  const hasGaps = await this.quickGapCheck(
+                    guildId,
+                    channel.id,
+                    watermark
+                  );
+                  if (!hasGaps) {
+                    return { type: "skip" as const };
+                  }
                 }
 
-                // Watermark exists but outdated, check for gaps
+                // Either watermark outdated or gaps detected, do full scan
                 await this.detectAndFillGaps(guildId, channel.id, watermark);
                 return { type: "gapCheck" as const };
               }
@@ -397,6 +411,59 @@ export class ReconciliationSync {
   }
 
   /**
+   * Quick sanity check for gaps in recent messages
+   * Returns true if gaps detected, false if all recent messages present
+   */
+  private async quickGapCheck(
+    guildId: string,
+    channelId: string,
+    watermark: string
+  ): Promise<boolean> {
+    const channel = this.client.channels.cache.get(channelId);
+    if (!channel || !channel.isTextBased()) return false;
+
+    try {
+      // Check first 2 batches (200 messages) for gaps
+      let lastId: string | null = watermark;
+      const batchSize = 100;
+      const quickScanBatches = 2;
+
+      for (let i = 0; i < quickScanBatches; i++) {
+        const options: any = { limit: batchSize, before: lastId };
+        const messages = await (channel as any).messages.fetch(options);
+
+        if (!messages || messages.size === 0) break;
+
+        // Check if these messages exist in DB
+        const messageIds = Array.from(messages.keys());
+        const existingResult = await this.db.query(
+          `SELECT id FROM messages WHERE id = ANY($1) AND active = true`,
+          [messageIds]
+        );
+
+        const existingCount =
+          existingResult.success && existingResult.data
+            ? existingResult.data.length
+            : 0;
+
+        // If any messages missing, we have a gap
+        if (existingCount < messageIds.length) {
+          return true; // Gap detected
+        }
+
+        if (messages.size < batchSize) break; // Reached end of channel
+        lastId = messages.last()?.id || null;
+        if (!lastId) break;
+      }
+
+      return false; // No gaps in recent messages
+    } catch (error) {
+      // On error, assume gaps exist to be safe
+      return true;
+    }
+  }
+
+  /**
    * Backfill all messages in a channel (no watermark)
    */
   private async backfillChannel(
@@ -439,6 +506,24 @@ export class ReconciliationSync {
       // Insert only missing messages
       for (const [, msg] of messages) {
         if (!existingIds.has(msg.id)) {
+          // Generate embedding for message content (if it has meaningful text)
+          let embedding: number[] | undefined = undefined;
+          if (msg.content && msg.content.trim().length > 0) {
+            try {
+              embedding = await this.embeddingService.generateEmbedding(
+                msg.content
+              );
+            } catch (error) {
+              if (this.verbose) {
+                console.error(
+                  `🔸 ReconciliationSync: Failed to generate embedding for message ${msg.id}:`,
+                  error
+                );
+              }
+              // Continue without embedding - will be backfilled later if needed
+            }
+          }
+
           await this.db.upsertMessage({
             id: msg.id,
             guild_id: guildId,
@@ -452,6 +537,7 @@ export class ReconciliationSync {
             ),
             embeds: msg.embeds.map((e: any) => JSON.stringify(e.toJSON())),
             referenced_message_id: msg.reference?.messageId || undefined,
+            embedding: embedding,
             active: true,
           });
 
@@ -521,71 +607,12 @@ export class ReconciliationSync {
 
     const oldestInDb = oldestResult.data[0].id;
 
-    // OPTIMIZATION: Sample first few batches to detect if gaps exist
-    // This avoids fetching 50+ batches when channel has continuous history
+    // Scan backwards from watermark, filling all gaps until we reach oldest in DB
     let lastId: string | null = watermark;
     let synced = 0;
     const batchSize = 100;
-    const sampleSize = 3; // Check first 300 messages
-    const maxBatches = 50; // Safety limit
-
-    // Quick sample pass to detect gaps
-    let gapDetected = false;
-    let reachedOldestInSample = false;
-    let consecutiveBatchesWithNoGaps = 0;
-
-    for (let i = 0; i < sampleSize && i < maxBatches; i++) {
-      const options: any = { limit: batchSize, before: lastId };
-      const messages = await (channel as any).messages.fetch(options);
-
-      if (!messages || messages.size === 0) break;
-
-      // Check if we've reached the oldest message in DB
-      for (const [, msg] of messages) {
-        if (msg.id === oldestInDb) {
-          reachedOldestInSample = true;
-          break;
-        }
-      }
-
-      // Check if these messages exist in DB
-      const messageIds = Array.from(messages.keys());
-      const existingResult = await this.db.query(
-        `SELECT id FROM messages WHERE id = ANY($1) AND active = true`,
-        [messageIds]
-      );
-
-      const existingCount =
-        existingResult.success && existingResult.data
-          ? existingResult.data.length
-          : 0;
-
-      // If any messages missing, we have a gap
-      if (existingCount < messageIds.length) {
-        gapDetected = true;
-        break; // Exit early - we found a gap
-      } else {
-        consecutiveBatchesWithNoGaps++;
-        // If we have 2+ consecutive batches with all messages present,
-        // very high confidence there are no gaps
-        if (consecutiveBatchesWithNoGaps >= 2 && !reachedOldestInSample) {
-          break;
-        }
-      }
-
-      lastId = messages.last()?.id || null;
-      if (reachedOldestInSample || messages.size < batchSize || !lastId) break;
-    }
-
-    // If no gaps in sample and we didn't reach oldest message, skip full scan
-    if (!gapDetected && !reachedOldestInSample) {
-      return;
-    }
-
-    // Full scan needed: either gaps detected or reached oldest message in sample
-    // Reset and do complete processing
-    lastId = watermark;
-    synced = 0;
+    const maxBatches = 100; // Safety limit for thorough scanning
+    let consecutiveCleanBatches = 0;
 
     for (let i = 0; i < maxBatches; i++) {
       const options: any = { limit: batchSize, before: lastId };
@@ -616,9 +643,30 @@ export class ReconciliationSync {
         }
       }
 
+      // Track if this batch had any gaps
+      const batchHasGaps = existingIds.size < messageIds.length;
+
       // Insert missing messages
       for (const [, msg] of messages) {
         if (!existingIds.has(msg.id)) {
+          // Generate embedding for message content (if it has meaningful text)
+          let embedding: number[] | undefined = undefined;
+          if (msg.content && msg.content.trim().length > 0) {
+            try {
+              embedding = await this.embeddingService.generateEmbedding(
+                msg.content
+              );
+            } catch (error) {
+              if (this.verbose) {
+                console.error(
+                  `🔸 ReconciliationSync: Failed to generate embedding for message ${msg.id}:`,
+                  error
+                );
+              }
+              // Continue without embedding - will be backfilled later if needed
+            }
+          }
+
           await this.db.upsertMessage({
             id: msg.id,
             guild_id: guildId,
@@ -632,6 +680,7 @@ export class ReconciliationSync {
             ),
             embeds: msg.embeds.map((e: any) => JSON.stringify(e.toJSON())),
             referenced_message_id: msg.reference?.messageId || undefined,
+            embedding: embedding,
             active: true,
           });
 
@@ -643,15 +692,120 @@ export class ReconciliationSync {
         }
       }
 
+      // Update consecutive clean batches counter
+      if (batchHasGaps) {
+        consecutiveCleanBatches = 0; // Reset on gap
+      } else {
+        consecutiveCleanBatches++;
+        // Early exit: if we've had 3+ consecutive clean batches, very likely no more gaps
+        if (consecutiveCleanBatches >= 3 && !reachedOldest) {
+          if (this.verbose) {
+            const channelName = `#${(channel as any).name || channelId}`;
+            console.log(
+              `   ✅ ReconciliationSync: ${channelName} verified clean after ${
+                i + 1
+              } batches`
+            );
+          }
+          break;
+        }
+      }
+
+      // Stop if we reached the oldest message or end of history
       if (reachedOldest || messages.size < batchSize) break;
 
       lastId = messages.last()?.id || null;
       if (!lastId) break;
     }
 
-    if (synced > 0 && this.verbose) {
+    const channelName = `#${(channel as any).name || channelId}`;
+    if (synced > 0) {
       console.log(
-        `   ✅ ReconciliationSync: Filled ${synced} gap messages in channel ${channelId}`
+        `   ✅ ReconciliationSync: Filled ${synced} gap messages in ${channelName}`
+      );
+    } else if (this.verbose) {
+      console.log(`   ✅ ReconciliationSync: No gaps found in ${channelName}`);
+    }
+  }
+
+  /**
+   * Reconcile message embeddings (backfill missing embeddings)
+   */
+  private async reconcileMessageEmbeddings(guild: Guild): Promise<void> {
+    try {
+      // Find messages without embeddings that have content
+      const messagesResult = await this.db.query(
+        `
+        SELECT id, content
+        FROM messages
+        WHERE guild_id = $1
+          AND embedding IS NULL
+          AND content IS NOT NULL
+          AND LENGTH(TRIM(content)) > 0
+          AND created_at > NOW() - INTERVAL '30 days'
+        ORDER BY created_at DESC
+        LIMIT 500
+        `,
+        [guild.id]
+      );
+
+      if (
+        !messagesResult.success ||
+        !messagesResult.data ||
+        messagesResult.data.length === 0
+      ) {
+        return;
+      }
+
+      const messages = messagesResult.data;
+      if (this.verbose) {
+        console.log(
+          `   🧠 ReconciliationSync: Backfilling embeddings for ${messages.length} messages...`
+        );
+      }
+
+      // Generate embeddings in batches
+      const BATCH_SIZE = 32;
+      let totalGenerated = 0;
+
+      for (let i = 0; i < messages.length; i += BATCH_SIZE) {
+        const batch = messages.slice(i, i + BATCH_SIZE);
+        const texts = batch.map((m: any) => m.content);
+        const ids = batch.map((m: any) => m.id);
+
+        try {
+          const embeddings = await this.embeddingService.generateBatch(texts);
+
+          // Update each message with its embedding
+          for (let j = 0; j < batch.length; j++) {
+            const embedding = embeddings[j];
+            if (embedding && embedding.length > 0) {
+              // Format as pgvector string: '[1,2,3]'
+              const embeddingStr = `[${embedding.join(",")}]`;
+              await this.db.query(
+                `UPDATE messages SET embedding = $1::vector WHERE id = $2`,
+                [embeddingStr, ids[j]]
+              );
+              totalGenerated++;
+            }
+          }
+        } catch (error) {
+          console.error(
+            `🔸 ReconciliationSync: Failed to generate embeddings for batch:`,
+            error
+          );
+        }
+      }
+
+      if (this.verbose && totalGenerated > 0) {
+        console.log(
+          `   ✅ ReconciliationSync: Generated embeddings for ${totalGenerated} messages`
+        );
+      }
+    } catch (error) {
+      console.error(
+        `🔸 ReconciliationSync: Error reconciling message embeddings:`,
+        error
       );
     }
   }

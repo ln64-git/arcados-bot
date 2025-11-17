@@ -10,6 +10,7 @@ import { RelationshipMapper } from "../social-intelligence/relationship-mapping/
 import { ConversationDetector } from "../social-intelligence/conversation-detection/ConversationDetector";
 import type { SyncCoordinator } from "./SyncCoordinator";
 import { PostgreSQLManager } from "../../database/PostgreSQLManager";
+import { EmbeddingService } from "../social-intelligence/semantic-analysis/EmbeddingService";
 
 /**
  * Real-time Discord event synchronization
@@ -30,6 +31,7 @@ export class LiveEventSync {
 	private conversationDetector: ConversationDetector;
 	private coordinator: SyncCoordinator;
 	private verbose: boolean;
+	private embeddingService: EmbeddingService;
 
 	// Rollup queue for relationship network updates (batched for performance)
 	private rollupQueue: Map<string, number> = new Map(); // userId:guildId -> interaction count
@@ -65,6 +67,7 @@ export class LiveEventSync {
 		this.conversationDetector = conversationDetector;
 		this.coordinator = coordinator;
 		this.verbose = verbose;
+		this.embeddingService = EmbeddingService.getInstance();
 	}
 
 	/**
@@ -183,6 +186,19 @@ export class LiveEventSync {
 				}
 			}
 
+			// Generate embedding for message content (if it has meaningful text)
+			let embedding: number[] | undefined = undefined;
+			if (message.content && message.content.trim().length > 0) {
+				try {
+					embedding = await this.embeddingService.generateEmbedding(message.content);
+				} catch (error) {
+					if (this.verbose) {
+						console.error(`🔸 LiveEventSync: Failed to generate embedding for message ${message.id}:`, error);
+					}
+					// Continue without embedding - will be backfilled later if needed
+				}
+			}
+
 			// Save message to database (ALL messages, including bots)
 			const result = await this.db.upsertMessage({
 				id: message.id,
@@ -197,6 +213,7 @@ export class LiveEventSync {
 				),
 				embeds: message.embeds.map((e: any) => JSON.stringify(e.toJSON())),
 				referenced_message_id: message.reference?.messageId || undefined,
+				embedding: embedding,
 				active: true,
 			});
 
