@@ -6,7 +6,8 @@ import {
 } from "../DatabaseTools";
 import type { ConversationEntry } from "../../social-intelligence/types";
 import { ConversationDetector } from "../../social-intelligence/conversation-detection/ConversationDetector";
-import type { RelationshipEntry } from "../../../database/PostgreSQLManager";
+import { pgvector, type RelationshipEntry } from "../../../database/PostgreSQLManager.js";
+import { EmbeddingService } from "../../social-intelligence/semantic-analysis/EmbeddingService.js";
 
 /**
  * Get conversations between two users
@@ -606,6 +607,223 @@ export const analyzeConversationPatternsTool: DatabaseTool = {
 };
 
 /**
+ * Search conversations using semantic similarity and programmatic filters
+ * Hybrid approach: embeddings for semantic meaning + SQL for identity/structure
+ */
+export const searchConversationsSemanticTool: DatabaseTool = {
+  name: "searchConversationsSemantic",
+  description:
+    "Search for conversations using semantic similarity (what was discussed) combined with optional filters (who, where, when). Perfect for queries like 'remember when alex converted a server', 'what did people discuss in guy-chat', 'conversations about politics'. Uses AI embeddings to understand meaning, not just keywords.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description:
+          "What to search for (e.g., 'converting a server', 'politics discussion', 'funny moments'). User names will be automatically extracted as filters.",
+      },
+      userIds: {
+        type: "string",
+        description:
+          "Optional: Comma-separated user IDs to filter by participants (e.g., '123,456'). Leave empty to search all conversations.",
+      },
+      channelIds: {
+        type: "string",
+        description:
+          "Optional: Comma-separated channel IDs to filter by channel. Leave empty to search all channels.",
+      },
+      lookbackDays: {
+        type: "number",
+        description:
+          "Optional: Only search conversations from the last N days (default: 30 days)",
+      },
+      limit: {
+        type: "number",
+        description: "Maximum number of results to return (default: 5, max: 20)",
+      },
+    },
+    required: ["query"],
+  },
+  execute: async (
+    params: Record<string, any>,
+    context: ToolContext
+  ): Promise<string | DatabaseToolResult> => {
+    try {
+      const query = String(params.query);
+      const limit = Math.min(params.limit || 5, 20);
+      const lookbackDays = params.lookbackDays || 30;
+
+      // Parse user IDs and channel IDs
+      const userIds = params.userIds
+        ? String(params.userIds)
+            .split(",")
+            .map((id) => id.trim())
+            .filter((id) => id.length > 0)
+        : [];
+      const channelIds = params.channelIds
+        ? String(params.channelIds)
+            .split(",")
+            .map((id) => id.trim())
+            .filter((id) => id.length > 0)
+        : [];
+
+      // Generate embedding for the query
+      let queryEmbedding: number[] | null = null;
+      try {
+        const embeddingService = EmbeddingService.getInstance();
+        queryEmbedding = await embeddingService.generateEmbedding(query);
+      } catch (error) {
+        console.warn("⚠️  Failed to generate query embedding:", error);
+        // Fall back to keyword search if embedding fails
+      }
+
+      // Build SQL query with programmatic filters
+      let whereConditions = ["cs.guild_id = $1", "cs.status = 'finalized'"];
+      const queryParams: any[] = [context.guildId];
+      let paramIndex = 2;
+
+      // Add embedding condition if available
+      if (queryEmbedding) {
+        whereConditions.push("cs.embedding IS NOT NULL");
+      }
+
+      // Filter by participants
+      if (userIds.length > 0) {
+        whereConditions.push(`cs.participants && $${paramIndex}::text[]`);
+        queryParams.push(userIds);
+        paramIndex++;
+      }
+
+      // Filter by channels
+      if (channelIds.length > 0) {
+        whereConditions.push(`cs.channel_id = ANY($${paramIndex}::text[])`);
+        queryParams.push(channelIds);
+        paramIndex++;
+      }
+
+      // Filter by time
+      const lookbackTime = new Date(
+        Date.now() - lookbackDays * 24 * 60 * 60 * 1000
+      );
+      whereConditions.push(`cs.start_time >= $${paramIndex}`);
+      queryParams.push(lookbackTime);
+      paramIndex++;
+
+      // Build the main query
+      let orderByClause: string;
+      if (queryEmbedding) {
+        // Use vector similarity if embedding is available
+        // Convert to pgvector format using toSql()
+        queryParams.push(pgvector.toSql(queryEmbedding));
+        orderByClause = `(cs.embedding <=> $${paramIndex}::vector) ASC`;
+        paramIndex++;
+      } else {
+        // Fallback to recency if no embedding
+        orderByClause = "cs.start_time DESC";
+      }
+
+      const result = await context.db.query(
+        `
+        SELECT
+          cs.id,
+          cs.channel_id,
+          cs.participants,
+          cs.start_time,
+          cs.end_time,
+          cs.message_count,
+          cs.summary,
+          cs.features,
+          c.name as channel_name,
+          ${queryEmbedding ? `(cs.embedding <=> $${paramIndex - 1}::vector) as similarity_score` : "0 as similarity_score"}
+        FROM conversation_segments cs
+        LEFT JOIN channels c ON cs.channel_id = c.id
+        WHERE ${whereConditions.join(" AND ")}
+        ORDER BY ${orderByClause}
+        LIMIT $${paramIndex}
+        `,
+        [...queryParams, limit]
+      );
+
+      if (!result.success || !result.data || result.data.length === 0) {
+        return {
+          success: true,
+          summary: "No conversations found matching your query",
+          data: {
+            formatted: "No matching conversations found",
+            conversations: [],
+            count: 0,
+          },
+        };
+      }
+
+      const conversations = result.data;
+
+      // Get participant display names
+      const allParticipantIds = [
+        ...new Set(conversations.flatMap((c: any) => c.participants || [])),
+      ];
+
+      const namesResult = await context.db.query(
+        `SELECT user_id, display_name, username
+         FROM members
+         WHERE user_id = ANY($1::text[]) AND guild_id = $2 AND active = true`,
+        [allParticipantIds, context.guildId]
+      );
+
+      const nameMap = new Map();
+      if (namesResult.success && namesResult.data) {
+        for (const member of namesResult.data) {
+          nameMap.set(member.user_id, member.display_name || member.username);
+        }
+      }
+
+      // Format results
+      const formatted = conversations
+        .map((conv: any, idx: number) => {
+          const participantNames = (conv.participants || [])
+            .map((id: string) => nameMap.get(id) || id)
+            .join(", ");
+          const date = new Date(conv.start_time).toLocaleDateString();
+          const time = new Date(conv.start_time).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+          const summary = conv.summary || "(no summary)";
+          const simScore = queryEmbedding
+            ? `(similarity: ${(1 - conv.similarity_score).toFixed(2)})`
+            : "";
+
+          return `${idx + 1}. [#${conv.channel_name || "unknown"}] ${date} ${time} ${simScore}
+   Participants: ${participantNames}
+   Summary: ${summary}
+   ${conv.message_count} messages`;
+        })
+        .join("\n\n");
+
+      return {
+        success: true,
+        summary: `Found ${conversations.length} conversation(s) matching "${query}"`,
+        data: {
+          formatted,
+          conversations,
+          count: conversations.length,
+          usedEmbedding: !!queryEmbedding,
+        },
+      };
+    } catch (error) {
+      console.error("🔸 Error in searchConversationsSemantic:", error);
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to search conversations",
+      };
+    }
+  },
+};
+
+/**
  * Export all conversation tools for registration
  */
 export const conversationTools: DatabaseTool[] = [
@@ -614,4 +832,5 @@ export const conversationTools: DatabaseTool[] = [
   getRecentConversationsTool,
   getConversationMessagesTool,
   analyzeConversationPatternsTool,
+  searchConversationsSemanticTool,
 ];

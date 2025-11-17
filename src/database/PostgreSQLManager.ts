@@ -1,6 +1,10 @@
 import { Pool, PoolClient, QueryResult } from "pg";
+import pgvector from "pgvector/pg";
 import { config } from "../config/index.js";
 import type { ConversationEntry } from "../features/social-intelligence/types";
+
+// Export pgvector for use in other modules
+export { pgvector };
 
 export interface DatabaseResult<T> {
   success: boolean;
@@ -151,6 +155,11 @@ export class PostgreSQLManager {
         connectionTimeoutMillis: 10000, // Increased from 2s to 10s
         keepAlive: true,
         keepAliveInitialDelayMillis: 10000,
+      });
+
+      // Register pgvector types for every client from the pool
+      this.pool.on('connect', async (client) => {
+        await pgvector.registerType(client);
       });
 
       // Test the connection
@@ -391,6 +400,12 @@ export class PostgreSQLManager {
 				ADD COLUMN IF NOT EXISTS split_reason TEXT
 			`);
 
+      // Add embedding column for semantic search (migration)
+      await client.query(`
+				ALTER TABLE conversation_segments
+				ADD COLUMN IF NOT EXISTS embedding vector(768)
+			`);
+
       // Relationship pairs - optional cache for quick undirected reads
       await client.query(`
 				CREATE TABLE IF NOT EXISTS relationship_pairs (
@@ -456,6 +471,9 @@ export class PostgreSQLManager {
 				CREATE INDEX IF NOT EXISTS idx_guild_vocabulary_idf ON guild_vocabulary(guild_id, idf_score DESC);
 				CREATE INDEX IF NOT EXISTS messages_embedding_idx
 					ON messages USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
+					WHERE embedding IS NOT NULL;
+				CREATE INDEX IF NOT EXISTS conversation_segments_embedding_idx
+					ON conversation_segments USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
 					WHERE embedding IS NOT NULL;
 			`);
     } catch (error) {

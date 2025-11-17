@@ -51,7 +51,7 @@ async function main() {
   await ai.runWithGuildContext(guildId, async () => {
     // Use generateText in guild context so AIManager routes to generateWithTools
     const res = await ai.generateText(rawForAI, userId, provider, {
-      persona: "casual",
+      personaKey: "casual",
       useDiscordFormatting: false,
     });
     if (!res.success) {

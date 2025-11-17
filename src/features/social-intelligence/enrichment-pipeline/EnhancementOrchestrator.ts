@@ -1,5 +1,6 @@
-import { PostgreSQLManager } from "../../../database/PostgreSQLManager";
+import { pgvector, PostgreSQLManager } from "../../../database/PostgreSQLManager.js";
 import type { AIManager } from "../../ai-assistant/AIManager";
+import { EmbeddingService } from "../semantic-analysis/EmbeddingService.js";
 
 /**
  * Configuration options for conversation enhancement
@@ -339,24 +340,54 @@ Summary:`;
           if (response && response.success && response.content) {
             const summary = response.content.trim();
 
-            // Update database
-            if (!this.config.dryRun) {
-              await this.db.query(
-                `
-                UPDATE conversation_segments
-                SET summary = $2,
-                    ai_processing_status = 'completed',
-                    ai_processed_at = NOW()
-                WHERE id = $1
-                `,
-                [segment.id, summary]
+            // Generate embedding from summary
+            let embedding: number[] | null = null;
+            try {
+              const embeddingService = EmbeddingService.getInstance();
+              embedding = await embeddingService.generateEmbedding(summary);
+            } catch (error) {
+              console.warn(
+                `      ⚠️  Failed to generate embedding for segment ${segment.id.slice(
+                  0,
+                  8
+                )}: ${error}`
               );
+            }
+
+            // Update database with summary and embedding
+            if (!this.config.dryRun) {
+              if (embedding) {
+                // Convert to pgvector format using toSql()
+                await this.db.query(
+                  `
+                  UPDATE conversation_segments
+                  SET summary = $2,
+                      embedding = $3::vector,
+                      ai_processing_status = 'completed',
+                      ai_processed_at = NOW()
+                  WHERE id = $1
+                  `,
+                  [segment.id, summary, pgvector.toSql(embedding)]
+                );
+              } else{
+                await this.db.query(
+                  `
+                  UPDATE conversation_segments
+                  SET summary = $2,
+                      ai_processing_status = 'completed',
+                      ai_processed_at = NOW()
+                  WHERE id = $1
+                  `,
+                  [segment.id, summary]
+                );
+              }
             }
 
             const preview =
               summary.length > 60 ? summary.substring(0, 57) + "..." : summary;
+            const embeddingStatus = embedding ? "✓" : "✗";
             console.log(
-              `      ✅ Segment ${segment.id.slice(0, 8)}: "${preview}"`
+              `      ✅ Segment ${segment.id.slice(0, 8)}: "${preview}" [embed:${embeddingStatus}]`
             );
             this.stats.summariesGenerated++;
             this.stats.apiCallsMade++;

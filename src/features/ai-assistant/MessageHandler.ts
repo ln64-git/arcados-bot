@@ -122,7 +122,7 @@ export class MessageHandler {
         message.author.id,
         this.provider,
         {
-          persona: "casual",
+          personaKey: "casual",
           useDiscordFormatting: false,
           mode: "chat",
           channelId: message.channel.id,
@@ -208,7 +208,7 @@ export class MessageHandler {
         message.author.id,
         this.provider,
         {
-          persona: "casual",
+          personaKey: "casual",
           history,
           useDiscordFormatting: false,
           mode: "chat",

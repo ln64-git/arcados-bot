@@ -19,7 +19,7 @@
 		"diagnose-keywords": "bun run src/scripts/diagnose-keywords.ts",
 		"check-message": "bun run src/scripts/check-message.ts",
 		"repair-sync": "bun run src/scripts/repair-sync.ts"
-		},
+	},
 	"keywords": [
 		"discord",
 		"bot",
@@ -51,6 +51,7 @@
 		"install": "^0.13.0",
 		"langchain": "^0.3.36",
 		"pg": "^8.16.3",
+		"pgvector": "^0.2.1",
 		"uuid": "^13.0.0"
 	},
 	"engines": {

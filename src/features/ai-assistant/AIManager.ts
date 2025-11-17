@@ -49,7 +49,13 @@ export class AIManager {
     },
     casual: {
       name: "Casual Chat",
-      base: `You're a friendly Discord bot chatting with people. Be casual, direct, and human - like texting a friend.`,
+      base: `You're a friendly Discord bot chatting with people. Be casual, direct, and human - like texting a friend.
+
+IMPORTANT: Keep responses concise and conversational. When you use tools to retrieve information:
+- Summarize the key points, don't list everything
+- Focus on the most relevant/interesting details
+- Aim for 2-4 sentences unless the user explicitly asks for more detail
+- Think "Discord message" length, not "essay" length`,
     },
   };
 
@@ -672,6 +678,8 @@ export class AIManager {
     try {
       let finalContent = "";
       let toolResults: ToolCallResponse[] = [];
+      const toolOutputSummaries: string[] = [];
+      let completedWithFinalMessage = false;
       // Adaptive iteration budget: chat needs fewer iterations (faster), structured needs more (thorough)
       const maxIterations = mode === "chat" ? 3 : 7;
 
@@ -837,6 +845,7 @@ export class AIManager {
         // If tool calls are present, the content is usually just "let me check..." placeholder text
         if (!response.toolCalls || response.toolCalls.length === 0) {
           finalContent = response.content;
+          completedWithFinalMessage = true;
           break;
         }
 
@@ -954,12 +963,21 @@ export class AIManager {
               "Tool executed";
           }
 
-          toolResults.push({
+          const toolResponse: ToolCallResponse = {
             toolCallId: toolCall.id,
             role: "tool",
             name: toolCall.name,
             content: resultContent,
-          });
+          };
+
+          toolResults.push(toolResponse);
+
+          const summarySnippet = `${toolCall.name}: ${resultContent}`
+            .trim()
+            .slice(0, 1200);
+          if (summarySnippet) {
+            toolOutputSummaries.push(summarySnippet);
+          }
         }
 
         if (iteration < maxIterations - 1) {
@@ -981,9 +999,45 @@ export class AIManager {
         }
       }
 
+      let composedContent = finalContent?.trim() ? finalContent : "";
+
+      if (!composedContent && toolOutputSummaries.length > 0) {
+        try {
+          composedContent = await this.composeAnswerFromToolOutputs(
+            provider,
+            finalSystemPrompt,
+            userPrompt,
+            toolOutputSummaries
+          );
+        } catch (fallbackErr) {
+          console.error(
+            "🔸 Failed to synthesize answer from tool outputs:",
+            fallbackErr
+          );
+        }
+      }
+
+      if (!composedContent || !composedContent.trim()) {
+        const reason = completedWithFinalMessage
+          ? "model produced an empty response"
+          : "tool iteration budget exhausted";
+        console.warn(
+          `🔸 AIManager: Unable to finalize response (${reason}) for prompt: ${userPrompt.slice(
+            0,
+            120
+          )}`
+        );
+        return {
+          success: false,
+          content: "",
+          error:
+            "I couldn't finish that answer after gathering context. Please try again.",
+        };
+      }
+
       return {
         success: true,
-        content: this.truncateResponse(finalContent),
+        content: this.truncateResponse(composedContent),
       };
     } catch (error) {
       console.error(`🔸 Error in AI request with tools:`, error);
@@ -1101,6 +1155,35 @@ export class AIManager {
       return content;
     }
     return `${content.substring(0, maxLength - 3)}...`;
+  }
+
+  private async composeAnswerFromToolOutputs(
+    provider: AIProvider,
+    systemPrompt: string,
+    userPrompt: string,
+    toolOutputs: string[]
+  ): Promise<string> {
+    const trimmedOutputs =
+      toolOutputs.length > 6
+        ? toolOutputs.slice(toolOutputs.length - 6)
+        : toolOutputs;
+
+    const fallbackSystemPrompt = `${systemPrompt}\n\nYou already gathered the necessary information from the tool findings listed below. Using ONLY that context, craft the final answer without calling additional tools.`;
+    const fallbackPrompt = [
+      "Tool findings:",
+      trimmedOutputs.join("\n\n"),
+      "",
+      "Original request:",
+      userPrompt,
+      "",
+      "Write the final response now.",
+    ].join("\n");
+
+    const response = await provider.callTextAPI(
+      fallbackSystemPrompt,
+      fallbackPrompt
+    );
+    return response;
   }
 
   private checkRateLimitAndReturn(

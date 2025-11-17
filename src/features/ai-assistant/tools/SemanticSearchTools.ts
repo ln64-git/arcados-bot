@@ -1,4 +1,6 @@
 import type { DatabaseTool, ToolContext } from "../DatabaseTools.js";
+import { EmbeddingService } from "../../social-intelligence/semantic-analysis/EmbeddingService.js";
+import { pgvector } from "../../../database/PostgreSQLManager.js";
 
 /**
  * Search messages using semantic similarity (embeddings)
@@ -42,27 +44,24 @@ export const searchMessagesSemantic: DatabaseTool = {
 			const authorId = params.authorId ? String(params.authorId) : null;
 			const lookbackDays = params.lookbackDays ? Number(params.lookbackDays) : null;
 
-			// NOTE: This is a placeholder implementation
-			// In production, you would:
-			// 1. Generate embedding for the query using OpenAI/Transformers
-			// 2. Use pgvector's <=> operator for cosine similarity
-			// 3. Query: SELECT * FROM messages ORDER BY embedding <=> $1 LIMIT $2
+			// Generate embedding for the query
+			let queryEmbedding: number[] | null = null;
+			try {
+				const embeddingService = EmbeddingService.getInstance();
+				queryEmbedding = await embeddingService.generateEmbedding(query);
+			} catch (error) {
+				console.warn("⚠️  Failed to generate query embedding:", error);
+				// Fall back to keyword search if embedding fails
+			}
 
-			// For now, we'll fall back to a hybrid approach:
-			// Extract keywords from query and do enhanced text search
-			const keywords = query.toLowerCase().split(/\s+/).filter(w => w.length > 3);
-
-			let whereConditions = ["m.guild_id = $1"];
+			// Build SQL query with filters
+			let whereConditions = ["m.guild_id = $1", "m.content IS NOT NULL", "LENGTH(m.content) > 0"];
 			const queryParams: any[] = [context.guildId];
 			let paramIndex = 2;
 
-			// Add keyword matching (ILIKE for each keyword)
-			if (keywords.length > 0) {
-				const keywordConditions = keywords.map((keyword) => {
-					queryParams.push(`%${keyword}%`);
-					return `m.content ILIKE $${paramIndex++}`;
-				});
-				whereConditions.push(`(${keywordConditions.join(" OR ")})`);
+			// Add embedding condition if available
+			if (queryEmbedding) {
+				whereConditions.push("m.embedding IS NOT NULL");
 			}
 
 			// Add channel filter
@@ -87,6 +86,19 @@ export const searchMessagesSemantic: DatabaseTool = {
 				paramIndex++;
 			}
 
+			// Build the main query
+			let orderByClause: string;
+			if (queryEmbedding) {
+				// Use vector similarity if embedding is available
+				// Convert to pgvector format using toSql()
+				queryParams.push(pgvector.toSql(queryEmbedding));
+				orderByClause = `(m.embedding <=> $${paramIndex}::vector) ASC`;
+				paramIndex++;
+			} else {
+				// Fallback to recency if no embedding
+				orderByClause = "m.created_at DESC";
+			}
+
 			// Execute search query
 			const result = await context.db.query(
 				`SELECT
@@ -97,14 +109,13 @@ export const searchMessagesSemantic: DatabaseTool = {
 					m.created_at,
 					c.name as channel_name,
 					mem.display_name,
-					mem.username
+					mem.username,
+					${queryEmbedding ? `(m.embedding <=> $${paramIndex - 1}::vector) as similarity_score` : "0 as similarity_score"}
 				FROM messages m
 				LEFT JOIN channels c ON m.channel_id = c.id AND m.guild_id = c.guild_id
 				LEFT JOIN members mem ON m.author_id = mem.user_id AND m.guild_id = mem.guild_id
 				WHERE ${whereConditions.join(" AND ")}
-					AND m.content IS NOT NULL
-					AND LENGTH(m.content) > 0
-				ORDER BY m.created_at DESC
+				ORDER BY ${orderByClause}
 				LIMIT $${paramIndex}`,
 				[...queryParams, limit]
 			);
@@ -132,8 +143,11 @@ ${messages
 			msg.content.length > 150
 				? `${msg.content.substring(0, 150)}...`
 				: msg.content;
+		const simScore = queryEmbedding
+			? ` (similarity: ${(1 - msg.similarity_score).toFixed(2)})`
+			: "";
 
-		return `${i + 1}. [${date}] ${author} in ${channel}
+		return `${i + 1}. [${date}] ${author} in ${channel}${simScore}
    "${content}"`;
 	})
 	.join("\n\n")}
