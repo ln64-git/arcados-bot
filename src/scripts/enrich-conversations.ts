@@ -12,6 +12,7 @@
 import { PostgreSQLManager } from "../database/PostgreSQLManager";
 import { AIManager } from "../features/ai-assistant/AIManager";
 import { SocialIntelligence } from "../features/social-intelligence/index.js";
+import { EnhancementOrchestrator } from "../features/social-intelligence/enrichment-pipeline/EnhancementOrchestrator";
 import { config } from "../config/index.js";
 
 interface Message {
@@ -137,6 +138,137 @@ async function main() {
 		if (i < analysisGroups.length - 1) {
 			console.log(`   ⏱️  Waiting ${RATE_LIMIT_DELAY / 1000}s to avoid rate limits...`);
 			await new Promise((resolve) => setTimeout(resolve, RATE_LIMIT_DELAY));
+		}
+	}
+
+	// Cleanup and enrich all conversations
+	if (!dryRun) {
+		console.log(`\n\n${"=".repeat(80)}`);
+		console.log("🧹 CLEANUP & ENRICHMENT");
+		console.log("=".repeat(80));
+		
+		// Step 1: Delete 2-message conversations
+		console.log(`\n   🗑️  Cleaning up 2-message conversations...`);
+		const deleteResult = await db.query(
+			`
+			DELETE FROM conversation_segments
+			WHERE guild_id = $1
+				AND start_time > NOW() - INTERVAL '${hoursBack} hours'
+				AND status = 'finalized'
+				AND message_count = 2
+			RETURNING id
+			`,
+			[guildId]
+		);
+		
+		const deletedCount = deleteResult.success && deleteResult.data ? deleteResult.data.length : 0;
+		console.log(`   ✅ Deleted ${deletedCount} 2-message conversations`);
+		
+		// Step 2: Enrich all remaining conversations
+		console.log(`\n   🔧 Enriching all conversations...`);
+		const socialIntelligence = new SocialIntelligence(db);
+		
+		// Get ALL conversations in the time window (not just missing ones)
+		const allConversationsResult = await db.query(
+			`
+			SELECT id, message_count
+			FROM conversation_segments
+			WHERE guild_id = $1
+				AND start_time > NOW() - INTERVAL '${hoursBack} hours'
+				AND status = 'finalized'
+				AND message_count >= 3
+			ORDER BY start_time DESC
+			`,
+			[guildId]
+		);
+
+		if (allConversationsResult.success && allConversationsResult.data) {
+			const conversationsToEnrich = allConversationsResult.data as Array<{ id: string; message_count: number }>;
+			console.log(`   Found ${conversationsToEnrich.length} conversations to enrich`);
+			
+			let enrichedCount = 0;
+			let keywordCount = 0;
+			let summaryCount = 0;
+			
+			for (const conv of conversationsToEnrich) {
+				try {
+					// Check what's missing
+					const convResult = await db.query(
+						`SELECT features, summary FROM conversation_segments WHERE id = $1`,
+						[conv.id]
+					);
+					
+					if (convResult.success && convResult.data && convResult.data.length > 0) {
+						const features = convResult.data[0].features;
+						const summary = convResult.data[0].summary;
+						
+						const hasKeywords = features && 
+							typeof features === 'object' && 
+							'keywords' in features && 
+							Array.isArray((features as any).keywords) && 
+							(features as any).keywords.length > 0;
+						
+						const hasSummary = summary && summary.trim() !== '';
+						
+						// Always enrich to ensure keywords are extracted (even if they exist, refresh them)
+						await socialIntelligence.enrichConversation(conv.id);
+						
+						// Verify keywords were extracted after enrichment
+						const verifyResult = await db.query(
+							`SELECT features FROM conversation_segments WHERE id = $1`,
+							[conv.id]
+						);
+						
+						if (verifyResult.success && verifyResult.data && verifyResult.data.length > 0) {
+							const updatedFeatures = verifyResult.data[0].features;
+							const hasKeywordsAfter = updatedFeatures && 
+								typeof updatedFeatures === 'object' && 
+								'keywords' in updatedFeatures && 
+								Array.isArray((updatedFeatures as any).keywords) && 
+								(updatedFeatures as any).keywords.length > 0;
+							
+							if (!hasKeywordsAfter && !hasKeywords) {
+								console.warn(`   ⚠️  No keywords extracted for conversation ${conv.id} (${conv.message_count} messages)`);
+							} else if (!hasKeywords && hasKeywordsAfter) {
+								keywordCount++;
+							}
+						}
+						
+						if (!hasSummary) {
+							summaryCount++;
+						}
+						
+						enrichedCount++;
+					}
+				} catch (error) {
+					console.error(`   ⚠️  Failed to enrich conversation ${conv.id}:`, error);
+				}
+			}
+			
+			console.log(`\n   ✅ Enriched ${enrichedCount} conversations`);
+			console.log(`   📝 Keywords extracted/refreshed: ${enrichedCount}`);
+			
+			// Generate summaries for conversations that need them
+			if (summaryCount > 0) {
+				console.log(`\n   📄 Generating summaries for ${summaryCount} conversations...`);
+				const orchestrator = new EnhancementOrchestrator(db, aiManager, {
+					lookbackHours: hoursBack,
+					enableSummaries: true,
+					enableOrphans: false,
+					enableSplitting: false,
+					dryRun: false,
+					regenerateSummaries: false,
+					batchSize: 10,
+					sleepBetweenBatches: 4000,
+				});
+				
+				try {
+					const stats = await orchestrator.enhance(guildId);
+					console.log(`   ✅ Generated ${stats.summariesGenerated} summaries`);
+				} catch (error) {
+					console.error(`   ⚠️  Summary generation failed:`, error);
+				}
+			}
 		}
 	}
 

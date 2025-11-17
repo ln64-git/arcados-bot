@@ -10,7 +10,7 @@ export class ConversationValidator {
   constructor(
     maxConversationDurationMs = 24 * 60 * 60 * 1000, // 24 hours
     maxMessageGapMs = 4 * 60 * 60 * 1000, // 4 hours
-    minMessages = 2
+    minMessages = 3
   ) {
     this.MAX_CONVERSATION_DURATION_MS = maxConversationDurationMs;
     this.MAX_MESSAGE_GAP_MS = maxMessageGapMs;
@@ -88,7 +88,6 @@ export class ConversationValidator {
 
   /**
    * Validate that conversation has minimum number of messages
-   * If conversation has explicit connections (replies/mentions), require fewer messages
    */
   validateMinimumMessages<
     T extends {
@@ -101,13 +100,8 @@ export class ConversationValidator {
       return false; // Always require at least 2 messages
     }
 
-    const hasConnections = this.validateConnections(messages, messageIds);
-
-    // If has explicit connections, 2 messages is enough
-    // Otherwise, require the configured minimum
-    const minRequired = hasConnections ? 2 : this.MIN_MESSAGES;
-
-    return messages.length >= minRequired;
+    // Require minimum messages regardless of connections
+    return messages.length >= this.MIN_MESSAGES;
   }
 
   /**

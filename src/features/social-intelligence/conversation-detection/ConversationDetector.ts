@@ -67,7 +67,7 @@ export class ConversationDetector {
   private readonly EDGE_CACHE_TTL = 5 * 60 * 1000; // 5 minute cache TTL
   private readonly INACTIVITY_MS = 10 * 60 * 1000; // 10 minute base inactivity (increased from 5 to better handle natural pauses)
   private readonly INACTIVITY_MS_WITH_REPLIES = 20 * 60 * 1000; // 20 minutes when there are active replies/mentions (increased from 15)
-  private readonly MIN_MESSAGES = 2; // TUNED: Lowered from 3 to capture 2-message exchanges
+  private readonly MIN_MESSAGES = 3; // Minimum 3 messages required for a conversation
   private readonly PRE_CONVERSATION_GRACE_MS = 3 * 60 * 1000; // Include up to 3 minutes of prelude chatter (increased from 2)
   private topicDriftDetector: TopicDriftDetector;
 
@@ -4939,7 +4939,7 @@ export class ConversationDetector {
     channelId: string,
     guildId: string,
     timeWindowHours: number = 24,
-    minMessages: number = 2
+    minMessages: number = 3
   ): Promise<DatabaseResult<ConversationEntry[]>> {
     const perfStart = Date.now();
     try {
