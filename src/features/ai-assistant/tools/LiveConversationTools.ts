@@ -673,7 +673,14 @@ export const getServerActivitySummary: DatabaseTool = {
           channel_id,
           COUNT(*) as conversation_count,
           SUM(message_count) as total_messages,
-          COUNT(DISTINCT unnest(participants)) as unique_participants
+          (
+            SELECT COUNT(DISTINCT participant_id)
+            FROM conversation_segments cs2, unnest(cs2.participants) participant_id
+            WHERE cs2.channel_id = conversation_segments.channel_id
+              AND cs2.guild_id = $1
+              AND cs2.end_time >= $2
+              AND cs2.status = 'finalized'
+          ) as unique_participants
         FROM conversation_segments
         WHERE guild_id = $1
           AND end_time >= $2

@@ -193,10 +193,10 @@ export class EnhancementOrchestrator {
         await this.rateLimit();
 
         try {
-          // Fetch messages for this segment
+          // Fetch messages for this segment (including attachments and embeds for context)
           const messagesResult = await this.db.query(
             `
-            SELECT id, author_id, content, created_at
+            SELECT id, author_id, content, created_at, attachments, embeds
             FROM messages
             WHERE id = ANY($1::TEXT[])
             ORDER BY created_at ASC
@@ -237,7 +237,52 @@ export class EnhancementOrchestrator {
               if (content.match(/^(m!|!|\.)\w+/i)) {
                 return "(bot command)";
               }
-              return content.length > 0 ? content : "(no text content)";
+              
+              // Check for attachments and embeds to add context
+              const hasAttachments = m.attachments && Array.isArray(m.attachments) && m.attachments.length > 0;
+              const hasEmbeds = m.embeds && Array.isArray(m.embeds) && m.embeds.length > 0;
+              
+              // Determine media type from attachments/embeds
+              let mediaPlaceholder = "";
+              if (hasAttachments || hasEmbeds) {
+                // Check if it's a video, image, or other media
+                const allUrls = [
+                  ...(hasAttachments ? m.attachments : []),
+                  ...(hasEmbeds ? m.embeds.map((e: string) => {
+                    try {
+                      const embed = JSON.parse(e);
+                      return embed.url || embed.thumbnail?.url || embed.image?.url || embed.video?.url;
+                    } catch {
+                      return null;
+                    }
+                  }).filter(Boolean) : [])
+                ];
+                
+                const hasVideo = allUrls.some((url: string) => 
+                  /\.(mp4|webm|mov|avi|mkv|gifv)$/i.test(url) || 
+                  /youtube\.com|youtu\.be|vimeo\.com|twitch\.tv/i.test(url) ||
+                  /tenor\.com/i.test(url)
+                );
+                const hasImage = allUrls.some((url: string) => 
+                  /\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i.test(url) ||
+                  /i\.imgur\.com|cdn\.discordapp\.com.*\.(jpg|jpeg|png|gif|webp)/i.test(url)
+                );
+                
+                if (hasVideo) {
+                  mediaPlaceholder = " [posts video]";
+                } else if (hasImage) {
+                  mediaPlaceholder = " [posts image]";
+                } else {
+                  mediaPlaceholder = " [posts media]";
+                }
+              }
+              
+              // Combine content with media placeholder
+              const fullContent = content.length > 0 
+                ? content + mediaPlaceholder 
+                : mediaPlaceholder ? mediaPlaceholder.trim() : "(no text content)";
+              
+              return fullContent;
             })
             .join("\n")
             .substring(0, 3000); // Increased from 2000 to 3000

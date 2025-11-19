@@ -121,6 +121,7 @@ async function main() {
 			console.log(`\n   🎯 Action: ${action.type.toUpperCase()}`);
 			console.log(`   📊 Confidence: ${(action.confidence * 100).toFixed(0)}%`);
 			console.log(`   💡 Reason: ${action.reason}`);
+			console.log(`   🔍 Details:`, JSON.stringify(action.details, null, 2));
 
 			actions.push({ group: i + 1, action, context: group });
 			totalActions++;
@@ -672,15 +673,26 @@ async function applyAction(
 			break;
 
 		case "assign_orphan":
-			if (
-				action.details?.orphan_message_ids &&
-				action.details?.target_conversation_id
-			) {
-				await assignOrphans(
-					action.details.orphan_message_ids,
-					action.details.target_conversation_id,
-					guildId
-				);
+			if (action.details?.orphan_message_ids) {
+				const targetId = action.details.target_conversation_id;
+				// Check if target conversation exists in the group (not a placeholder like "new_conversation")
+				const targetExists = targetId && group.conversations.some(c => c.id === targetId);
+
+				if (targetExists) {
+					// Assign to existing conversation
+					await assignOrphans(
+						action.details.orphan_message_ids,
+						targetId,
+						guildId
+					);
+				} else {
+					// No valid target conversation - create a new one from orphans
+					await createConversationFromOrphans(
+						action.details.orphan_message_ids,
+						group,
+						guildId
+					);
+				}
 			}
 			break;
 	}
@@ -911,6 +923,61 @@ async function assignOrphans(
 	// Trigger enrichment to generate keywords and summary
 	const socialIntelligence = new SocialIntelligence(db);
 	await socialIntelligence.enrichConversation(targetConvId);
+}
+
+async function createConversationFromOrphans(
+	orphanIds: string[],
+	group: AnalysisGroup,
+	guildId: string
+): Promise<void> {
+	if (orphanIds.length < 2) {
+		console.warn(`   ⚠️  Not enough orphans to create conversation (need at least 2)`);
+		return;
+	}
+
+	// Get orphan message details
+	const orphansResult = await db.query(
+		`SELECT id, author_id, created_at FROM messages WHERE id = ANY($1) ORDER BY created_at ASC`,
+		[orphanIds]
+	);
+
+	if (!orphansResult.success || !orphansResult.data || orphansResult.data.length === 0) {
+		console.warn(`   ⚠️  Failed to fetch orphan messages`);
+		return;
+	}
+
+	const orphans = orphansResult.data;
+	const participants = [...new Set(orphans.map((o: any) => o.author_id))];
+	const startTime = new Date(orphans[0].created_at);
+	const endTime = new Date(orphans[orphans.length - 1].created_at);
+
+	// Create new conversation
+	const newConvId = `seg_${orphans[0].id}_${Date.now()}_orphans`;
+
+	await db.query(
+		`
+		INSERT INTO conversation_segments (
+			id, guild_id, channel_id, start_time, end_time,
+			message_ids, participants, message_count, status
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'finalized')
+		`,
+		[
+			newConvId,
+			guildId,
+			group.channel_id,
+			startTime,
+			endTime,
+			orphanIds,
+			participants,
+			orphanIds.length,
+		]
+	);
+
+	console.log(`   ✅ Created new conversation ${newConvId} with ${orphanIds.length} messages`);
+
+	// Trigger enrichment to generate keywords and summary
+	const socialIntelligence = new SocialIntelligence(db);
+	await socialIntelligence.enrichConversation(newConvId);
 }
 
 main().catch((error) => {

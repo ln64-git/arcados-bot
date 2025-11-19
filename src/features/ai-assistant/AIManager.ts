@@ -789,23 +789,38 @@ IMPORTANT: Keep responses concise and conversational. When you use tools to retr
                 }
               }
 
-              // Also inject recent channel topics for broader context
-              // Detect if user is asking about general discussion ("what have people been talking about", etc.)
+              // Also inject recent topics for broader context
+              // Detect if user is asking about general discussion
               const broadQueryRegex =
-                /(what.*people.*talking|what.*discussed|recent.*topics?|what.*happening|channel.*activity|conversation.*history)/i;
+                /(what.*people.*talking|what.*discussed|recent.*topics?|what.*happening|trending|conversation.*history)/i;
               if (broadQueryRegex.test(userPrompt)) {
-                const channelTopics = await this.databaseTools.executeTool(
-                  "getRecentChannelTopics",
-                  { channelId: options.channelId, lookbackHours: 24, limit: 5 },
-                  context
-                );
+                // Detect if query is explicitly channel-specific
+                const channelSpecificRegex =
+                  /(in this channel|this channel|here in this|in #)/i;
+
+                let topicsResult;
+                if (channelSpecificRegex.test(userPrompt)) {
+                  // Use channel-specific topics with longer lookback
+                  topicsResult = await this.databaseTools.executeTool(
+                    "getRecentChannelTopics",
+                    { channelId: options.channelId, lookbackHours: 168, limit: 5 }, // 168h = 7 days
+                    context
+                  );
+                } else {
+                  // Default to server-wide trending topics (more useful for ambiguous queries)
+                  topicsResult = await this.databaseTools.executeTool(
+                    "getTrendingTopics",
+                    { timeWindow: 7, limit: 10 },
+                    context
+                  );
+                }
 
                 const formattedTopics =
-                  typeof channelTopics === "object"
-                    ? channelTopics.data?.formatted ||
-                      channelTopics.summary ||
+                  typeof topicsResult === "object"
+                    ? topicsResult.data?.formatted ||
+                      topicsResult.summary ||
                       ""
-                    : String(channelTopics);
+                    : String(topicsResult);
 
                 if (formattedTopics) {
                   contextParts.push(formattedTopics);

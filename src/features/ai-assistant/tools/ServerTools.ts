@@ -203,7 +203,7 @@ export const getActiveMembersTool: DatabaseTool = {
 export const getTrendingTopicsTool: DatabaseTool = {
   name: "getTrendingTopics",
   description:
-    "Analyze trending keywords and topics in messages. Use this to see what people are talking about.",
+    "Analyze trending keywords and topics from recent conversations. Returns conversation summaries and top keywords aggregated from the specified time window. Use this when users ask 'what have people been talking about', 'what's trending', 'recent topics', or similar broad questions about server activity.",
   parameters: {
     type: "object",
     properties: {
@@ -223,22 +223,147 @@ export const getTrendingTopicsTool: DatabaseTool = {
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
     try {
-      // This is a simplified implementation - in production you might use
-      // more sophisticated keyword extraction
+      const timeWindowDays = params.timeWindow || 7;
+      const limit = params.limit || 10;
+      const since = new Date();
+      since.setDate(since.getDate() - timeWindowDays);
+
+      // Get recent conversations with summaries and keywords
+      const conversationsResult = await context.db.query(
+        `SELECT
+          id,
+          channel_id,
+          start_time,
+          end_time,
+          message_count,
+          summary,
+          features,
+          participants
+        FROM conversation_segments
+        WHERE guild_id = $1
+          AND status = 'finalized'
+          AND start_time >= $2
+        ORDER BY start_time DESC`,
+        [context.guildId, since]
+      );
+
+      if (!conversationsResult.success || !conversationsResult.data) {
+        return {
+          success: false,
+          error: "Failed to retrieve conversations",
+        };
+      }
+
+      const conversations = conversationsResult.data;
+
+      if (conversations.length === 0) {
+        return {
+          success: true,
+          summary: `No conversations found in the last ${timeWindowDays} days`,
+          data: {
+            formatted: `No recent conversations to analyze from the past ${timeWindowDays} days`,
+            topics: [],
+            conversations: [],
+          },
+        };
+      }
+
+      // Extract and aggregate keywords from conversations
+      interface KeywordScore {
+        word: string;
+        totalScore: number;
+        frequency: number;
+        conversationCount: number;
+      }
+
+      const keywordMap = new Map<string, KeywordScore>();
+
+      for (const conv of conversations) {
+        if (conv.features?.keywords) {
+          let keywords: any[] = [];
+
+          // Handle both array and object formats for keywords
+          if (Array.isArray(conv.features.keywords)) {
+            keywords = conv.features.keywords;
+          } else if (conv.features.keywords.terms) {
+            keywords = conv.features.keywords.terms;
+          }
+
+          for (const kw of keywords) {
+            const word = kw.word;
+            const existing = keywordMap.get(word);
+
+            if (existing) {
+              existing.totalScore += kw.score || 1;
+              existing.frequency += kw.frequency || 1;
+              existing.conversationCount += 1;
+            } else {
+              keywordMap.set(word, {
+                word,
+                totalScore: kw.score || 1,
+                frequency: kw.frequency || 1,
+                conversationCount: 1,
+              });
+            }
+          }
+        }
+      }
+
+      // Sort keywords by total score and conversation count
+      const topKeywords = Array.from(keywordMap.values())
+        .sort((a, b) => {
+          // Prioritize keywords appearing in multiple conversations
+          const scoreDiff = (b.totalScore * b.conversationCount) - (a.totalScore * a.conversationCount);
+          return scoreDiff;
+        })
+        .slice(0, limit);
+
+      // Get channel names
+      const channelIds = [...new Set(conversations.map((c: any) => c.channel_id))];
+      const channelsResult = await context.db.query(
+        `SELECT id, name FROM channels WHERE id = ANY($1::text[])`,
+        [channelIds]
+      );
+
+      const channelMap = new Map();
+      if (channelsResult.success && channelsResult.data) {
+        for (const channel of channelsResult.data) {
+          channelMap.set(channel.id, channel.name);
+        }
+      }
+
+      // Format summary of recent topics
+      const parts: string[] = [];
+      parts.push(`**Recent Topics (last ${timeWindowDays} days)**\n`);
+
+      if (topKeywords.length > 0) {
+        parts.push(`**Top Keywords:**`);
+        topKeywords.slice(0, Math.min(8, limit)).forEach((kw, idx) => {
+          parts.push(`${idx + 1}. *${kw.word}* - appeared in ${kw.conversationCount} conversation(s)`);
+        });
+        parts.push("");
+      }
+
+      // Include recent conversation summaries
+      parts.push(`**Recent Conversations (${conversations.length} total):**`);
+      conversations.slice(0, 5).forEach((conv: any, idx: number) => {
+        const channelName = channelMap.get(conv.channel_id) || "unknown";
+        const date = new Date(conv.start_time).toLocaleDateString();
+        const summary = conv.summary || "(no summary)";
+        parts.push(`${idx + 1}. [#${channelName}] ${date}: ${summary}`);
+      });
+
       return {
         success: true,
-        summary: "Trending topics analysis not fully implemented yet",
+        summary: `Found ${topKeywords.length} trending topics from ${conversations.length} conversations`,
         data: {
-          formatted: "Trending topics feature coming soon",
-          topics: [],
+          formatted: parts.join("\n"),
+          keywords: topKeywords,
+          conversations: conversations.slice(0, 5),
+          totalConversations: conversations.length,
+          timeWindow: timeWindowDays,
         },
       };
-
-      // Future implementation could:
-      // 1. Extract keywords from recent messages
-      // 2. Count frequency
-      // 3. Filter common words
-      // 4. Return top keywords
     } catch (error) {
       console.error("🔸 Error in getTrendingTopics:", error);
       return {
