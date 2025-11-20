@@ -7,7 +7,7 @@ import type { DatabaseTool, ToolContext } from "../registry/DatabaseTools.js";
 export const getStorylineAggregation: DatabaseTool = {
 	name: "getStorylineAggregation",
 	description:
-		"Get an aggregated view of recent server activity with conversations grouped by themes and topics. Use this to understand the 'story' of what's been happening in the server, identify trending themes, and see how topics evolved over time. Better than simple message lists for understanding context.",
+		"Get an aggregated view of recent server activity with conversations grouped by themes and topics. Returns thematic summaries only. For detailed analysis with full message content (especially for server summaries or drama), use getRecentConversationMessages instead.",
 	parameters: {
 		type: "object",
 		properties: {

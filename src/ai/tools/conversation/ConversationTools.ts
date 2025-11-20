@@ -824,6 +824,255 @@ export const searchConversationsSemanticTool: DatabaseTool = {
 };
 
 /**
+ * Get recent conversation messages with full content for top conversations
+ * Returns full message content for the most important conversations in a time window
+ */
+export const getRecentConversationMessagesTool: DatabaseTool = {
+  name: "getRecentConversationMessages",
+  description:
+    "Get FULL MESSAGE CONTENT for recent conversations, ranked by importance. CRITICAL: Use this tool when generating server summaries or when you need to understand what actually happened (e.g., 'what happened today in the server?', 'summarize recent drama'). This tool returns actual message text, not just summaries, so you can capture important details like users leaving, conflicts, or specific events that might be missed in pre-generated summaries. Returns full chronological messages for top conversations and summaries for others. PREFER THIS over getServerActivitySummary or getStorylineAggregation when detailed context is needed.",
+  parameters: {
+    type: "object",
+    properties: {
+      lookbackHours: {
+        type: "number",
+        description:
+          "How many hours to look back for conversations (default: 24, max: 168)",
+      },
+      maxConversations: {
+        type: "number",
+        description:
+          "Maximum number of top conversations to return full messages for (default: 5, max: 10)",
+      },
+      minMessageCount: {
+        type: "number",
+        description:
+          "Minimum message count to include a conversation (default: 10)",
+      },
+      rankBy: {
+        type: "string",
+        description:
+          "How to rank conversations: 'message_count' (default), 'drama_score', or 'recent'",
+        enum: ["message_count", "drama_score", "recent"],
+      },
+    },
+    required: [],
+  },
+  execute: async (
+    params: Record<string, any>,
+    context: ToolContext
+  ): Promise<string | DatabaseToolResult> => {
+    try {
+      const lookbackHours = Math.min(params.lookbackHours || 24, 168);
+      const maxConversations = Math.min(params.maxConversations || 5, 10);
+      const minMessageCount = params.minMessageCount || 10;
+      const rankBy = params.rankBy || "message_count";
+
+      const lookbackTime = new Date(
+        Date.now() - lookbackHours * 60 * 60 * 1000
+      );
+
+      // Build ranking ORDER BY clause
+      let orderByClause: string;
+      switch (rankBy) {
+        case "drama_score":
+          orderByClause =
+            "(COALESCE((features->>'drama_score')::numeric, 0)) DESC, message_count DESC";
+          break;
+        case "recent":
+          orderByClause = "end_time DESC";
+          break;
+        case "message_count":
+        default:
+          orderByClause = "message_count DESC, end_time DESC";
+          break;
+      }
+
+      // Query conversation segments
+      const segmentsResult = await context.db.query(
+        `SELECT
+          id,
+          channel_id,
+          participants,
+          start_time,
+          end_time,
+          message_count,
+          features,
+          summary,
+          message_ids,
+          status
+        FROM conversation_segments
+        WHERE guild_id = $1
+          AND end_time >= $2
+          AND message_count >= $3
+          AND status = 'finalized'
+          AND message_ids IS NOT NULL
+          AND array_length(message_ids, 1) > 0
+        ORDER BY ${orderByClause}
+        LIMIT $4`,
+        [context.guildId, lookbackTime, minMessageCount, maxConversations * 2]
+      );
+
+      if (
+        !segmentsResult.success ||
+        !segmentsResult.data ||
+        segmentsResult.data.length === 0
+      ) {
+        return {
+          success: true,
+          summary: "No recent conversations found",
+          data: {
+            formatted: `No conversations found in the past ${lookbackHours} hours with at least ${minMessageCount} messages.`,
+            conversations: [],
+          },
+        };
+      }
+
+      const allSegments = segmentsResult.data;
+      const topSegments = allSegments.slice(0, maxConversations);
+      const otherSegments = allSegments.slice(maxConversations);
+
+      // Get channel names
+      const channelIds = Array.from(
+        new Set(allSegments.map((s: any) => s.channel_id))
+      );
+      const channelsResult = await context.db.query(
+        `SELECT id, name FROM channels WHERE guild_id = $1 AND id = ANY($2::text[])`,
+        [context.guildId, channelIds]
+      );
+
+      const channelMap = new Map<string, string>();
+      if (channelsResult.success && channelsResult.data) {
+        for (const ch of channelsResult.data) {
+          channelMap.set(ch.id, ch.name);
+        }
+      }
+
+      // Get all participant IDs
+      const allParticipantIds = new Set<string>();
+      for (const seg of allSegments) {
+        const participantIds = seg.participants || [];
+        for (const pid of participantIds) {
+          allParticipantIds.add(pid);
+        }
+      }
+
+      // Get participant display names
+      const participantNamesResult = await context.db.query(
+        `SELECT user_id, display_name, username, global_name
+         FROM members
+         WHERE guild_id = $1 AND user_id = ANY($2::text[]) AND active = true`,
+        [context.guildId, Array.from(allParticipantIds)]
+      );
+
+      const participantNameMap = new Map<string, string>();
+      if (participantNamesResult.success && participantNamesResult.data) {
+        for (const p of participantNamesResult.data) {
+          participantNameMap.set(
+            p.user_id,
+            p.display_name || p.global_name || p.username || "Unknown"
+          );
+        }
+      }
+
+      // Format output
+      let formatted = `Recent Conversations with Full Messages (past ${lookbackHours}h):\n\n`;
+
+      // Process top conversations with full messages
+      for (let idx = 0; idx < topSegments.length; idx++) {
+        const seg = topSegments[idx];
+        const channelName = channelMap.get(seg.channel_id) || "unknown-channel";
+        const participantNames = (seg.participants || [])
+          .map((pid: string) => participantNameMap.get(pid) || pid)
+          .filter((name: string) => name !== "Unknown");
+
+        const startTime = new Date(seg.start_time);
+        const endTime = new Date(seg.end_time);
+        const timeStr = `${startTime.toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        })} - ${endTime.toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        })}`;
+
+        formatted += `[Conversation ${idx + 1}] - #${channelName} (${seg.message_count} messages, ${participantNames.length} participants)\n`;
+        formatted += `Time: ${timeStr}\n`;
+        formatted += `Participants: ${participantNames.join(", ")}\n\n`;
+
+        // Fetch full messages for this conversation
+        const messageIds = Array.isArray(seg.message_ids)
+          ? seg.message_ids
+          : [];
+        if (messageIds.length > 0) {
+          const messagesResult = await context.db.query(
+            `SELECT id, author_id, content, created_at
+             FROM messages
+             WHERE id = ANY($1::text[]) AND guild_id = $2 AND active = true
+             ORDER BY created_at ASC`,
+            [messageIds, context.guildId]
+          );
+
+          if (messagesResult.success && messagesResult.data) {
+            formatted += `Messages:\n`;
+            for (const msg of messagesResult.data) {
+              const authorName =
+                participantNameMap.get(msg.author_id) || msg.author_id;
+              const timestamp = new Date(msg.created_at).toLocaleTimeString(
+                [],
+                {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                }
+              );
+              const content = msg.content || "(no content)";
+              formatted += `${timestamp} @${authorName}: ${content}\n`;
+            }
+          } else {
+            formatted += `(Unable to fetch messages)\n`;
+          }
+        } else {
+          formatted += `(No messages found)\n`;
+        }
+
+        formatted += `\n`;
+      }
+
+      // Add summaries for other conversations
+      if (otherSegments.length > 0) {
+        formatted += `Other Conversations (summaries only):\n`;
+        for (const seg of otherSegments) {
+          const channelName =
+            channelMap.get(seg.channel_id) || "unknown-channel";
+          const summary = seg.summary || "(no summary)";
+          formatted += `- [#${channelName}] ${seg.message_count} messages: ${summary}\n`;
+        }
+      }
+
+      return {
+        success: true,
+        summary: `Retrieved ${topSegments.length} conversation(s) with full messages, ${otherSegments.length} with summaries only`,
+        data: {
+          formatted,
+          topConversations: topSegments.length,
+          otherConversations: otherSegments.length,
+          totalConversations: allSegments.length,
+        },
+      };
+    } catch (error) {
+      console.error("🔸 Error in getRecentConversationMessages:", error);
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to get recent conversation messages",
+      };
+    }
+  },
+};
+
+/**
  * Export all conversation tools for registration
  */
 export const conversationTools: DatabaseTool[] = [
@@ -833,4 +1082,5 @@ export const conversationTools: DatabaseTool[] = [
   getConversationMessagesTool,
   analyzeConversationPatternsTool,
   searchConversationsSemanticTool,
+  getRecentConversationMessagesTool,
 ];

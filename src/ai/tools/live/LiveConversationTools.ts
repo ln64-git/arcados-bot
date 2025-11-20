@@ -644,7 +644,7 @@ Total: ${enriched.length} conversations in the past ${lookbackHours} hours`;
 export const getServerActivitySummary: DatabaseTool = {
 	name: "getServerActivitySummary",
 	description:
-		"Get a server-wide summary of recent activity across all channels. Use this to understand what topics are being discussed throughout the server, not just one channel.",
+		"Get a server-wide summary of recent activity across all channels. Returns high-level summaries only. For detailed analysis with full message content (especially for server summaries or drama), use getRecentConversationMessages instead.",
 	parameters: {
 		type: "object",
 		properties: {
