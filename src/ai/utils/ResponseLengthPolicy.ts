@@ -47,15 +47,15 @@ const CATEGORY_CONFIG: Record<
 export function computeResponsePolicy(input: PolicyInput): PolicyOutput {
   const mode = input.mode || "structured";
 
-  // For chat mode: let persona drive the conversation naturally
-  // Don't apply rigid guidance, use flexible token limits
+  // For chat mode: keep responses tight and natural
   if (mode === "chat") {
     return {
-      category: "long", // Use generous default for natural conversation
-      guidance: "Respond naturally based on the context and conversation flow.",
-      maxTokens: 600, // Flexible limit (can be short or detailed as needed)
-      temperatureNudge: 0.05,
-      applyGuidance: false, // Don't inject guidance - let persona drive
+      category: "medium",
+      guidance:
+        "Keep responses concise and Discord-friendly - aim for clarity over length.",
+      maxTokens: 300, // Allow room for both conversational and info-formatted responses
+      temperatureNudge: 0,
+      applyGuidance: true,
     };
   }
 
@@ -93,9 +93,9 @@ export function computeResponsePolicy(input: PolicyInput): PolicyOutput {
   const cfg = CATEGORY_CONFIG[category];
   return {
     category,
-    guidance: cfg.guidance,
+    guidance: `${cfg.guidance} Write naturally like a Discord message - minimal formatting, flowing text.`,
     maxTokens: cfg.maxTokens,
     temperatureNudge: cfg.temperatureNudge,
-    applyGuidance: true, // Apply guidance for structured queries
+    applyGuidance: true,
   };
 }

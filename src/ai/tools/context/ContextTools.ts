@@ -321,7 +321,7 @@ export const getActiveConversationsTool: DatabaseTool = {
 export const getHolisticUserContextTool: DatabaseTool = {
   name: "getHolisticUserContext",
   description:
-    "Aggregate a user's profile (names, summary), roles, relationships, and recent messages. Use when analyzing or describing a specific user.",
+    "Get detailed message-level context for analyzing a user's recent activity and communication patterns. Includes actual message content from the past 2 weeks. NOTE: For general user information (who they are, roles, relationships), use getUserInfo instead - it provides better narrative context without overwhelming detail.",
   parameters: {
     type: "object",
     properties: {
@@ -471,13 +471,85 @@ export const getHolisticUserContextTool: DatabaseTool = {
       if (roleNames.length > 0) header.push(`Roles: ${roleNames.join(", ")}`);
       if (joinedAt) header.push(`Joined: ${joinedAt.toLocaleDateString()}`);
 
-      const formatted = [
-        header.join(" \u2014 "),
-        relationshipsFormatted !== "No relationships tracked"
-          ? `Relationships:\n${relationshipsFormatted}`
-          : `Relationships: None tracked`,
-        `Recent messages (${recentMessages.length} in ~${lookbackDays}d):\n${recentMessagesFormatted}`,
-      ].join("\n\n");
+      // Get recent conversation topics/keywords from conversation_segments
+      const conversationSegmentsResult = await context.db.query(
+        `SELECT cs.id, cs.channel_id, cs.start_time, cs.end_time, cs.summary, cs.features, c.name as channel_name
+         FROM conversation_segments cs
+         LEFT JOIN channels c ON cs.channel_id = c.id AND cs.guild_id = c.guild_id
+         WHERE cs.guild_id = $1
+           AND $2 = ANY(cs.participants)
+           AND cs.start_time >= $3
+           AND cs.status = 'finalized'
+           AND cs.message_count >= 3
+         ORDER BY cs.start_time DESC
+         LIMIT 10`,
+        [context.guildId, userId, since]
+      );
+
+      let conversationTopicsFormatted = "";
+      if (conversationSegmentsResult.success && conversationSegmentsResult.data && conversationSegmentsResult.data.length > 0) {
+        const convSegments = conversationSegmentsResult.data;
+        const topicsLines: string[] = [];
+
+        for (const seg of convSegments.slice(0, 5)) {
+          const channel = seg.channel_name || seg.channel_id;
+          const date = new Date(seg.start_time).toLocaleDateString();
+
+          // Extract keywords from features.terms if available
+          let keywords: string[] = [];
+          if (seg.features && typeof seg.features === 'object') {
+            const featuresObj = seg.features as any;
+
+            // Check for both 'keywords' (old format) and 'terms' (new format)
+            if (Array.isArray(featuresObj.keywords)) {
+              keywords = featuresObj.keywords.slice(0, 5);
+            } else if (Array.isArray(featuresObj.terms)) {
+              // Extract words from terms array
+              keywords = featuresObj.terms
+                .slice(0, 5)
+                .map((term: any) => term.word)
+                .filter(Boolean);
+            }
+          }
+
+          const summary = seg.summary || (keywords.length > 0 ? keywords.join(", ") : "discussion");
+          topicsLines.push(`  • #${channel} (${date}): ${summary}`);
+        }
+
+        if (topicsLines.length > 0) {
+          conversationTopicsFormatted = `Recent discussion topics:\n${topicsLines.join("\n")}`;
+        }
+      }
+
+      // Build conversational context (minimal stats, focus on content and relationships)
+      const parts: string[] = [];
+      parts.push(header.join(" \u2014 "));
+
+      // Include user keywords/interests if available
+      if (member.keywords && Array.isArray(member.keywords) && member.keywords.length > 0) {
+        const topKeywords = member.keywords.slice(0, 8).join(", ");
+        parts.push(`Interests: ${topKeywords}`);
+      }
+
+      // Include top relationships as natural connections (no percentages/counts)
+      if (relationshipsFormatted !== "No relationships tracked" && relationships.length > 0) {
+        const topConnections = relationships.slice(0, 3).map((r: any) => r.display_name || r.username || r.user_id);
+        if (topConnections.length > 0) {
+          parts.push(`Close connections: ${topConnections.join(", ")}`);
+        }
+      }
+
+      // Add conversation topics if available (prioritize over raw messages)
+      if (conversationTopicsFormatted) {
+        parts.push(conversationTopicsFormatted);
+      }
+
+      // Lead with recent message content (the most important context)
+      if (recentMessagesFormatted !== "No recent messages") {
+        parts.push(`Recent activity:\n${recentMessagesFormatted}`);
+      }
+
+      const formatted = parts.join("\n\n");
 
       return {
         success: true,

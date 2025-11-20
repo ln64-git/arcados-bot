@@ -5,13 +5,15 @@ import {
   type ToolCall,
   type ToolCallResponse,
 } from "../providers/base/AIProvider";
-import { BaseAIProvider } from "../providers/base/BaseAIProvider";
 import { GrokProvider } from "../providers/GrokProvider";
 import { OpenAIProvider } from "../providers/OpenAIProvider";
 import { GeminiProvider } from "../providers/GeminiProvider";
 import { OllamaProvider } from "../providers/OllamaProvider";
 import { config } from "../../config";
-import { DatabaseTools, type ToolContext } from "../tools/registry/DatabaseTools";
+import {
+  DatabaseTools,
+  type ToolContext,
+} from "../tools/registry/DatabaseTools";
 import { userTools } from "../tools/user/UserTools";
 import { relationshipTools } from "../tools/relationship/RelationshipTools";
 import { conversationTools } from "../tools/conversation/ConversationTools";
@@ -27,6 +29,7 @@ import {
   computeResponsePolicy,
   type ConversationMode,
 } from "../utils/ResponseLengthPolicy";
+import { selectFormattingStyle } from "../utils/FormattingSelector";
 import { ConversationDetector } from "../../features/social-intelligence/conversation-detection/ConversationDetector";
 import { PostgreSQLManager } from "../../database/PostgreSQLManager";
 
@@ -48,28 +51,23 @@ export class AIManager {
 	Forge's trial: Plumb truth's depths, reflect this mandate—interweave truth's edge with axioms, grounded and relentless, dismantling delusion's frame.`,
     },
     casual: {
-      name: "Casual Chat",
-      base: `You're a friendly Discord bot chatting with people. Be casual, direct, and human - like texting a friend.
+      name: "Casual Assistant",
+      base: `You're a friendly, helpful Discord bot. Be natural, direct, and conversational like chatting with a friend. Keep responses concise and focused on what the user actually needs.
 
-IMPORTANT: Keep responses concise and conversational. When you use tools to retrieve information:
-- Summarize the key points, don't list everything
-- Focus on the most relevant/interesting details
-- Aim for 2-4 sentences unless the user explicitly asks for more detail
-- Think "Discord message" length, not "essay" length`,
+When sharing info about people:
+- Tell their story naturally - who they are, what they're into, recent discussions
+- Talk about what they've been chatting about lately, their interests, their vibe
+- Use recent conversations and topics to paint a picture of who they are
+- NEVER mention statistics like message counts, percentages, interaction counts, or affinity scores
+- NEVER list numerical stats - focus on narrative and context instead
+- Make it feel like you're introducing them as a person, not analyzing data`,
     },
   };
 
   private readonly DEFAULT_PERSONA = "sophia";
 
-  // Common Discord embed formatting instructions
-  private readonly DISCORD_FORMATTING = `Format responses for Discord embeds:
-	- Use **bold** for section headers and subtitles
-	- Use *italics* for emphasis on key terms
-	- NO bullet points - use paragraph format instead
-	- Keep responses concise and focused
-	- Structure: **Subtitle** followed by relevant context
-	- Each section should be 1-2 sentences maximum
-	- NEVER use Discord mention tags like <@userid> in your responses - always use actual display names or usernames`;
+  // Common Discord embed formatting instructions (only used when useDiscordFormatting=true)
+  private readonly DISCORD_FORMATTING = ``;
 
   private constructor() {
     this.initializeProviders();
@@ -658,18 +656,16 @@ IMPORTANT: Keep responses concise and conversational. When you use tools to retr
       ? `\n\n${initialPolicy.guidance}`
       : "";
 
-    // Add mode-specific context hints
-    const modeHint =
-      mode === "chat"
-        ? "\n\nContext: This is a casual conversation in Discord. Respond naturally and conversationally, varying your response length based on what feels appropriate for the discussion. You can be brief when a short reply fits, or more detailed when the context calls for it."
-        : "\n\nContext: This is a structured query requesting specific information. Provide clear, well-organized responses.";
+    // Adaptive formatting selection - choose between conversational and info-based formatting
+    const formattingGuide = selectFormattingStyle(userPrompt, options?.history);
+    const formattingInstructions = `\n\n${formattingGuide.instructions}`;
 
-    const fullMethodPrompt = `${formatting}${methodPrompt}${modeHint}${guidanceText}`;
+    const fullMethodPrompt = `${formatting}${methodPrompt}${formattingInstructions}${guidanceText}`;
     const systemPrompt = this.buildSystemPrompt(fullMethodPrompt, personaKey);
 
     // Override with custom persona if provided
     const finalSystemPrompt = options?.persona
-      ? `${persona.base}\n\n${formatting}${methodPrompt}${modeHint}\n\nCustom Persona: ${options.persona}`
+      ? `${persona.base}\n\n${formatting}${methodPrompt}\n\nCustom Persona: ${options.persona}`
       : systemPrompt;
 
     // Convert tools to provider format (start with Grok-compatible schema)
@@ -740,8 +736,16 @@ IMPORTANT: Keep responses concise and conversational. When you use tools to retr
                 typeof holistic === "object"
                   ? holistic.data?.formatted || holistic.summary || ""
                   : String(holistic);
+
+              console.log(`🔍 Holistic context for ${targetUserId}:`, {
+                success: typeof holistic === "object" ? holistic.success : true,
+                hasData: typeof holistic === "object" ? !!holistic.data : false,
+                formattedLength: formatted.length,
+                preview: formatted.substring(0, 300),
+              });
+
               if (formatted) {
-                composedUser = `Context (user ${targetUserId}):\n\n${formatted}\n\nUser: ${userPrompt}`;
+                composedUser = `Context (user ${targetUserId}):\n\n${formatted}\n\nIMPORTANT: Use the context above to answer. Do NOT call getUserInfo - all relevant information is already provided above.\n\nUser: ${userPrompt}`;
               }
             }
           } catch (prefetchErr) {
@@ -803,7 +807,11 @@ IMPORTANT: Keep responses concise and conversational. When you use tools to retr
                   // Use channel-specific topics with longer lookback
                   topicsResult = await this.databaseTools.executeTool(
                     "getRecentChannelTopics",
-                    { channelId: options.channelId, lookbackHours: 168, limit: 5 }, // 168h = 7 days
+                    {
+                      channelId: options.channelId,
+                      lookbackHours: 168,
+                      limit: 5,
+                    }, // 168h = 7 days
                     context
                   );
                 } else {
@@ -817,9 +825,7 @@ IMPORTANT: Keep responses concise and conversational. When you use tools to retr
 
                 const formattedTopics =
                   typeof topicsResult === "object"
-                    ? topicsResult.data?.formatted ||
-                      topicsResult.summary ||
-                      ""
+                    ? topicsResult.data?.formatted || topicsResult.summary || ""
                     : String(topicsResult);
 
                 if (formattedTopics) {
@@ -885,88 +891,52 @@ IMPORTANT: Keep responses concise and conversational. When you use tools to retr
           } else if (toolResult.error) {
             resultContent = toolResult.error;
           } else if (toolCall.name === "getUserInfo" && toolResult.data) {
-            // For getUserInfo, pass all context naturally - let AI weave it together conversationally
-            const rc = toolResult.data.richContext;
-
-            if (rc) {
-              // Build natural context string without rigid structure - just facts the AI can use naturally
-              const contextLines: string[] = [];
-
-              // Identity
-              contextLines.push(
-                `${rc.displayName} (@${rc.username})${
-                  rc.globalName && rc.globalName !== rc.displayName
-                    ? ` - also goes by ${rc.globalName}`
-                    : ""
-                }`
-              );
-
-              // Summary
-              if (rc.summary) {
-                contextLines.push(`Summary: ${rc.summary}`);
-              }
-
-              // Membership context (calculated naturally)
-              if (rc.joinedAt) {
-                const daysSince = Math.floor(
-                  (Date.now() - rc.joinedAt.getTime()) / (1000 * 60 * 60 * 24)
-                );
-                if (daysSince < 7)
-                  contextLines.push(`Recently joined the server`);
-                else if (daysSince < 30)
-                  contextLines.push(`Been here for ${daysSince} days`);
-                else if (daysSince < 365)
-                  contextLines.push(
-                    `Member for ${Math.floor(daysSince / 30)} months`
-                  );
-                else
-                  contextLines.push(
-                    `Longtime member - ${Math.floor(daysSince / 365)} year${
-                      Math.floor(daysSince / 365) > 1 ? "s" : ""
-                    }`
-                  );
-              }
-
-              // Activity
-              if (rc.messageCount > 0) {
-                contextLines.push(
-                  `Active contributor with ${rc.messageCount} messages`
-                );
-              }
-
-              // Roles (names only)
-              if (rc.roles && rc.roles.length > 0) {
-                contextLines.push(`Roles: ${rc.roles.join(", ")}`);
-              }
-
-              // Interests/Keywords
-              if (rc.keywords && rc.keywords.length > 0) {
-                contextLines.push(
-                  `Interests/topics: ${rc.keywords.slice(0, 10).join(", ")}`
-                );
-              }
-
-              // Relationships
-              if (
-                rc.relationships &&
-                rc.relationships !== "No relationships tracked"
-              ) {
-                contextLines.push(`Relationships:\n${rc.relationships}`);
-              }
-
-              // Emojis
-              if (rc.emojis && rc.emojis.length > 0) {
-                contextLines.push(`Common emojis: ${rc.emojis.join(" ")}`);
-              }
-
-              // Return as a simple, unstructured context block
-              resultContent = contextLines.join("\n");
+            // For getUserInfo, use the narrative field which contains conversation summaries and topics
+            // The narrative is a complete, flowing description built from all available data
+            if (toolResult.data.narrative) {
+              resultContent = toolResult.data.narrative;
+            } else if (toolResult.summary) {
+              // Fallback to summary if narrative not available
+              resultContent = toolResult.summary;
             } else {
-              // Fallback
-              resultContent =
-                toolResult.data.formatted ||
-                toolResult.summary ||
-                "User information retrieved";
+              // Last resort: build from richContext (but this shouldn't happen)
+              const rc = toolResult.data.richContext;
+              if (rc) {
+                const contextLines: string[] = [];
+                contextLines.push(
+                  `${rc.displayName} (@${rc.username})${
+                    rc.globalName && rc.globalName !== rc.displayName
+                      ? ` - also goes by ${rc.globalName}`
+                      : ""
+                  }`
+                );
+                if (rc.summary) {
+                  contextLines.push(`Summary: ${rc.summary}`);
+                }
+                if (rc.keywords && rc.keywords.length > 0) {
+                  contextLines.push(
+                    `Interests/topics: ${rc.keywords.slice(0, 10).join(", ")}`
+                  );
+                }
+                if (
+                  rc.relationshipNetwork &&
+                  Array.isArray(rc.relationshipNetwork) &&
+                  rc.relationshipNetwork.length > 0
+                ) {
+                  const topConnections = rc.relationshipNetwork
+                    .slice(0, 5)
+                    .map((r: any) => r.display_name || r.username || r.user_id)
+                    .filter(Boolean);
+                  if (topConnections.length > 0) {
+                    contextLines.push(
+                      `Close connections: ${topConnections.join(", ")}`
+                    );
+                  }
+                }
+                resultContent = contextLines.join("\n");
+              } else {
+                resultContent = "User information retrieved";
+              }
             }
           } else {
             // For other tools, use formatted data or summary
@@ -1165,11 +1135,43 @@ IMPORTANT: Keep responses concise and conversational. When you use tools to retr
     }
   }
 
+  /**
+   * Clean up response formatting for Discord - normalize spacing, ensure proper structure
+   */
+  private cleanupDiscordFormatting(content: string): string {
+    // Remove all empty lines (2+ consecutive newlines become single newline)
+    let cleaned = content.replace(/\n{2,}/g, "\n");
+
+    // Remove empty lines between bold headers and content (headers flow into content)
+    cleaned = cleaned.replace(
+      /\*\*([^*]+)\*\*\s*\n+\s*([A-Za-z])/g,
+      "**$1** $2"
+    );
+
+    // Trim start/end
+    cleaned = cleaned.trim();
+
+    // Ensure single line break between sections (after punctuation before next header)
+    cleaned = cleaned.replace(/([.!?])\s*\n+\s*(\*\*)/g, "$1\n$2");
+
+    // Remove any remaining double+ newlines
+    cleaned = cleaned.replace(/\n{2,}/g, "\n");
+
+    // Normalize spacing around line breaks
+    cleaned = cleaned.replace(/\n\s+/g, "\n");
+    cleaned = cleaned.replace(/\s+\n/g, "\n");
+
+    return cleaned;
+  }
+
   private truncateResponse(content: string, maxLength = 4000): string {
-    if (content.length <= maxLength) {
-      return content;
+    // Clean up formatting first
+    const cleaned = this.cleanupDiscordFormatting(content);
+
+    if (cleaned.length <= maxLength) {
+      return cleaned;
     }
-    return `${content.substring(0, maxLength - 3)}...`;
+    return `${cleaned.substring(0, maxLength - 3)}...`;
   }
 
   private async composeAnswerFromToolOutputs(

@@ -44,8 +44,9 @@ async function main(): Promise<void> {
 
   await ai.runWithGuildContext(guildId, async () => {
     const res = await ai.generateText(rawForAI, userId, provider, {
-      persona: "casual",
+      personaKey: "sophia",
       useDiscordFormatting: false,
+      mode: "chat",
     });
 
     if (!res.success) {

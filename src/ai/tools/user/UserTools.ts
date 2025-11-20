@@ -7,18 +7,91 @@ import {
 import type { MemberData } from "../../../database/PostgreSQLManager";
 
 /**
+ * Resolve a user identifier (ID or name) to a Discord user ID.
+ * If the input is already a Discord ID (numeric, 17-19 digits), returns it as-is.
+ * Otherwise, searches for the user by name and returns their ID.
+ */
+async function resolveUserId(
+  identifier: string,
+  guildId: string,
+  db: ToolContext["db"]
+): Promise<{ success: boolean; userId?: string; error?: string }> {
+  // Check if it's already a Discord ID (numeric, 17-19 digits)
+  const isDiscordId = /^\d{17,19}$/.test(identifier);
+  if (isDiscordId) {
+    return { success: true, userId: identifier };
+  }
+
+  // Search for user by name
+  const searchTerm = `%${identifier.toLowerCase()}%`;
+  const searchResult = await db.query(
+    `SELECT user_id, display_name, username, global_name, nick
+     FROM members 
+     WHERE guild_id = $1 
+       AND active = true
+       AND (
+         LOWER(display_name) LIKE $2
+         OR LOWER(username) LIKE $2
+         OR LOWER(COALESCE(global_name, '')) LIKE $2
+         OR LOWER(COALESCE(nick, '')) LIKE $2
+       )
+     ORDER BY 
+       CASE 
+         WHEN LOWER(username) = LOWER($3) THEN 1
+         WHEN LOWER(display_name) = LOWER($3) THEN 2
+         WHEN LOWER(COALESCE(global_name, '')) = LOWER($3) THEN 3
+         WHEN LOWER(COALESCE(nick, '')) = LOWER($3) THEN 4
+         ELSE 5
+       END,
+       display_name
+     LIMIT 1`,
+    [guildId, searchTerm, identifier]
+  );
+
+  if (searchResult.success && searchResult.data && searchResult.data.length > 0) {
+    return { success: true, userId: searchResult.data[0].user_id };
+  }
+
+  // Try inactive members as fallback
+  const fallbackSearch = await db.query(
+    `SELECT user_id, display_name, username, global_name, nick
+     FROM members 
+     WHERE guild_id = $1 
+       AND active = false
+       AND (
+         LOWER(display_name) LIKE $2
+         OR LOWER(username) LIKE $2
+         OR LOWER(COALESCE(global_name, '')) LIKE $2
+         OR LOWER(COALESCE(nick, '')) LIKE $2
+       )
+     ORDER BY display_name
+     LIMIT 1`,
+    [guildId, searchTerm]
+  );
+
+  if (fallbackSearch.success && fallbackSearch.data && fallbackSearch.data.length > 0) {
+    return { success: true, userId: fallbackSearch.data[0].user_id };
+  }
+
+  return {
+    success: false,
+    error: `User "${identifier}" not found in this server. Try using searchUsers to find users by name.`,
+  };
+}
+
+/**
  * Get complete user profile information
  */
 export const getUserInfoTool: DatabaseTool = {
   name: "getUserInfo",
   description:
-    "Get comprehensive user information including profile, summary, keywords, roles, and activity. If no userId is provided, use the requesting user (for prompts like 'who am I').",
+    "Get comprehensive user information for natural conversation context. Returns rich narrative-focused details including: who they are, how long they've been around, what topics they're into (from keywords and recent conversations), recent conversation summaries with specific details, and who they interact with. The response includes detailed conversation context like 'Recently he's been chatting about [specific events/discussions]' and topics of interest. Focus on building a flowing, conversational understanding with specific examples rather than listing generic stats. If no userId is provided, use the requesting user (for prompts like 'who am I'). Can accept either a Discord user ID (numeric string) or a username/display name (will search automatically).",
   parameters: {
     type: "object",
     properties: {
       userId: {
         type: "string",
-        description: "Discord user ID to query",
+        description: "Discord user ID (numeric) or username/display name to query. If a name is provided, will search for the user first.",
       },
     },
     required: [],
@@ -28,7 +101,18 @@ export const getUserInfoTool: DatabaseTool = {
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
     try {
-      const targetUserId = params.userId || context.userId;
+      const identifier = params.userId || context.userId;
+      const resolved = await resolveUserId(identifier, context.guildId, context.db);
+      
+      if (!resolved.success || !resolved.userId) {
+        return {
+          success: false,
+          error: resolved.error || `User "${identifier}" not found in this server`,
+        };
+      }
+      
+      const targetUserId = resolved.userId;
+
       const result = await context.db.query(
         `SELECT * FROM members 
          WHERE user_id = $1 AND guild_id = $2 AND active = true
@@ -239,20 +323,323 @@ export const getUserInfoTool: DatabaseTool = {
         // Non-fatal if guild date unavailable
       }
 
-      const formatted = formatUserInfo(member);
+      // Build a narrative-focused summary for the LLM
+      const narrativeParts: string[] = [];
+
+      // Who they are - start with a natural introduction
+      const introParts: string[] = [];
+      introParts.push(`${member.display_name}`);
+      if (member.username && member.username !== member.display_name) {
+        introParts.push(`known as @${member.username}`);
+      }
+
+      // Server tenure (contextual, not just a date)
+      const serverTenure = (richContext as any).serverMembershipDescriptor;
+      if (serverTenure) {
+        introParts.push(`has been ${serverTenure} in this server`);
+      } else {
+        introParts.push(`joined ${new Date(member.joined_at).toLocaleDateString()}`);
+      }
+
+      narrativeParts.push(introParts.join(", "));
+
+      // Roles (if any) - include in intro if relevant
+      if (roleNames.length > 0) {
+        narrativeParts.push(`Roles: ${roleNames.join(", ")}`);
+      }
+
+      // Get recent conversation segments with summaries AND message_ids
+      // We'll combine conversation context (summaries) with user's specific messages
+      const since = new Date();
+      since.setDate(since.getDate() - 60);
+      
+      const conversationSegmentsResult = await context.db.query(
+        `SELECT cs.id, cs.channel_id, cs.start_time, cs.end_time, cs.summary, cs.message_ids, cs.features, cs.message_count, c.name as channel_name
+         FROM conversation_segments cs
+         LEFT JOIN channels c ON cs.channel_id = c.id AND cs.guild_id = c.guild_id
+         WHERE cs.guild_id = $1
+           AND $2 = ANY(cs.participants)
+           AND cs.start_time >= $3
+           AND cs.status = 'finalized'
+           AND cs.message_count >= 2
+           AND cs.message_ids IS NOT NULL
+           AND array_length(cs.message_ids, 1) > 0
+         ORDER BY cs.start_time DESC, cs.message_count DESC
+         LIMIT 30`,
+        [context.guildId, targetUserId, since]
+      );
+
+      // Build contextual summaries: conversation context + user's specific contributions
+      interface ContextualSummary {
+        conversationSummary: string; // What the conversation was about
+        userMessages: string[]; // What the user specifically said
+        segmentId: string;
+      }
+      
+      const contextualSummaries: ContextualSummary[] = [];
+      const recentTopics: Set<string> = new Set();
+      const allKeywords: string[] = [];
+      
+      if (conversationSegmentsResult.success && conversationSegmentsResult.data && conversationSegmentsResult.data.length > 0) {
+        // Process each segment to get conversation context + user's messages
+        for (const seg of conversationSegmentsResult.data) {
+          if (!Array.isArray(seg.message_ids) || seg.message_ids.length === 0) continue;
+          
+          // Get the user's messages from this specific segment
+          const userMessagesResult = await context.db.query(
+            `SELECT m.content, m.created_at
+             FROM messages m
+             WHERE m.id = ANY($1::text[])
+               AND m.author_id = $2
+               AND m.guild_id = $3
+               AND m.active = true
+               AND m.content IS NOT NULL
+               AND LENGTH(TRIM(m.content)) > 0
+             ORDER BY m.created_at ASC`,
+            [seg.message_ids, targetUserId, context.guildId]
+          );
+          
+          const userMessages: string[] = [];
+          if (userMessagesResult.success && userMessagesResult.data) {
+            userMessages.push(...userMessagesResult.data.map((m: any) => m.content).filter((c: string) => c && c.trim().length > 5));
+          }
+          
+          // Only include segments where we have both conversation context AND user messages
+          if (seg.summary && seg.summary.trim().length > 15 && userMessages.length > 0) {
+            contextualSummaries.push({
+              conversationSummary: seg.summary.trim(),
+              userMessages: userMessages.slice(0, 10), // Limit to most relevant messages
+              segmentId: seg.id,
+            });
+          }
+          
+          // Extract keywords from features for topic context
+          let featuresObj: any = null;
+          if (seg.features) {
+            if (typeof seg.features === 'string') {
+              try {
+                featuresObj = JSON.parse(seg.features);
+              } catch {
+                featuresObj = null;
+              }
+            } else if (typeof seg.features === 'object') {
+              featuresObj = seg.features;
+            }
+          }
+          
+          if (featuresObj) {
+            let keywords: string[] = [];
+            
+            if (featuresObj.keywords && typeof featuresObj.keywords === 'object' && !Array.isArray(featuresObj.keywords)) {
+              if (Array.isArray(featuresObj.keywords.terms)) {
+                keywords = featuresObj.keywords.terms
+                  .map((term: any) => {
+                    if (typeof term === 'string') return term;
+                    if (term && typeof term === 'object' && term.word) return term.word;
+                    return null;
+                  })
+                  .filter(Boolean)
+                  .slice(0, 15);
+              }
+            } else if (Array.isArray(featuresObj.keywords)) {
+              keywords = featuresObj.keywords
+                .map((kw: any) => {
+                  if (typeof kw === 'string') return kw;
+                  if (kw && typeof kw === 'object' && kw.word) return kw.word;
+                  return null;
+                })
+                .filter(Boolean)
+                .slice(0, 15);
+            } else if (Array.isArray(featuresObj.terms)) {
+              keywords = featuresObj.terms
+                .map((term: any) => {
+                  if (typeof term === 'string') return term;
+                  if (term && typeof term === 'object') {
+                    return term.word || term.term || term.text || null;
+                  }
+                  return null;
+                })
+                .filter(Boolean)
+                .slice(0, 15);
+            }
+            
+            keywords.forEach(kw => {
+              if (kw && typeof kw === 'string' && kw.length > 2) {
+                const normalized = kw.toLowerCase().trim();
+                if (normalized.length > 2) {
+                  recentTopics.add(normalized);
+                  allKeywords.push(normalized);
+                }
+              }
+            });
+          }
+        }
+      }
+      
+      // Build rich contextual summaries that combine conversation topics with user's contributions
+      const richSummaries: string[] = [];
+      for (const ctx of contextualSummaries.slice(0, 5)) {
+        // Extract key phrases from user's messages (remove mentions, keep substance)
+        const userContributions = ctx.userMessages
+          .map(msg => {
+            // Remove Discord mentions but keep context
+            let cleaned = msg.replace(/<@\d+>/g, '').trim();
+            // Limit length
+            if (cleaned.length > 150) {
+              cleaned = cleaned.substring(0, 150) + '...';
+            }
+            return cleaned;
+          })
+          .filter(m => m.length > 10)
+          .slice(0, 3); // Take top 3 most relevant messages
+        
+        if (userContributions.length > 0) {
+          // Build: "In conversations about [topic], [user] said [their contributions]"
+          const userText = userContributions.join("; ");
+          const summary = `In discussions about ${ctx.conversationSummary}, ${member.display_name} said: ${userText}`;
+          richSummaries.push(summary);
+        }
+      }
+
+      // Combine member keywords with conversation topics
+      // Member keywords are already aggregated from conversations, so prioritize them
+      const memberKeywords = member.keywords || [];
+      const combinedTopics = new Set<string>();
+      
+      // Add member keywords first (they're already aggregated/curated)
+      memberKeywords.forEach(kw => {
+        if (kw && typeof kw === 'string' && kw.trim().length > 2) {
+          combinedTopics.add(kw.toLowerCase().trim());
+        }
+      });
+      
+      // Add conversation topics as additional context
+      recentTopics.forEach(topic => combinedTopics.add(topic));
+      
+      // Debug: log what we found (can remove later)
+      if (conversationSegmentsResult.success && conversationSegmentsResult.data) {
+        console.log(`[getUserInfo] Found ${conversationSegmentsResult.data.length} conversation segments for ${targetUserId}`);
+        console.log(`[getUserInfo] Found ${contextualSummaries.length} contextual summaries, ${richSummaries.length} rich summaries, ${recentTopics.size} topics, ${memberKeywords.length} member keywords`);
+      }
+
+      // Build a flowing narrative about interests and recent activity
+      const interestParts: string[] = [];
+      
+      // Add member summary if available (this is the AI-generated summary)
+      if (member.summary && member.summary.trim().length > 10) {
+        interestParts.push(member.summary.trim());
+      }
+
+      // Add topics/interests - prioritize member keywords (already aggregated)
+      // Skip topic extraction from keywords since they're often fragments
+      // The summaries contain the real context, topics from keywords are too noisy
+      // Only include topics if we have member keywords (which are curated)
+      if (memberKeywords.length > 0) {
+        const topicArray = memberKeywords
+          .slice(0, 10)
+          .map(kw => kw.toLowerCase().trim())
+          .filter(t => {
+            // Filter out very common words
+            const commonWords = ['the', 'and', 'or', 'but', 'for', 'with', 'about', 'this', 'that', 'has', 'have', 'was', 'were', 'are', 'is', 'been', 'from', 'can', 'will', 'would', 'could', 'should', 'not', 'you', 'your', 'they', 'them', 'their', 'there', 'these', 'those', 'only', 'one', 'see'];
+            return !commonWords.includes(t) && t.length > 3; // Require longer words
+          })
+          .slice(0, 8);
+        
+        if (topicArray.length > 0) {
+          // Format as "into all kinds of stuff - topic1, topic2, topic3"
+          interestParts.push(`into all kinds of stuff - ${topicArray.join(", ")}`);
+        }
+      }
+
+      // Add rich contextual summaries that combine conversation topics with user's contributions
+      // These show both what the conversation was about AND what the user specifically said
+      if (richSummaries.length > 0) {
+        const topSummaries = richSummaries
+          .slice(0, 3) // Take top 3 most recent contextual summaries
+          .filter(s => s && s.trim().length > 30); // Require meaningful length
+        
+        console.log(`[getUserInfo] Filtered rich summaries: ${topSummaries.length} from ${richSummaries.length}`);
+        
+        if (topSummaries.length > 0) {
+          // Join summaries naturally - they already include full context
+          const summaryText = topSummaries.join(". ");
+          interestParts.push(`Recently ${member.display_name}'s been involved in conversations where ${summaryText}`);
+        }
+      }
+
+      // Combine all interest parts into one flowing paragraph
+      // Prioritize rich contextual summaries that show both conversation context and user contributions
+      if (interestParts.length > 0) {
+        // Join with periods and ensure proper sentence structure
+        const combinedText = interestParts.join(". ");
+        narrativeParts.push(`\n${combinedText}.`);
+      } else if (richSummaries.length > 0) {
+        // Fallback: if interestParts is empty but we have rich summaries, use them directly
+        const topSummaries = richSummaries
+          .slice(0, 3)
+          .filter(s => s && s.trim().length > 30);
+        if (topSummaries.length > 0) {
+          const summaryText = topSummaries.join(". ");
+          narrativeParts.push(`\nRecently ${member.display_name}'s been involved in conversations where ${summaryText}.`);
+        }
+      }
+      
+      // ALWAYS include member keywords if available (even if we have other data)
+      // Member keywords are the most reliable source as they're aggregated from all conversations
+      if (member.keywords && member.keywords.length > 0 && interestParts.length === 0) {
+        const filteredKeywords = member.keywords
+          .filter(kw => kw && typeof kw === 'string' && kw.trim().length > 2)
+          .filter(kw => {
+            const commonWords = ['the', 'and', 'or', 'but', 'for', 'with', 'about', 'this', 'that', 'has', 'have', 'was', 'were', 'are', 'is', 'been'];
+            return !commonWords.includes(kw.toLowerCase().trim());
+          })
+          .slice(0, 10);
+        if (filteredKeywords.length > 0) {
+          narrativeParts.push(`\nKnown for: ${filteredKeywords.join(", ")}`);
+        }
+      }
+      
+      // Also add conversation topics if we found any (as additional context)
+      if (recentTopics.size > 0 && interestParts.length === 0) {
+        const topicArray = Array.from(recentTopics)
+          .filter(t => {
+            const commonWords = ['the', 'and', 'or', 'but', 'for', 'with', 'about', 'this', 'that', 'has', 'have', 'was', 'were', 'are', 'is', 'been'];
+            return !commonWords.includes(t) && t.length > 2;
+          })
+          .slice(0, 10);
+        if (topicArray.length > 0) {
+          narrativeParts.push(`\nRecently discussed: ${topicArray.join(", ")}`);
+        }
+      }
+
+      // Who they interact with (relationships) - format more naturally
+      if (topRelationships && topRelationships.trim()) {
+        const relationshipNames = enrichedRelationships
+          .slice(0, 5)
+          .map(r => r.display_name || r.username || r.user_id)
+          .filter(Boolean);
+        
+        if (relationshipNames.length > 0) {
+          narrativeParts.push(`\n${member.display_name} vibes with folks like ${relationshipNames.join(", ")} - they're ${member.display_name}'s usual crew.`);
+        }
+      }
+
+      // Note: Message count and stats are intentionally excluded from narrative
+      // to keep responses focused on qualitative understanding, not quantitative metrics
+
+      const narrativeSummary = narrativeParts.join("\n");
+      
+      // Debug: log the final narrative to verify it includes our data
+      console.log(`[getUserInfo] Final narrative length: ${narrativeSummary.length} chars`);
+      console.log(`[getUserInfo] Final narrative preview: ${narrativeSummary.substring(0, 200)}...`);
 
       return {
         success: true,
-        summary: `${member.display_name} - ${
-          member.summary || "Member of this server"
-        }`,
+        summary: narrativeSummary, // Primary field for LLM to use
         data: {
-          formatted,
-          richContext, // Pass full rich context object
-          relationships: topRelationships || "No relationships tracked",
-          topKeywords: member.keywords?.slice(0, 5) || [],
-          roleNames, // Explicitly include role names
-          messageCount,
+          narrative: narrativeSummary, // Primary field for LLM to use
+          richContext, // Full structured context if needed
+          roleNames,
           member,
         },
       };
@@ -273,13 +660,13 @@ export const getUserInfoTool: DatabaseTool = {
 export const getUserSummaryTool: DatabaseTool = {
   name: "getUserSummary",
   description:
-    "Get AI-generated summary, keywords, emojis, and notes for a user. If no userId is provided, use the requesting user (e.g., 'summarize me').",
+    "Get AI-generated summary, keywords, emojis, and notes for a user. If no userId is provided, use the requesting user (e.g., 'summarize me'). Can accept either a Discord user ID (numeric string) or a username/display name (will search automatically).",
   parameters: {
     type: "object",
     properties: {
       userId: {
         type: "string",
-        description: "Discord user ID to query",
+        description: "Discord user ID (numeric) or username/display name to query. If a name is provided, will search for the user first.",
       },
     },
     required: [],
@@ -289,7 +676,17 @@ export const getUserSummaryTool: DatabaseTool = {
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
     try {
-      const targetUserId = params.userId || context.userId;
+      const identifier = params.userId || context.userId;
+      const resolved = await resolveUserId(identifier, context.guildId, context.db);
+      
+      if (!resolved.success || !resolved.userId) {
+        return {
+          success: false,
+          error: resolved.error || `User "${identifier}" not found in this server`,
+        };
+      }
+      
+      const targetUserId = resolved.userId;
       const result = await context.db.query(
         `SELECT summary, keywords, emojis, notes, display_name
          FROM members 
@@ -443,18 +840,20 @@ export const searchUsersTool: DatabaseTool = {
 };
 
 /**
- * Get user activity statistics
+ * Get user activity context
+ * Note: This tool is deprecated in favor of getUserInfo which provides richer narrative context.
+ * Use getUserInfo for comprehensive user information including activity.
  */
 export const getUserActivityTool: DatabaseTool = {
   name: "getUserActivity",
   description:
-    "Get user activity statistics including message count, last active time, and presence status. If no userId is provided, use the requesting user.",
+    "DEPRECATED: Use getUserInfo instead. This tool provides basic activity stats but getUserInfo gives better narrative context about the user's participation and engagement. Can accept either a Discord user ID (numeric string) or a username/display name (will search automatically).",
   parameters: {
     type: "object",
     properties: {
       userId: {
         type: "string",
-        description: "Discord user ID to query",
+        description: "Discord user ID (numeric) or username/display name to query. If a name is provided, will search for the user first.",
       },
     },
     required: [],
@@ -464,7 +863,17 @@ export const getUserActivityTool: DatabaseTool = {
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
     try {
-      const targetUserId = params.userId || context.userId;
+      const identifier = params.userId || context.userId;
+      const resolved = await resolveUserId(identifier, context.guildId, context.db);
+      
+      if (!resolved.success || !resolved.userId) {
+        return {
+          success: false,
+          error: resolved.error || `User "${identifier}" not found in this server`,
+        };
+      }
+      
+      const targetUserId = resolved.userId;
       // Get member data
       const memberResult = await context.db.query(
         `SELECT display_name, status, activities, joined_at, updated_at
@@ -549,13 +958,13 @@ export const getUserActivityTool: DatabaseTool = {
 export const getUserRolesTool: DatabaseTool = {
   name: "getUserRoles",
   description:
-    "Get user's Discord roles and permissions. If no userId is provided, use the requesting user.",
+    "Get user's Discord roles and permissions. If no userId is provided, use the requesting user. Can accept either a Discord user ID (numeric string) or a username/display name (will search automatically).",
   parameters: {
     type: "object",
     properties: {
       userId: {
         type: "string",
-        description: "Discord user ID to query",
+        description: "Discord user ID (numeric) or username/display name to query. If a name is provided, will search for the user first.",
       },
     },
     required: [],
@@ -565,7 +974,17 @@ export const getUserRolesTool: DatabaseTool = {
     context: ToolContext
   ): Promise<string | DatabaseToolResult> => {
     try {
-      const targetUserId = params.userId || context.userId;
+      const identifier = params.userId || context.userId;
+      const resolved = await resolveUserId(identifier, context.guildId, context.db);
+      
+      if (!resolved.success || !resolved.userId) {
+        return {
+          success: false,
+          error: resolved.error || `User "${identifier}" not found in this server`,
+        };
+      }
+      
+      const targetUserId = resolved.userId;
       const result = await context.db.query(
         `SELECT display_name, roles, permissions
          FROM members 
@@ -641,3 +1060,4 @@ export const userTools: DatabaseTool[] = [
   getUserActivityTool,
   getUserRolesTool,
 ];
+
