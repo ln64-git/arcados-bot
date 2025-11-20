@@ -13,7 +13,7 @@
 
 import type { Message } from "discord.js";
 import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
-import type { AIManager } from "../ai-assistant/AIManager";
+import type { AIManager } from "../../ai/core/AIManager";
 import type {
 	StreamingConversation,
 	FinalizedConversation,

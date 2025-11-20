@@ -33,6 +33,8 @@ export interface BotConfig {
   grokApiKey?: string;
   geminiApiKey?: string;
   youtubeApiKey?: string;
+  grokEnableWebSearch: boolean;
+  grokEnableXSearch: boolean;
 
   // Ollama settings
   ollamaUrl?: string;
@@ -111,6 +113,11 @@ function validateConfig(): BotConfig {
     grokApiKey: process.env.GROK_API_KEY || undefined,
     geminiApiKey: process.env.GEMINI_API_KEY || undefined,
     youtubeApiKey: process.env.YOUTUBE_API_KEY || undefined,
+    grokEnableWebSearch: parseBoolean(
+      process.env.GROK_ENABLE_WEB_SEARCH,
+      true
+    ),
+    grokEnableXSearch: parseBoolean(process.env.GROK_ENABLE_X_SEARCH, true),
 
     // Ollama settings
     ollamaUrl: process.env.OLLAMA_URL || undefined,

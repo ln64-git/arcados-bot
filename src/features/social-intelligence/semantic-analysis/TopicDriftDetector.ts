@@ -1,4 +1,4 @@
-import type { AIManager } from "../../ai-assistant/AIManager";
+import type { AIManager } from "../../../ai/core/AIManager";
 import type { PostgreSQLManager } from "../../../database/PostgreSQLManager";
 import { EmbeddingService } from "./EmbeddingService";
 import { TFIDFExtractor } from "./TFIDFExtractor";

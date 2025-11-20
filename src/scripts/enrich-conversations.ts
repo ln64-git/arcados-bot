@@ -10,7 +10,7 @@
  */
 
 import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { AIManager } from "../features/ai-assistant/AIManager";
+import { AIManager } from "../ai/core/AIManager";
 import { SocialIntelligence } from "../features/social-intelligence/index.js";
 import { EnhancementOrchestrator } from "../features/social-intelligence/enrichment-pipeline/EnhancementOrchestrator";
 import { config } from "../config/index.js";
@@ -44,13 +44,79 @@ interface EnrichmentAction {
 	details?: any;
 }
 
+interface CliOptions {
+	lookbackHours: number;
+	dryRun: boolean;
+	channelFilter?: string;
+	regenerateSummaries: boolean;
+}
+
+function parseCliArgs(rawArgs: string[]): CliOptions {
+	const options: CliOptions = {
+		lookbackHours: 24,
+		dryRun: rawArgs.includes("--dry-run"),
+		channelFilter: undefined,
+		regenerateSummaries: rawArgs.includes("--regenerateSummaries"),
+	};
+
+	const getNumber = (value?: string): number | null => {
+		if (!value) return null;
+		const parsed = Number.parseInt(value, 10);
+		return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+	};
+
+	for (let i = 0; i < rawArgs.length; i++) {
+		const arg = rawArgs[i]!;
+
+		if (arg.startsWith("--lookbackHours")) {
+			let value: string | undefined;
+			if (arg.includes("=")) {
+				value = arg.split("=")[1];
+			} else {
+				value = rawArgs[i + 1];
+				if (value && !value.startsWith("--")) {
+					i++;
+				} else {
+					value = undefined;
+				}
+			}
+
+			const hours = getNumber(value);
+			if (hours !== null) {
+				options.lookbackHours = hours;
+			} else {
+				console.warn(
+					`⚠️  Invalid --lookbackHours value "${value}". Falling back to ${options.lookbackHours}h.`
+				);
+			}
+		} else if (/^\d+$/.test(arg) && options.lookbackHours === 24) {
+			const hours = getNumber(arg);
+			if (hours !== null) {
+				options.lookbackHours = hours;
+			}
+		} else if (arg.startsWith("--channel")) {
+			let value: string | undefined;
+			if (arg.includes("=")) {
+				value = arg.split("=")[1];
+			} else if (rawArgs[i + 1] && !rawArgs[i + 1]!.startsWith("--")) {
+				value = rawArgs[i + 1];
+				i++;
+			}
+			options.channelFilter = value;
+		}
+	}
+
+	return options;
+}
+
 const db = new PostgreSQLManager();
 
 async function main() {
-	const args = process.argv.slice(2);
-	const hoursBack = args[0] ? Number.parseInt(args[0], 10) : 24;
-	const dryRun = args.includes("--dry-run");
-	const channelFilter = args.find((a) => a.startsWith("--channel="))?.split("=")[1];
+	const args = parseCliArgs(process.argv.slice(2));
+	const hoursBack = args.lookbackHours;
+	const dryRun = args.dryRun;
+	const channelFilter = args.channelFilter;
+	const regenerateSummaries = args.regenerateSummaries;
 
 	console.log("🤖 AI-Powered Conversation Enrichment");
 	console.log("=".repeat(80));
@@ -189,7 +255,7 @@ async function main() {
 			
 			let enrichedCount = 0;
 			let keywordCount = 0;
-			let summaryCount = 0;
+			let missingSummaryCount = 0;
 			
 			for (const conv of conversationsToEnrich) {
 				try {
@@ -236,7 +302,7 @@ async function main() {
 						}
 						
 						if (!hasSummary) {
-							summaryCount++;
+							missingSummaryCount++;
 						}
 						
 						enrichedCount++;
@@ -249,16 +315,23 @@ async function main() {
 			console.log(`\n   ✅ Enriched ${enrichedCount} conversations`);
 			console.log(`   📝 Keywords extracted/refreshed: ${enrichedCount}`);
 			
-			// Generate summaries for conversations that need them
-			if (summaryCount > 0) {
-				console.log(`\n   📄 Generating summaries for ${summaryCount} conversations...`);
+			// Generate or regenerate summaries
+			if (regenerateSummaries || missingSummaryCount > 0) {
+				const summaryTargetCount = regenerateSummaries
+					? conversationsToEnrich.length
+					: missingSummaryCount;
+				const summaryAction = regenerateSummaries ? "Regenerating" : "Generating";
+
+				console.log(
+					`\n   📄 ${summaryAction} summaries for ${summaryTargetCount} conversations...`
+				);
 				const orchestrator = new EnhancementOrchestrator(db, aiManager, {
 					lookbackHours: hoursBack,
 					enableSummaries: true,
 					enableOrphans: false,
 					enableSplitting: false,
 					dryRun: false,
-					regenerateSummaries: false,
+					regenerateSummaries,
 					batchSize: 10,
 					sleepBetweenBatches: 4000,
 				});

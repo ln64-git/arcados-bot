@@ -13,7 +13,7 @@ export interface KeywordScore {
 	/** Number of times this keyword appears in the conversation */
 	count: number;
 	/** Type of keyword extraction used */
-	type: "tfidf" | "tfidf-bigram" | "tfidf-trigram" | "semantic" | "hybrid";
+	type: "tfidf" | "tfidf-bigram" | "tfidf-trigram" | "semantic" | "hybrid" | "simple" | "phrase";
 }
 
 /**
@@ -25,7 +25,7 @@ export interface ConversationKeywords {
 	/** Timestamp when keywords were extracted */
 	extracted_at: string;
 	/** Extraction method used */
-	method: "tfidf" | "semantic" | "hybrid" | "llm";
+	method: "tfidf" | "semantic" | "hybrid" | "llm" | "simple";
 	/** Version of the extraction algorithm */
 	version: string;
 }

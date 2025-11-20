@@ -1,13 +1,26 @@
-import type { Client, Guild } from "discord.js";
+import type { Client, Guild, Message } from "discord.js";
 import type { KeywordMessage } from "../social-intelligence/semantic-analysis/types";
 import { KeywordExtractor } from "../social-intelligence/semantic-analysis/KeywordExtractor";
 import { EmbeddingService } from "../social-intelligence/semantic-analysis/EmbeddingService";
 import { RelationshipMapper } from "../social-intelligence/relationship-mapping/RelationshipMapper";
+import type { ConversationDetector } from "../social-intelligence/conversation-detection/ConversationDetector";
 import { parseEmbedding } from "../social-intelligence/conversation-detection/messageUtils";
 import { config } from "../../config/index.js";
 import type { SyncCoordinator } from "./SyncCoordinator";
 import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
 import { timeOperation } from "../../utils/timing";
+
+type BackfilledMessage = {
+  id: string;
+  author_id: string;
+  content: string;
+  created_at: Date;
+  guild_id: string;
+  channel_id: string;
+  referenced_message_id?: string;
+  mentioned_user_ids?: string[];
+  embedding?: number[];
+};
 
 /**
  * Background reconciliation and healing for Discord state
@@ -27,6 +40,7 @@ export class ReconciliationSync {
   private client: Client;
   private db: PostgreSQLManager;
   private relationshipMapper: RelationshipMapper;
+  private conversationDetector?: ConversationDetector;
   private coordinator: SyncCoordinator;
   private verbose: boolean;
   private keywordExtractor: KeywordExtractor;
@@ -47,12 +61,14 @@ export class ReconciliationSync {
     client: Client,
     db: PostgreSQLManager,
     relationshipMapper: RelationshipMapper,
+    conversationDetector: ConversationDetector | undefined,
     coordinator: SyncCoordinator,
     verbose: boolean = false
   ) {
     this.client = client;
     this.db = db;
     this.relationshipMapper = relationshipMapper;
+    this.conversationDetector = conversationDetector;
     this.coordinator = coordinator;
     this.verbose = verbose;
     this.keywordExtractor = new KeywordExtractor(db);
@@ -272,6 +288,10 @@ export class ReconciliationSync {
     channelsProcessed = results.processed;
     channelsBackfilled = results.backfilled;
     channelsWithGaps = results.gapChecks;
+
+    if (this.conversationDetector) {
+      await this.conversationDetector.flushInactiveBuffers(0);
+    }
   }
 
   /**
@@ -315,25 +335,41 @@ export class ReconciliationSync {
                 await this.backfillChannel(guildId, channel.id, null);
                 return { type: "backfilled" as const };
               } else {
-                // Quick check: if watermark is current, channel is likely up-to-date
-                const isUpToDate = await this.isChannelUpToDate(
-                  channel,
-                  watermark
+                // Check if this channel has ever had a complete backfill
+                const hasCompleteSyncResult = await this.db.query(
+                  `SELECT last_full_sync FROM channels WHERE id = $1`,
+                  [channel.id]
                 );
 
-                if (isUpToDate) {
-                  // Watermark is current, but do a quick sanity check (first 200 messages)
-                  const hasGaps = await this.quickGapCheck(
-                    guildId,
-                    channel.id,
+                const hasCompleteSync =
+                  hasCompleteSyncResult.success &&
+                  hasCompleteSyncResult.data &&
+                  hasCompleteSyncResult.data.length > 0 &&
+                  hasCompleteSyncResult.data[0].last_full_sync !== null;
+
+                // Only use fast-path optimization if channel has been fully synced before
+                if (hasCompleteSync) {
+                  // Quick check: if watermark is current, channel is likely up-to-date
+                  const isUpToDate = await this.isChannelUpToDate(
+                    channel,
                     watermark
                   );
-                  if (!hasGaps) {
-                    return { type: "skip" as const };
+
+                  if (isUpToDate) {
+                    // Watermark is current, but do a quick sanity check (first 200 messages)
+                    const hasGaps = await this.quickGapCheck(
+                      guildId,
+                      channel.id,
+                      watermark
+                    );
+                    if (!hasGaps) {
+                      return { type: "skip" as const };
+                    }
                   }
                 }
 
-                // Either watermark outdated or gaps detected, do full scan
+                // Either: no complete sync yet, watermark outdated, or gaps detected
+                // Do full scan to ensure all history is captured
                 await this.detectAndFillGaps(guildId, channel.id, watermark);
                 return { type: "gapCheck" as const };
               }
@@ -479,6 +515,7 @@ export class ReconciliationSync {
     let lastId: string | null = null;
     let synced = 0;
     const batchSize = 100;
+    const backfilledMessages: BackfilledMessage[] = [];
 
     while (true) {
       const options: any = { limit: batchSize };
@@ -545,6 +582,16 @@ export class ReconciliationSync {
             synced++;
             this.stats.messagesFilled++;
           }
+
+          const conversationMessage = this.buildBackfilledMessage(
+            msg,
+            guildId,
+            channelId,
+            embedding
+          );
+          if (conversationMessage) {
+            backfilledMessages.push(conversationMessage);
+          }
         }
       }
 
@@ -575,7 +622,15 @@ export class ReconciliationSync {
           `   ✅ ReconciliationSync: Backfilled ${synced} messages in ${channelName}`
         );
       }
+
+      // Mark channel as having completed a full sync
+      await this.db.query(
+        `UPDATE channels SET last_full_sync = NOW() WHERE id = $1`,
+        [channelId]
+      );
     }
+
+    await this.streamBackfilledMessages(backfilledMessages);
   }
 
   /**
@@ -613,6 +668,7 @@ export class ReconciliationSync {
     const batchSize = 100;
     const maxBatches = 100; // Safety limit for thorough scanning
     let consecutiveCleanBatches = 0;
+    const backfilledMessages: BackfilledMessage[] = [];
 
     for (let i = 0; i < maxBatches; i++) {
       const options: any = { limit: batchSize, before: lastId };
@@ -689,6 +745,16 @@ export class ReconciliationSync {
             this.stats.messagesFilled++;
             this.stats.gapsDetected++;
           }
+
+          const conversationMessage = this.buildBackfilledMessage(
+            msg,
+            guildId,
+            channelId,
+            embedding
+          );
+          if (conversationMessage) {
+            backfilledMessages.push(conversationMessage);
+          }
         }
       }
 
@@ -725,6 +791,76 @@ export class ReconciliationSync {
       );
     } else if (this.verbose) {
       console.log(`   ✅ ReconciliationSync: No gaps found in ${channelName}`);
+    }
+
+    // Mark channel as having completed a full sync
+    await this.db.query(
+      `UPDATE channels SET last_full_sync = NOW() WHERE id = $1`,
+      [channelId]
+    );
+
+    await this.streamBackfilledMessages(backfilledMessages);
+  }
+
+  private buildBackfilledMessage(
+    msg: Message,
+    guildId: string,
+    channelId: string,
+    embedding?: number[]
+  ): BackfilledMessage | null {
+    if (!this.conversationDetector) {
+      return null;
+    }
+
+    if (msg.author.bot) {
+      return null;
+    }
+
+    const trimmedContent = msg.content?.trim();
+    if (!trimmedContent) {
+      return null;
+    }
+
+    const mentionedUsers =
+      msg.mentions?.users && msg.mentions.users.size > 0
+        ? Array.from(msg.mentions.users.keys())
+        : undefined;
+
+    return {
+      id: msg.id,
+      author_id: msg.author.id,
+      content: msg.content,
+      created_at: msg.createdAt || new Date(),
+      guild_id: guildId,
+      channel_id: channelId,
+      referenced_message_id: msg.reference?.messageId || undefined,
+      mentioned_user_ids: mentionedUsers,
+      embedding,
+    };
+  }
+
+  private async streamBackfilledMessages(
+    messages: BackfilledMessage[]
+  ): Promise<void> {
+    if (!this.conversationDetector || messages.length === 0) {
+      return;
+    }
+
+    const ordered = [...messages].sort(
+      (a, b) => a.created_at.getTime() - b.created_at.getTime()
+    );
+
+    for (const message of ordered) {
+      try {
+        await this.conversationDetector.addMessageToStream(message);
+      } catch (error) {
+        if (this.verbose) {
+          console.error(
+            `   🔸 ReconciliationSync: Failed to process backfilled message ${message.id} for conversations:`,
+            error
+          );
+        }
+      }
     }
   }
 

@@ -7,7 +7,7 @@
  */
 
 import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { AIManager } from "../features/ai-assistant/AIManager";
+import { AIManager } from "../ai/core/AIManager";
 import { EnhancementOrchestrator } from "../features/social-intelligence/enrichment-pipeline/EnhancementOrchestrator";
 import { config } from "../config/index.js";
 

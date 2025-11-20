@@ -65,6 +65,7 @@ export class StateSyncService {
       client,
       db,
       relationshipMapper,
+      conversationDetector,
       this.coordinator,
       verbose
     );

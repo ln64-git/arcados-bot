@@ -7,15 +7,15 @@
 
 import type { Client, Message } from "discord.js";
 import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
-import { AIManager } from "./AIManager";
+import { AIManager } from "../../ai/core/AIManager";
 import {
   getSessionByRepliedMessageId,
   appendUserTurn,
   appendAssistantTurnAndTrackMessage,
   getSessionHistory,
   startSession,
-} from "./ChatSessionManager";
-import { resolveMentionsInText } from "./utils/MentionResolver";
+} from "../../ai/core/ChatSessionManager";
+import { resolveMentionsInText } from "../../ai/utils/MentionResolver";
 
 export class MessageHandler {
   private client: Client;

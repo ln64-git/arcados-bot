@@ -1,6 +1,51 @@
 import { pgvector, PostgreSQLManager } from "../../../database/PostgreSQLManager.js";
-import type { AIManager } from "../../ai-assistant/AIManager";
+import type { AIManager } from "../../../ai/core/AIManager";
 import { EmbeddingService } from "../semantic-analysis/EmbeddingService.js";
+
+const SUMMARY_STOP_WORDS = new Set([
+  "the",
+  "and",
+  "but",
+  "that",
+  "with",
+  "for",
+  "you",
+  "your",
+  "are",
+  "was",
+  "were",
+  "this",
+  "have",
+  "has",
+  "had",
+  "about",
+  "from",
+  "they",
+  "their",
+  "them",
+  "what",
+  "when",
+  "where",
+  "how",
+  "why",
+  "there",
+  "then",
+  "just",
+  "like",
+  "that’s",
+  "thats",
+  "aint",
+  "dont",
+  "didnt",
+  "doesnt",
+  "cant",
+  "im",
+  "ive",
+  "ill",
+  "its",
+  "its",
+  "lol",
+]);
 
 /**
  * Configuration options for conversation enhancement
@@ -217,6 +262,29 @@ export class EnhancementOrchestrator {
 
           const messages = messagesResult.data;
 
+          const termCounts = new Map<string, number>();
+          for (const rawMessage of messages) {
+            const content = (rawMessage.content || "")
+              .toLowerCase()
+              .replace(/https?:\/\/\S+/g, " ")
+              .replace(/[^\w@#]+/g, " ");
+
+            const tokens = content.split(/\s+/);
+            for (const token of tokens) {
+              const normalized = token.trim();
+              if (!normalized || normalized.length < 3) continue;
+              if (SUMMARY_STOP_WORDS.has(normalized)) continue;
+              termCounts.set(normalized, (termCounts.get(normalized) || 0) + 1);
+            }
+          }
+
+          const topTerms = Array.from(termCounts.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 8);
+          const topicHintText = topTerms
+            .map(([term, count]) => `${term} (${count})`)
+            .join(", ");
+
           // Build message preview with smart sampling
           // For short conversations: use all messages
           // For long conversations: sample from beginning, middle, and end
@@ -323,9 +391,13 @@ RULES:
 5. Avoid Discord user IDs like <@123456> or usernames
 6. IGNORE bot commands (lines marked as "(bot command)")
 7. Start directly with the content - no meta-commentary like "The conversation was about..."
+8. Prioritize the dominant subject matter indicated by the top recurring terms below; if there's a conflict or repeated grievance, you MUST capture it explicitly
+9. When multiple topics appear, emphasize the ones that span the most messages or have emotional weight (arguments, complaints, requests)
 
 Conversation (${messages.length} messages, ${participantCount} participants):
 ${messagePreview}
+
+Top recurring terms (by frequency): ${topicHintText || "none"}
 
 Summary:`;
 

@@ -74,12 +74,21 @@ Transforms raw Discord interactions into structured relationship and conversatio
 - Handles graceful degradation if PostgreSQL is unavailable
 - Returns `DatabaseResult<T>` with `success` flag, `data`, and optional `error` field
 
-#### AI Assistant (`src/features/ai-assistant/`)
-Provides multi-provider LLM chat with tool integration:
-- **AIManager** (singleton): Manages Grok, OpenAI, Gemini, and Ollama providers; registers database tools for context retrieval
-- **DatabaseTools**: Registry of tools that call database methods; includes user tools, relationship tools, conversation tools, message tools, server tools, context tools, and analysis tools
-- **Personas**: "sophia" (philosophical) and "casual" (friendly); selected based on context
-- **ChatSessionManager**: Tracks multi-turn conversations; stores session history per user
+#### AI Module (`src/ai/`)
+Centralized AI infrastructure with multi-provider support:
+- **Core** (`core/`): AIManager (singleton) and ChatSessionManager for multi-turn conversations
+- **Providers** (`providers/`):
+  - GrokProvider: Uses Vercel AI SDK with Grok 4.1 Fast (non-reasoning) for AI assistant
+  - GeminiProvider: Native SDK with Gemini 2.0 Flash for social intelligence
+  - OpenAIProvider, OllamaProvider: Additional provider options
+- **Tools** (`tools/`): DatabaseTools registry with user, relationship, conversation, message, server, context, and analysis tools
+- **Personas** (`personas/`): "sophia" (philosophical) and "casual" (friendly) persona definitions
+- **Utils** (`utils/`): MentionResolver and ResponseLengthPolicy utilities
+
+#### AI Assistant Feature (`src/features/ai-assistant/`)
+Discord-specific message handling:
+- **MessageHandler**: Handles bot mentions and replies, integrates with AIManager from `src/ai/`
+- Re-exports AIManager and ChatSessionManager for backward compatibility
 
 #### Message Handling in Bot.ts
 **Bot mentions** (lines 169-315):
@@ -173,18 +182,20 @@ Commands automatically receive guild context and can access AI tools, database m
 - [ReconciliationSync.ts](src/features/discord-sync/ReconciliationSync.ts) - Background healing
 - [RelationshipMapper.ts](src/features/social-intelligence/relationship-mapping/RelationshipMapper.ts) - Affinity/relationship logic
 - [ConversationDetector.ts](src/features/social-intelligence/conversation-detection/ConversationDetector.ts) - Conversation detection and grouping
-- [AIManager.ts](src/features/ai-assistant/AIManager.ts) - Multi-provider LLM orchestration
-- [DatabaseTools.ts](src/features/ai-assistant/DatabaseTools.ts) - Tool registry for AI
+- [AIManager.ts](src/ai/core/AIManager.ts) - Multi-provider LLM orchestration using Vercel AI SDK (Grok 4.1 Fast) and native SDKs (Gemini)
+- [DatabaseTools.ts](src/ai/tools/registry/DatabaseTools.ts) - Tool registry for AI
+- [GrokProvider.ts](src/ai/providers/GrokProvider.ts) - Grok 4.1 Fast (non-reasoning) provider using Vercel AI SDK
+- [GeminiProvider.ts](src/ai/providers/GeminiProvider.ts) - Gemini Flash provider for social intelligence
 
 ## Common Tasks
 
-**Modify AI behavior**: Personas are in AIManager.ts; persona selection in generateText calls specifies which to use.
+**Modify AI behavior**: Personas are defined in [personas/definitions.ts](src/ai/personas/definitions.ts); persona selection in generateText calls specifies which to use. AI providers are in [src/ai/providers/](src/ai/providers/).
 
 **Add a database schema**: PostgreSQLManager has schema creation methods; update via migration pattern in `recreate:schema` script.
 
 **Track new interaction types**: ConversationDetector uses multi-strategy grouping; add new strategies in `conversation-detection/strategies/` directory.
 
-**Integrate new LLM provider**: Create provider class extending BaseAIProvider, register in AIManager.initializeProviders(), add API key to config.
+**Integrate new LLM provider**: Create provider class extending [BaseAIProvider](src/ai/providers/base/BaseAIProvider.ts) in [src/ai/providers/](src/ai/providers/), register in AIManager.initializeProviders(), add API key to config. Use Vercel AI SDK for OpenAI-compatible APIs, or native SDKs for platform-specific features.
 
 **Debug conversation detection**: ConversationDetector buffers messages per channel with 10-min inactivity timeouts; check `streaming_conversations` table or add logging.
 

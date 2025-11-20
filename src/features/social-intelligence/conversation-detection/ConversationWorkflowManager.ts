@@ -66,7 +66,7 @@ export class ConversationWorkflowManager {
 
     // Apply defaults
     this.config = {
-      guildId: config.guildId,
+      guildId: config.guildId || "",
       cleanupInterval: config.cleanupInterval ?? 15 * 60 * 1000, // 15 minutes
       bufferFlushInterval: config.bufferFlushInterval ?? 2 * 60 * 1000, // 2 minutes
       semanticMergingInterval:

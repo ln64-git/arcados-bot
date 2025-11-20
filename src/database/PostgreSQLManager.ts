@@ -440,7 +440,8 @@ export class PostgreSQLManager {
       await client.query(`
 				ALTER TABLE channels
 				ADD COLUMN IF NOT EXISTS last_message_id VARCHAR(20),
-				ADD COLUMN IF NOT EXISTS last_message_sync TIMESTAMP WITH TIME ZONE
+				ADD COLUMN IF NOT EXISTS last_message_sync TIMESTAMP WITH TIME ZONE,
+				ADD COLUMN IF NOT EXISTS last_full_sync TIMESTAMP WITH TIME ZONE
 			`);
 
       // Create indexes for better performance

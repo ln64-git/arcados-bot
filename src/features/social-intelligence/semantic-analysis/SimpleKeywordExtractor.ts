@@ -43,7 +43,7 @@ export class SimpleKeywordExtractor {
 			.map(([word, count]) => ({
 				word,
 				score: this.calculateScore(word, count, messages.length),
-				frequency: count,
+				count: count,
 				type: "simple" as const
 			}))
 			.sort((a, b) => b.score - a.score)
@@ -215,7 +215,7 @@ export class SimpleKeywordExtractor {
 			.map(([phrase, count]) => ({
 				word: phrase,
 				score: Math.log(count + 1) / Math.log(messages.length + 1),
-				frequency: count,
+				count: count,
 				type: "phrase" as const
 			}))
 			.sort((a, b) => b.score - a.score)
