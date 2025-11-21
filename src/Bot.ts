@@ -13,7 +13,8 @@ import type { Command } from "./types";
 import { CommandDeployer } from "./utils/CommandDeployer";
 import { StateSyncService } from "./features/discord-sync/StateSyncService";
 import { ConversationWorkflowManager } from "./features/social-intelligence";
-import { MessageHandler } from "./features/ai-assistant";
+import { MessageHandler } from "./features/chat-assistant";
+import { VoiceAssistantManager } from "./features/voice-assistant/VoiceAssistantManager";
 
 export class Bot {
   public client: Client;
@@ -25,6 +26,7 @@ export class Bot {
   private conversationWorkflow?: ConversationWorkflowManager;
   private messageHandler?: MessageHandler;
   private commandDeployer?: CommandDeployer;
+  private voiceAssistant?: VoiceAssistantManager;
 
   constructor() {
     this.client = new Client({
@@ -117,6 +119,11 @@ export class Bot {
     // Initialize message handler
     // Handles AI assistant interactions
     this.messageHandler = new MessageHandler(this.client, this.db);
+
+    // Initialize voice assistant
+    // Handles voice channel interactions and real-time voice conversation
+    this.voiceAssistant = VoiceAssistantManager.getInstance();
+    this.voiceAssistant.initialize(this.client);
 
     console.log("✅ All features initialized successfully");
   }

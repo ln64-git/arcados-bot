@@ -6,6 +6,7 @@
  */
 
 import type { Client, Message } from "discord.js";
+import { ChannelType } from "discord.js";
 import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
 import { AIManager } from "../../ai/core/AIManager";
 import {
@@ -16,6 +17,7 @@ import {
   startSession,
 } from "../../ai/core/ChatSessionManager";
 import { resolveMentionsInText } from "../../ai/utils/MentionResolver";
+import { VoiceAssistantManager } from "../voice-assistant/VoiceAssistantManager";
 
 export class MessageHandler {
   private client: Client;
@@ -93,6 +95,12 @@ export class MessageHandler {
     // If empty after removing mention, use a default prompt
     if (!userContent) {
       userContent = "Hello!";
+    }
+
+    // Check for voice commands first (before AI processing)
+    const voiceCommandHandled = await this.handleVoiceCommand(message, userContent);
+    if (voiceCommandHandled) {
+      return; // Voice command was handled, don't process with AI
     }
 
     // Map self-referential queries to explicit self-mention
@@ -332,5 +340,130 @@ export class MessageHandler {
   private sanitizeEveryone(input: string | undefined | null): string {
     if (!input) return "";
     return input.replace(/@everyone/gi, "@\u200Beveryone");
+  }
+
+  /**
+   * Handle voice-related commands (join/leave vc)
+   * Returns true if a voice command was handled
+   */
+  private async handleVoiceCommand(message: Message, content: string): Promise<boolean> {
+    const lowerContent = content.toLowerCase();
+
+    // Patterns for join voice commands
+    const joinPatterns = [
+      /\b(join|come to|get in|hop in|enter)\s+(vc|voice|voice channel)\b/i,
+      /\b(join|come)\s+(my|the)?\s*(vc|voice|voice channel)\b/i,
+    ];
+
+    // Patterns for leave voice commands
+    const leavePatterns = [
+      /\b(leave|disconnect|exit|quit)\s+(vc|voice|voice channel)\b/i,
+      /\b(leave|disconnect|exit|quit)\s+(the)?\s*(vc|voice|voice channel)\b/i,
+      /\b(go away|bye)\b/i,
+    ];
+
+    // Check for join command
+    const isJoinCommand = joinPatterns.some((pattern) => pattern.test(lowerContent));
+    if (isJoinCommand) {
+      await this.handleJoinVoiceCommand(message);
+      return true;
+    }
+
+    // Check for leave command
+    const isLeaveCommand = leavePatterns.some((pattern) => pattern.test(lowerContent));
+    if (isLeaveCommand) {
+      await this.handleLeaveVoiceCommand(message);
+      return true;
+    }
+
+    return false; // No voice command detected
+  }
+
+  /**
+   * Handle join voice channel command
+   */
+  private async handleJoinVoiceCommand(message: Message): Promise<void> {
+    try {
+      const voiceAssistant = VoiceAssistantManager.getInstance();
+
+      // Check if voice assistant is enabled
+      if (!voiceAssistant.isEnabled()) {
+        await message.reply(
+          "Voice assistant is not configured. Please contact the bot administrator."
+        );
+        return;
+      }
+
+      // Check if user is in a voice channel
+      const member = message.guild?.members.cache.get(message.author.id);
+      if (!member?.voice.channel) {
+        await message.reply("You need to be in a voice channel first!");
+        return;
+      }
+
+      const voiceChannel = member.voice.channel;
+
+      // Check if it's a voice channel (not stage)
+      if (voiceChannel.type !== ChannelType.GuildVoice) {
+        await message.reply("I can only join regular voice channels.");
+        return;
+      }
+
+      // Check if bot has permissions
+      const permissions = voiceChannel.permissionsFor(this.client.user!);
+      if (!permissions?.has("Connect") || !permissions?.has("Speak")) {
+        await message.reply(
+          "I don't have permission to join or speak in that voice channel!"
+        );
+        return;
+      }
+
+      // Join the voice channel
+      await voiceAssistant.joinVoiceChannel(voiceChannel, message.author.id);
+
+      await message.reply(
+        `Joined ${voiceChannel.name}! Say "Aria" followed by your question to talk to me.`
+      );
+    } catch (error) {
+      console.error("[MessageHandler] Error joining voice:", error);
+      await message.reply(
+        `Failed to join voice channel: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+    }
+  }
+
+  /**
+   * Handle leave voice channel command
+   */
+  private async handleLeaveVoiceCommand(message: Message): Promise<void> {
+    try {
+      const voiceAssistant = VoiceAssistantManager.getInstance();
+
+      // Check if guild exists
+      if (!message.guildId) {
+        await message.reply("This command can only be used in a server!");
+        return;
+      }
+
+      // Check if bot is in a voice channel
+      if (!voiceAssistant.isInVoiceChannel(message.guildId)) {
+        await message.reply("I'm not in a voice channel!");
+        return;
+      }
+
+      // Get session info for response
+      const session = voiceAssistant.getSession(message.guildId);
+      const channelName = session?.channel.name || "voice channel";
+
+      // Leave the voice channel
+      await voiceAssistant.leaveVoiceChannel(message.guildId);
+
+      await message.reply(`Left ${channelName}. Thanks for chatting!`);
+    } catch (error) {
+      console.error("[MessageHandler] Error leaving voice:", error);
+      await message.reply(
+        `Failed to leave voice channel: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+    }
   }
 }

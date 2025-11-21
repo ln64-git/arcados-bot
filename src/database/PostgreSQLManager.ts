@@ -380,7 +380,11 @@ export class PostgreSQLManager {
 					summary TEXT,
 					status VARCHAR(20) DEFAULT 'finalized',
 					last_activity_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-					created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+					created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					is_voice_conversation BOOLEAN DEFAULT FALSE,
+					voice_channel_id VARCHAR(20),
+					voice_participants TEXT[],
+					transcription_data JSONB
 				)
 			`);
 
@@ -398,6 +402,15 @@ export class PostgreSQLManager {
 				ADD COLUMN IF NOT EXISTS topic_confidence FLOAT,
 				ADD COLUMN IF NOT EXISTS parent_segment_id VARCHAR(50),
 				ADD COLUMN IF NOT EXISTS split_reason TEXT
+			`);
+
+      // Add voice conversation columns (migration)
+      await client.query(`
+				ALTER TABLE conversation_segments
+				ADD COLUMN IF NOT EXISTS is_voice_conversation BOOLEAN DEFAULT FALSE,
+				ADD COLUMN IF NOT EXISTS voice_channel_id VARCHAR(20),
+				ADD COLUMN IF NOT EXISTS voice_participants TEXT[],
+				ADD COLUMN IF NOT EXISTS transcription_data JSONB
 			`);
 
       // Add embedding column for semantic search (migration)

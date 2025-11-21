@@ -2,6 +2,8 @@ import * as dotenv from "dotenv";
 
 dotenv.config();
 
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
 export interface BotConfig {
   // Required
   botToken: string;
@@ -42,6 +44,16 @@ export interface BotConfig {
 
   // Feature flags
   enableTopicSplitting: boolean;
+
+  // Voice Assistant settings
+  googleTtsApiKey?: string;
+  googleTtsLanguageCode: string;
+  googleTtsVoiceName: string;
+  whisperApiKey?: string;
+  whisperUrl?: string;
+  voiceAssistantTriggerWord: string;
+  voiceAssistantEnabled: boolean;
+  voiceAssistantLogLevel: LogLevel;
 }
 
 function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
@@ -60,6 +72,22 @@ function parseBoolean(value: string | undefined, defaultValue: boolean): boolean
     case "no":
     case "off":
       return false;
+    default:
+      return defaultValue;
+  }
+}
+
+function parseLogLevel(value: string | undefined, defaultValue: LogLevel): LogLevel {
+  if (!value) {
+    return defaultValue;
+  }
+
+  switch (value.trim().toLowerCase()) {
+    case "debug":
+    case "info":
+    case "warn":
+    case "error":
+      return value.trim().toLowerCase() as LogLevel;
     default:
       return defaultValue;
   }
@@ -127,6 +155,22 @@ function validateConfig(): BotConfig {
     enableTopicSplitting: parseBoolean(
       process.env.ENABLE_TOPIC_SPLITTING,
       false
+    ),
+
+    // Voice Assistant settings
+    googleTtsApiKey: process.env.GOOGLE_TTS_API_KEY || undefined,
+    googleTtsLanguageCode: process.env.GOOGLE_TTS_LANGUAGE_CODE || "en-US",
+    googleTtsVoiceName: process.env.GOOGLE_TTS_VOICE_NAME || "en-US-Wavenet-D",
+    whisperApiKey: process.env.WHISPER_API_KEY || undefined,
+    whisperUrl: process.env.WHISPER_URL || undefined,
+    voiceAssistantTriggerWord: process.env.VOICE_ASSISTANT_TRIGGER_WORD || "aria",
+    voiceAssistantEnabled: parseBoolean(
+      process.env.VOICE_ASSISTANT_ENABLED,
+      true
+    ),
+    voiceAssistantLogLevel: parseLogLevel(
+      process.env.VOICE_ASSISTANT_LOG_LEVEL,
+      "info"
     ),
   };
 

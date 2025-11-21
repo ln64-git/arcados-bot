@@ -25,6 +25,7 @@ import { liveConversationTools } from "../tools/live/LiveConversationTools";
 import { dramaAnalysisTools } from "../tools/drama/DramaAnalysisTools";
 import { semanticSearchTools } from "../tools/search/SemanticSearchTools";
 import { storylineTools } from "../tools/storyline/StorylineTools";
+import { voiceTools } from "../tools/voice/VoiceTools";
 import {
   computeResponsePolicy,
   type ConversationMode,
@@ -90,6 +91,7 @@ When sharing info about people:
     this.databaseTools.registerTools(dramaAnalysisTools);
     this.databaseTools.registerTools(semanticSearchTools);
     this.databaseTools.registerTools(storylineTools);
+    this.databaseTools.registerTools(voiceTools);
   }
 
   /**
@@ -182,6 +184,44 @@ When sharing info about people:
       methodPrompt,
       prompt,
       "Failed to process your question. Please try again later."
+    );
+  }
+
+  /**
+   * Voice-specific generation path that keeps responses concise and
+   * encourages the model to call voice control tools when needed.
+   */
+  public async generateVoiceResponse(
+    prompt: string,
+    userId: string,
+    providerName: string,
+    guildId: string,
+    options?: {
+      personaKey?: string;
+      channelId?: string;
+    }
+  ): Promise<AIResponse> {
+    const db = await this.getDb();
+
+    const methodPrompt = `You are Arcados' live voice assistant speaking in a Discord call. Keep responses conversational, concise, and easy to speak aloud. Break ideas into short sentences.
+
+If the user asks you to leave the call, stop, pause, resume, or otherwise control playback, call the appropriate voice tool instead of narrating instructions. Never mention tool names aloud—just execute them. Only describe outcomes when necessary.
+
+Default to a calm, friendly tone. Avoid markdown styling beyond basic sentences.`;
+
+    return this.generateWithTools(
+      methodPrompt,
+      prompt,
+      userId,
+      guildId,
+      providerName,
+      db,
+      {
+        personaKey: options?.personaKey ?? "casual",
+        mode: "chat",
+        channelId: options?.channelId,
+        useDiscordFormatting: false,
+      }
     );
   }
 
