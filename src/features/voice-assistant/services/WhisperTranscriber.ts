@@ -1,5 +1,6 @@
 import { config } from "../../../config/index.js";
 import type { AudioChunk } from "../types.js";
+import { TRANSCRIPTION_CONSTANTS } from "../constants.js";
 
 /**
  * Whisper speech-to-text transcription service
@@ -101,8 +102,11 @@ export class WhisperTranscriber {
 		const formData = new FormData();
 		const audioBlob = new Blob([wavBuffer], { type: "audio/wav" });
 		formData.append("file", audioBlob, "audio.wav");
-		formData.append("temperature", "0.0");
-		formData.append("temperature_inc", "0.2");
+		formData.append("temperature", TRANSCRIPTION_CONSTANTS.WHISPER_TEMPERATURE.toString());
+		formData.append(
+			"temperature_inc",
+			TRANSCRIPTION_CONSTANTS.WHISPER_TEMPERATURE_INCREMENT.toString()
+		);
 		formData.append("response_format", "json");
 
 		const headers: Record<string, string> = {};

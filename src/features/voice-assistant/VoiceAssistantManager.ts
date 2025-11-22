@@ -10,6 +10,7 @@ import { VoiceLogger } from "./utils/VoiceLogger.js";
 import { AudioToneGenerator } from "./utils/AudioToneGenerator.js";
 import type { VoiceSession, TranscriptionEntry, TTSChunk } from "./types.js";
 import { VoiceAssistantEvent, VoiceAssistantErrorType } from "./types.js";
+import { TRANSCRIPTION_CONSTANTS, AI_CONSTANTS } from "./constants.js";
 
 export enum VoiceControlCommand {
 	LEAVE = "leave",
@@ -361,7 +362,7 @@ export class VoiceAssistantManager {
 			if (this.audioProcessor.isSilenceDetected(session.sessionId)) {
 				await this.processCompleteUtterance(session);
 			}
-		}, 500); // Check every 500ms
+		}, TRANSCRIPTION_CONSTANTS.TRANSCRIPTION_CHECK_INTERVAL_MS);
 
 		this.transcriptionTimers.set(session.guildId, interval);
 	}
@@ -605,7 +606,15 @@ export class VoiceAssistantManager {
 
 			// Generate AI response with timeout
 			const timeoutPromise = new Promise<never>((_, reject) => {
-				setTimeout(() => reject(new Error("AI response timeout after 45s")), 45000);
+				setTimeout(
+					() =>
+						reject(
+							new Error(
+								`AI response timeout after ${AI_CONSTANTS.RESPONSE_TIMEOUT_MS}ms`
+							)
+						),
+					AI_CONSTANTS.RESPONSE_TIMEOUT_MS
+				);
 			});
 
 			const responsePromise = this.aiManager.runWithGuildContext(
@@ -617,7 +626,7 @@ export class VoiceAssistantManager {
 						"grok",
 						session.guildId,
 						{
-							personaKey: "casual",
+							personaKey: AI_CONSTANTS.DEFAULT_PERSONA,
 							channelId: session.channelId,
 						}
 					);

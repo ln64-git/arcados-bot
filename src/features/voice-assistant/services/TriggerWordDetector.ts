@@ -1,5 +1,6 @@
 import { config } from "../../../config/index.js";
 import type { TriggerWordResult } from "../types.js";
+import { TRIGGER_CONSTANTS } from "../constants.js";
 
 /**
  * Detects trigger words (e.g., "Aria") in transcribed text
@@ -108,7 +109,7 @@ export class TriggerWordDetector {
 	 */
 	private fuzzyMatch(text: string): TriggerWordResult {
 		const words = text.split(/\s+/);
-		const threshold = 0.7; // 70% similarity required
+		const threshold = TRIGGER_CONSTANTS.SIMILARITY_THRESHOLD;
 
 		for (let i = 0; i < words.length; i++) {
 			const wordAtIndex = words[i];
@@ -174,12 +175,15 @@ export class TriggerWordDetector {
 		const similarity = 1 - distance / maxLength;
 
 		// Cache the result (limit cache size to prevent memory leaks)
-		if (this.similarityCache.size > 1000) {
-			// Clear oldest entries (simple strategy: clear half when limit reached)
+		if (this.similarityCache.size > TRIGGER_CONSTANTS.SIMILARITY_CACHE_SIZE) {
+			// Clear oldest entries
 			const entries = Array.from(this.similarityCache.entries());
 			this.similarityCache.clear();
-			// Keep only second half
-			for (let i = Math.floor(entries.length / 2); i < entries.length; i++) {
+			// Keep only most recent entries based on eviction ratio
+			const keepCount = Math.floor(
+				entries.length * (1 - TRIGGER_CONSTANTS.SIMILARITY_CACHE_EVICTION_RATIO)
+			);
+			for (let i = entries.length - keepCount; i < entries.length; i++) {
 				const entry = entries[i];
 				if (entry) {
 					this.similarityCache.set(entry[0], entry[1]);

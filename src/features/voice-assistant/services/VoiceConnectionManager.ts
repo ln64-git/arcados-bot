@@ -18,6 +18,7 @@ import prism from "prism-media";
 import type { VoiceSession } from "../types.js";
 import { VoiceConnectionState } from "../types.js";
 import { VoiceLogger } from "../utils/VoiceLogger.js";
+import { CONNECTION_CONSTANTS, PLAYBACK_CONSTANTS } from "../constants.js";
 
 const pipelineAsync = promisify(pipeline);
 
@@ -82,7 +83,11 @@ export class VoiceConnectionManager {
       });
 
       // Wait for connection to be ready
-      await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+      await entersState(
+        connection,
+        VoiceConnectionStatus.Ready,
+        CONNECTION_CONSTANTS.CONNECTION_READY_TIMEOUT_MS
+      );
 
       // Create audio player
       const player = createAudioPlayer();
@@ -259,15 +264,15 @@ export class VoiceConnectionManager {
         player.once(AudioPlayerStatus.Idle, onIdle);
         player.once("error", onError);
 
-        // Timeout after 60 seconds
+        // Timeout after configured duration
         timeoutHandle = setTimeout(() => {
           player.off(AudioPlayerStatus.Idle, onIdle);
           player.off("error", onError);
           this.logger.error(
-            `Playback timeout after 60s, player state: ${player.state.status}`
+            `Playback timeout after ${PLAYBACK_CONSTANTS.PLAYBACK_TIMEOUT_MS}ms, player state: ${player.state.status}`
           );
           reject(new Error("Audio playback timeout"));
-        }, 60000);
+        }, PLAYBACK_CONSTANTS.PLAYBACK_TIMEOUT_MS);
       });
 
       this.logger.debug("Audio playback completed successfully");
@@ -542,8 +547,16 @@ export class VoiceConnectionManager {
       try {
         // Try to reconnect
         await Promise.race([
-          entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-          entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+          entersState(
+            connection,
+            VoiceConnectionStatus.Signalling,
+            CONNECTION_CONSTANTS.RECONNECT_TIMEOUT_MS
+          ),
+          entersState(
+            connection,
+            VoiceConnectionStatus.Connecting,
+            CONNECTION_CONSTANTS.RECONNECT_TIMEOUT_MS
+          ),
         ]);
       } catch {
         // Disconnect if reconnection fails

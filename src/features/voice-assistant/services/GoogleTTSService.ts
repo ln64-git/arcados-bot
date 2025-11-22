@@ -1,5 +1,6 @@
 import { config } from "../../../config/index.js";
 import type { TTSChunk } from "../types.js";
+import { TTS_CONSTANTS } from "../constants.js";
 
 /**
  * Simple LRU cache for TTS audio
@@ -112,11 +113,11 @@ export class GoogleTTSService {
 	private readonly languageCode: string;
 	private readonly voiceName: string;
 
-	// LRU cache for synthesized audio (stores last 50 phrases)
-	private audioCache = new LRUCache<string, Buffer>(50);
+	// LRU cache for synthesized audio
+	private audioCache = new LRUCache<string, Buffer>(TTS_CONSTANTS.CACHE_SIZE);
 
-	// Rate limiter to prevent overwhelming the API (max 3 concurrent requests)
-	private rateLimiter = new RateLimiter(3);
+	// Rate limiter to prevent overwhelming the API
+	private rateLimiter = new RateLimiter(TTS_CONSTANTS.MAX_CONCURRENT_REQUESTS);
 
 	private constructor() {
 		this.apiKey = config.googleTtsApiKey;
@@ -173,17 +174,17 @@ export class GoogleTTSService {
 				? {
 						input: {
 							text: normalizedText,
-							prompt: "Read aloud in a warm, welcoming tone.",
+							prompt: TTS_CONSTANTS.GEMINI_PROMPT,
 						},
 						voice: {
 							languageCode: this.languageCode,
-							modelName: "gemini-2.5-pro-tts",
+							modelName: TTS_CONSTANTS.GEMINI_MODEL,
 							name: this.voiceName,
 						},
 						audioConfig: {
-							audioEncoding: "LINEAR16",
-							pitch: 0,
-							speakingRate: 1,
+							audioEncoding: TTS_CONSTANTS.ENCODING,
+							pitch: TTS_CONSTANTS.GEMINI_PITCH,
+							speakingRate: TTS_CONSTANTS.GEMINI_SPEAKING_RATE,
 						},
 				  }
 				: {
@@ -193,8 +194,8 @@ export class GoogleTTSService {
 							name: this.voiceName,
 						},
 						audioConfig: {
-							audioEncoding: "LINEAR16",
-							sampleRateHertz: 48000, // Discord voice supports 48kHz
+							audioEncoding: TTS_CONSTANTS.ENCODING,
+							sampleRateHertz: TTS_CONSTANTS.SAMPLE_RATE,
 						},
 				  };
 

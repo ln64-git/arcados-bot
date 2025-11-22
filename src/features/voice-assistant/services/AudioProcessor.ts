@@ -1,4 +1,5 @@
 import type { AudioChunk } from "../types.js";
+import { AUDIO_CONSTANTS } from "../constants.js";
 
 /**
  * Processes raw Discord audio streams into chunks for transcription
@@ -7,15 +8,13 @@ import type { AudioChunk } from "../types.js";
 export class AudioProcessor {
 	private static instance: AudioProcessor;
 
-	// Audio configuration
-	private readonly SAMPLE_RATE = 48000; // Discord voice uses 48kHz
-	private readonly CHANNELS = 2; // Stereo
-	private readonly CHUNK_DURATION_MS = 2000; // 2 second chunks
-	private readonly SILENCE_DURATION_MS = 1000; // 1 second of silence = end of utterance
-
-	// Buffer limits to prevent memory leaks
-	private readonly MAX_BUFFER_DURATION_MS = 30000; // 30 seconds max buffer
-	private readonly MAX_BUFFER_SIZE_BYTES = 5_760_000; // ~30s at 48kHz stereo 16-bit (5.76MB)
+	// Audio configuration (from centralized constants)
+	private readonly SAMPLE_RATE = AUDIO_CONSTANTS.SAMPLE_RATE;
+	private readonly CHANNELS = AUDIO_CONSTANTS.CHANNELS;
+	private readonly CHUNK_DURATION_MS = AUDIO_CONSTANTS.CHUNK_DURATION_MS;
+	private readonly SILENCE_DURATION_MS = AUDIO_CONSTANTS.SILENCE_DURATION_MS;
+	private readonly MAX_BUFFER_DURATION_MS = AUDIO_CONSTANTS.MAX_BUFFER_DURATION_MS;
+	private readonly MAX_BUFFER_SIZE_BYTES = AUDIO_CONSTANTS.MAX_BUFFER_SIZE_BYTES;
 
 	// Buffers per session
 	private buffers: Map<string, Buffer[]> = new Map();

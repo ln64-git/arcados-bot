@@ -115,6 +115,7 @@ export class GrokProvider extends BaseAIProvider {
             Authorization: `Bearer ${config.grokApiKey}`,
             "Content-Type": "application/json",
           },
+          timeout: 30000, // 30 second timeout
         }
       );
 
