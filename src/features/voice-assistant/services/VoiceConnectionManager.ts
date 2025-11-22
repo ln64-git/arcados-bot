@@ -437,12 +437,27 @@ export class VoiceConnectionManager {
 
       // Collect decoded PCM audio data
       const audioChunks: Buffer[] = [];
+      let hasReceivedData = false;
 
       // Pipe opus stream through decoder
-      opusStream.pipe(decoder);
+      // Use error handling to prevent crashes on invalid packets
+      opusStream.on("data", (chunk) => {
+        try {
+          decoder.write(chunk);
+        } catch (error) {
+          // Skip invalid opus packets silently
+          // These can happen due to network issues or codec problems
+          this.logger.debug(`Skipping invalid opus packet for user ${userId}`);
+        }
+      });
+
+      opusStream.on("end", () => {
+        decoder.end();
+      });
 
       decoder.on("data", (chunk: Buffer) => {
         audioChunks.push(chunk);
+        hasReceivedData = true;
       });
 
       decoder.on("end", () => {
@@ -456,19 +471,22 @@ export class VoiceConnectionManager {
             `Sending combined PCM audio to callback: ${combinedAudio.length} bytes`
           );
           onAudioReceived(userId, combinedAudio);
-        } else {
+        } else if (hasReceivedData) {
           this.logger.warn(
-            `No PCM audio chunks collected for user ${userId}`
+            `No PCM audio chunks collected for user ${userId} despite receiving data`
           );
         }
       });
 
       decoder.on("error", (error) => {
-        this.logger.error(`Decoder error for user ${userId}:`, error);
+        // Log but don't crash - invalid packets are common
+        this.logger.debug(`Decoder error for user ${userId} (skipping): ${error.message}`);
       });
 
       opusStream.on("error", (error) => {
         this.logger.error(`Opus stream error for user ${userId}:`, error);
+        // Clean up on stream error
+        decoder.destroy();
       });
     });
 
