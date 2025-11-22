@@ -2,6 +2,104 @@ import { config } from "../../../config/index.js";
 import type { TTSChunk } from "../types.js";
 
 /**
+ * Simple LRU cache for TTS audio
+ */
+class LRUCache<K, V> {
+	private cache = new Map<K, V>();
+	private maxSize: number;
+
+	constructor(maxSize: number) {
+		this.maxSize = maxSize;
+	}
+
+	get(key: K): V | undefined {
+		const value = this.cache.get(key);
+		if (value !== undefined) {
+			// Move to end (most recent)
+			this.cache.delete(key);
+			this.cache.set(key, value);
+		}
+		return value;
+	}
+
+	set(key: K, value: V): void {
+		// Delete if exists to update position
+		if (this.cache.has(key)) {
+			this.cache.delete(key);
+		}
+
+		// Add new entry
+		this.cache.set(key, value);
+
+		// Evict oldest if over capacity
+		if (this.cache.size > this.maxSize) {
+			const firstKey = this.cache.keys().next().value;
+			if (firstKey !== undefined) {
+				this.cache.delete(firstKey);
+			}
+		}
+	}
+
+	has(key: K): boolean {
+		return this.cache.has(key);
+	}
+
+	clear(): void {
+		this.cache.clear();
+	}
+
+	get size(): number {
+		return this.cache.size;
+	}
+}
+
+/**
+ * Rate limiter using token bucket algorithm
+ */
+class RateLimiter {
+	private queue: Array<() => void> = [];
+	private activeRequests = 0;
+	private readonly maxConcurrent: number;
+
+	constructor(maxConcurrent: number) {
+		this.maxConcurrent = maxConcurrent;
+	}
+
+	async limit<T>(fn: () => Promise<T>): Promise<T> {
+		// Wait until we have capacity
+		await this.waitForCapacity();
+
+		this.activeRequests++;
+
+		try {
+			return await fn();
+		} finally {
+			this.activeRequests--;
+			this.processQueue();
+		}
+	}
+
+	private waitForCapacity(): Promise<void> {
+		if (this.activeRequests < this.maxConcurrent) {
+			return Promise.resolve();
+		}
+
+		return new Promise((resolve) => {
+			this.queue.push(resolve);
+		});
+	}
+
+	private processQueue(): void {
+		if (this.queue.length > 0 && this.activeRequests < this.maxConcurrent) {
+			const resolve = this.queue.shift();
+			if (resolve) {
+				resolve();
+			}
+		}
+	}
+}
+
+/**
  * Google Cloud Text-to-Speech service
  * Converts text to audio using Google's TTS REST API
  *
@@ -13,6 +111,12 @@ export class GoogleTTSService {
 	private readonly endpoint = "https://texttospeech.googleapis.com/v1/text:synthesize";
 	private readonly languageCode: string;
 	private readonly voiceName: string;
+
+	// LRU cache for synthesized audio (stores last 50 phrases)
+	private audioCache = new LRUCache<string, Buffer>(50);
+
+	// Rate limiter to prevent overwhelming the API (max 3 concurrent requests)
+	private rateLimiter = new RateLimiter(3);
 
 	private constructor() {
 		this.apiKey = config.googleTtsApiKey;
@@ -43,70 +147,95 @@ export class GoogleTTSService {
 			throw new Error("Cannot synthesize empty text");
 		}
 
-		// Check if using Gemini TTS (Laomedeia or other Gemini voices)
-		const isGeminiVoice = this.voiceName === "Laomedeia" || this.voiceName.startsWith("gemini");
+		const normalizedText = text.trim();
 
-		const body = isGeminiVoice
-			? {
-					input: {
-						text: text.trim(),
-						prompt: "Read aloud in a warm, welcoming tone.",
-					},
-					voice: {
-						languageCode: this.languageCode,
-						modelName: "gemini-2.5-pro-tts",
-						name: this.voiceName,
-					},
-					audioConfig: {
-						audioEncoding: "LINEAR16",
-						pitch: 0,
-						speakingRate: 1,
-					},
-			  }
-			: {
-					input: { text: text.trim() },
-					voice: {
-						languageCode: this.languageCode,
-						name: this.voiceName,
-					},
-					audioConfig: {
-						audioEncoding: "LINEAR16",
-						sampleRateHertz: 48000, // Discord voice supports 48kHz
-					},
-			  };
+		// Create cache key (include voice name for different voices)
+		const cacheKey = `${this.voiceName}:${normalizedText}`;
 
-		const url = `${this.endpoint}?key=${this.apiKey}`;
-
-		try {
-			const response = await fetch(url, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json; charset=utf-8",
-				},
-				body: JSON.stringify(body),
-			});
-
-			if (!response.ok) {
-				const errorText = await response.text();
-				throw new Error(
-					`Google TTS API error (${response.status}): ${errorText}`
-				);
-			}
-
-			const json = (await response.json()) as { audioContent?: string };
-
-			if (!json.audioContent) {
-				throw new Error("Google TTS API returned no audio content");
-			}
-
-			// Response is base64-encoded audio
-			return Buffer.from(json.audioContent, "base64");
-		} catch (error) {
-			if (error instanceof Error) {
-				throw new Error(`Google TTS synthesis failed: ${error.message}`);
-			}
-			throw new Error("Google TTS synthesis failed: Unknown error");
+		// Check cache first
+		const cachedAudio = this.audioCache.get(cacheKey);
+		if (cachedAudio) {
+			return cachedAudio;
 		}
+
+		// Use rate limiter for API calls
+		return this.rateLimiter.limit(async () => {
+			// Check cache again in case another request synthesized it while we were waiting
+			const recheck = this.audioCache.get(cacheKey);
+			if (recheck) {
+				return recheck;
+			}
+
+			// Check if using Gemini TTS (Laomedeia or other Gemini voices)
+			const isGeminiVoice = this.voiceName === "Laomedeia" || this.voiceName.startsWith("gemini");
+
+			const body = isGeminiVoice
+				? {
+						input: {
+							text: normalizedText,
+							prompt: "Read aloud in a warm, welcoming tone.",
+						},
+						voice: {
+							languageCode: this.languageCode,
+							modelName: "gemini-2.5-pro-tts",
+							name: this.voiceName,
+						},
+						audioConfig: {
+							audioEncoding: "LINEAR16",
+							pitch: 0,
+							speakingRate: 1,
+						},
+				  }
+				: {
+						input: { text: normalizedText },
+						voice: {
+							languageCode: this.languageCode,
+							name: this.voiceName,
+						},
+						audioConfig: {
+							audioEncoding: "LINEAR16",
+							sampleRateHertz: 48000, // Discord voice supports 48kHz
+						},
+				  };
+
+			const url = `${this.endpoint}?key=${this.apiKey}`;
+
+			try {
+				const response = await fetch(url, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json; charset=utf-8",
+					},
+					body: JSON.stringify(body),
+				});
+
+				if (!response.ok) {
+					const errorText = await response.text();
+					throw new Error(
+						`Google TTS API error (${response.status}): ${errorText}`
+					);
+				}
+
+				const json = (await response.json()) as { audioContent?: string };
+
+				if (!json.audioContent) {
+					throw new Error("Google TTS API returned no audio content");
+				}
+
+				// Response is base64-encoded audio
+				const audioBuffer = Buffer.from(json.audioContent, "base64");
+
+				// Cache the result
+				this.audioCache.set(cacheKey, audioBuffer);
+
+				return audioBuffer;
+			} catch (error) {
+				if (error instanceof Error) {
+					throw new Error(`Google TTS synthesis failed: ${error.message}`);
+				}
+				throw new Error("Google TTS synthesis failed: Unknown error");
+			}
+		});
 	}
 
 	/**

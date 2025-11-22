@@ -11,8 +11,11 @@ export class AudioProcessor {
 	private readonly SAMPLE_RATE = 48000; // Discord voice uses 48kHz
 	private readonly CHANNELS = 2; // Stereo
 	private readonly CHUNK_DURATION_MS = 2000; // 2 second chunks
-	private readonly SILENCE_THRESHOLD = 500; // Amplitude threshold for silence
 	private readonly SILENCE_DURATION_MS = 1000; // 1 second of silence = end of utterance
+
+	// Buffer limits to prevent memory leaks
+	private readonly MAX_BUFFER_DURATION_MS = 30000; // 30 seconds max buffer
+	private readonly MAX_BUFFER_SIZE_BYTES = 5_760_000; // ~30s at 48kHz stereo 16-bit (5.76MB)
 
 	// Buffers per session
 	private buffers: Map<string, Buffer[]> = new Map();
@@ -41,14 +44,39 @@ export class AudioProcessor {
 		}
 
 		const buffer = this.buffers.get(sessionId)!;
+
+		// Calculate total buffer size before adding new data
+		const totalBytes = buffer.reduce((sum, buf) => sum + buf.length, 0);
+
+		// Check buffer limits to prevent memory leaks
+		if (totalBytes + audioData.length > this.MAX_BUFFER_SIZE_BYTES) {
+			console.warn(
+				`[AudioProcessor] Buffer size limit reached for session ${sessionId}. ` +
+					`Current: ${totalBytes} bytes, Max: ${this.MAX_BUFFER_SIZE_BYTES} bytes. ` +
+					`Flushing buffer to prevent memory leak.`
+			);
+			// Force flush to prevent unbounded growth
+			return this.flushBuffer(sessionId);
+		}
+
 		buffer.push(audioData);
 
 		// Update last audio time
 		this.lastAudioTime.set(sessionId, Date.now());
 
 		// Calculate total buffered duration
-		const totalSamples = buffer.reduce((sum, buf) => sum + buf.length, 0) / 2; // 16-bit samples
+		const totalSamples = (totalBytes + audioData.length) / 2; // 16-bit samples
 		const durationMs = (totalSamples / this.SAMPLE_RATE) * 1000;
+
+		// Check duration limit
+		if (durationMs >= this.MAX_BUFFER_DURATION_MS) {
+			console.warn(
+				`[AudioProcessor] Buffer duration limit reached for session ${sessionId}. ` +
+					`Duration: ${Math.round(durationMs)}ms, Max: ${this.MAX_BUFFER_DURATION_MS}ms. ` +
+					`Flushing buffer.`
+			);
+			return this.flushBuffer(sessionId);
+		}
 
 		// Check if we have enough audio for a chunk
 		if (durationMs >= this.CHUNK_DURATION_MS) {
@@ -128,32 +156,6 @@ export class AudioProcessor {
 			sampleRate: this.SAMPLE_RATE,
 			channels: this.CHANNELS,
 		};
-	}
-
-	/**
-	 * Detect if audio buffer contains mostly silence
-	 *
-	 * @param audioData PCM audio data
-	 * @returns True if mostly silent
-	 */
-	private isSilent(audioData: Buffer): boolean {
-		// Sample every 10th sample to check amplitude
-		let silentSamples = 0;
-		let totalSamples = 0;
-
-		for (let i = 0; i < audioData.length - 1; i += 20) {
-			const sample = audioData.readInt16LE(i);
-			const amplitude = Math.abs(sample);
-
-			totalSamples++;
-
-			if (amplitude < this.SILENCE_THRESHOLD) {
-				silentSamples++;
-			}
-		}
-
-		// Consider silent if >90% of samples are below threshold
-		return silentSamples / totalSamples > 0.9;
 	}
 
 	/**

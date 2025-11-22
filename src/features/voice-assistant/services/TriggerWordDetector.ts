@@ -10,6 +10,12 @@ export class TriggerWordDetector {
 	private readonly triggerWord: string;
 	private readonly variations: Set<string>;
 
+	// Cache compiled regex patterns for each variation (performance optimization)
+	private readonly variationPatterns: Map<string, RegExp> = new Map();
+
+	// Cache Levenshtein distance calculations
+	private readonly similarityCache: Map<string, number> = new Map();
+
 	private constructor() {
 		this.triggerWord = config.voiceAssistantTriggerWord.toLowerCase();
 
@@ -26,6 +32,17 @@ export class TriggerWordDetector {
 			this.variations.add("ariah");
 			this.variations.add("area"); // Common mishearing
 			this.variations.add("ariya");
+			this.variations.add("are you"); // Very common STT mishearing
+			this.variations.add("ari");
+			this.variations.add("airy");
+			this.variations.add("arianna");
+		}
+
+		// Pre-compile regex patterns for all variations
+		for (const variation of this.variations) {
+			const escapedVariation = variation.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+			const pattern = new RegExp(`\\b${escapedVariation}\\b`, "i");
+			this.variationPatterns.set(variation, pattern);
 		}
 	}
 
@@ -52,9 +69,11 @@ export class TriggerWordDetector {
 
 		const normalizedText = text.toLowerCase();
 
-		// Check for exact matches first (highest confidence)
+		// Check for exact matches first (highest confidence) using cached patterns
 		for (const variation of this.variations) {
-			const pattern = new RegExp(`\\b${variation.toLowerCase()}\\b`, "i");
+			const pattern = this.variationPatterns.get(variation);
+			if (!pattern) continue;
+
 			const match = pattern.exec(text);
 
 			if (match) {
@@ -97,6 +116,13 @@ export class TriggerWordDetector {
 
 			const word = wordAtIndex.replace(/[^\w]/g, ""); // Remove punctuation
 
+			// Early exit: skip words that are too different in length
+			const lengthDiff = Math.abs(word.length - this.triggerWord.length);
+			const maxLength = Math.max(word.length, this.triggerWord.length);
+			if (maxLength > 0 && lengthDiff / maxLength > (1 - threshold)) {
+				continue; // Length difference too large to meet threshold
+			}
+
 			const similarity = this.calculateSimilarity(word, this.triggerWord);
 
 			if (similarity >= threshold) {
@@ -124,12 +150,45 @@ export class TriggerWordDetector {
 	 * @returns Similarity score (0-1)
 	 */
 	private calculateSimilarity(str1: string, str2: string): number {
+		// Check cache first
+		const cacheKey = `${str1}:${str2}`;
+		const cached = this.similarityCache.get(cacheKey);
+		if (cached !== undefined) {
+			return cached;
+		}
+
+		// Early exit for identical strings
+		if (str1 === str2) {
+			this.similarityCache.set(cacheKey, 1.0);
+			return 1.0;
+		}
+
 		const distance = this.levenshteinDistance(str1, str2);
 		const maxLength = Math.max(str1.length, str2.length);
 
-		if (maxLength === 0) return 1.0;
+		if (maxLength === 0) {
+			this.similarityCache.set(cacheKey, 1.0);
+			return 1.0;
+		}
 
-		return 1 - distance / maxLength;
+		const similarity = 1 - distance / maxLength;
+
+		// Cache the result (limit cache size to prevent memory leaks)
+		if (this.similarityCache.size > 1000) {
+			// Clear oldest entries (simple strategy: clear half when limit reached)
+			const entries = Array.from(this.similarityCache.entries());
+			this.similarityCache.clear();
+			// Keep only second half
+			for (let i = Math.floor(entries.length / 2); i < entries.length; i++) {
+				const entry = entries[i];
+				if (entry) {
+					this.similarityCache.set(entry[0], entry[1]);
+				}
+			}
+		}
+
+		this.similarityCache.set(cacheKey, similarity);
+		return similarity;
 	}
 
 	/**
@@ -188,10 +247,20 @@ export class TriggerWordDetector {
 	 *
 	 * @param text Full transcribed text
 	 * @param triggerWordPosition Position where trigger word was found
+	 * @param triggerWord The actual trigger word that was detected (handles multi-word triggers)
 	 * @returns User query without trigger word
 	 */
-	public extractQuery(text: string, triggerWordPosition: number): string {
-		// Find the end of the trigger word
+	public extractQuery(text: string, triggerWordPosition: number, triggerWord?: string): string {
+		// If we know the exact trigger word, use it to extract the query
+		if (triggerWord) {
+			const triggerEnd = triggerWordPosition + triggerWord.length;
+			const afterTrigger = text.slice(triggerEnd).trim();
+
+			// Remove leading punctuation (commas, periods, etc.)
+			return afterTrigger.replace(/^[,;.!?\s]+/, "").trim();
+		}
+
+		// Fallback: Find the end of the first word (single-word triggers)
 		const afterTrigger = text.slice(triggerWordPosition);
 		const match = /^\S+\s+(.+)$/i.exec(afterTrigger);
 

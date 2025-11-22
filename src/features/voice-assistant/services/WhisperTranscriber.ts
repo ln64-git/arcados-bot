@@ -31,22 +31,33 @@ export class WhisperTranscriber {
 	 * @returns Transcribed text
 	 */
 	public async transcribe(audioChunk: AudioChunk): Promise<string> {
-		// TEMPORARY: Mock transcription for testing
-		// Remove this when you have Whisper set up
+		// Ensure at least one transcription service is configured
 		if (!this.whisperUrl && !this.openaiApiKey) {
-			console.warn(
-				"[WhisperTranscriber] No transcription service configured, using mock transcription"
+			throw new Error(
+				"No Whisper transcription service configured. Set WHISPER_URL for local or OPENAI_API_KEY for cloud."
 			);
-			// Return a mock transcription that contains "aria" for testing
-			return "aria hello can you hear me";
 		}
+
+		let lastError: Error | undefined;
 
 		// Try local Whisper first (free and fast)
 		if (this.whisperUrl) {
 			try {
 				return await this.transcribeLocal(audioChunk);
-			} catch (error) {
-				console.warn("Local Whisper transcription failed, falling back to OpenAI API:", error);
+			} catch (error: any) {
+				console.error("[WhisperTranscriber] Local Whisper transcription failed:", {
+					message: error?.message,
+					response: error?.response?.data,
+					status: error?.response?.status,
+				});
+				lastError = error;
+
+				// Fall back to OpenAI if available
+				if (this.openaiApiKey) {
+					console.log("[WhisperTranscriber] Falling back to OpenAI Whisper...");
+				} else {
+					throw error; // No fallback available
+				}
 			}
 		}
 
@@ -54,20 +65,26 @@ export class WhisperTranscriber {
 		if (this.openaiApiKey) {
 			try {
 				return await this.transcribeOpenAI(audioChunk);
-			} catch (error) {
-				console.error("OpenAI Whisper transcription failed:", error);
-				throw new Error("All transcription methods failed");
+			} catch (error: any) {
+				console.error("[WhisperTranscriber] OpenAI Whisper transcription failed:", error);
+
+				// If both services failed, throw comprehensive error
+				if (lastError) {
+					throw new Error(
+						`All transcription methods failed. Local: ${lastError.message}, OpenAI: ${error.message}`
+					);
+				}
+				throw error;
 			}
 		}
 
-		throw new Error(
-			"No Whisper transcription service configured. Set WHISPER_URL for local or OPENAI_API_KEY for cloud."
-		);
+		// Should never reach here due to earlier check, but TypeScript needs it
+		throw new Error("No transcription service available");
 	}
 
 	/**
 	 * Transcribe using local Whisper endpoint
-	 * Supports both OpenAI-compatible API and whisper.cpp server
+	 * Supports whisper.cpp server
 	 *
 	 * @param audioChunk Audio chunk to transcribe
 	 * @returns Transcribed text
@@ -84,44 +101,20 @@ export class WhisperTranscriber {
 		const formData = new FormData();
 		const audioBlob = new Blob([wavBuffer], { type: "audio/wav" });
 		formData.append("file", audioBlob, "audio.wav");
+		formData.append("temperature", "0.0");
+		formData.append("temperature_inc", "0.2");
+		formData.append("response_format", "json");
 
 		const headers: Record<string, string> = {};
 		if (this.whisperApiKey) {
 			headers.Authorization = `Bearer ${this.whisperApiKey}`;
 		}
 
-		// Try whisper.cpp endpoint first (/inference)
-		try {
-			formData.append("temperature", "0.0");
-			formData.append("temperature_inc", "0.2");
-			formData.append("response_format", "json");
-
-			const response = await fetch(`${this.whisperUrl}/inference`, {
-				method: "POST",
-				headers,
-				body: formData,
-			});
-
-			if (response.ok) {
-				const result = (await response.json()) as { text?: string };
-				if (result.text) {
-					return result.text.trim();
-				}
-			}
-		} catch (error) {
-			console.warn("[WhisperTranscriber] whisper.cpp /inference failed, trying OpenAI-compatible endpoint");
-		}
-
-		// Try OpenAI-compatible endpoint (/v1/audio/transcriptions)
-		const formData2 = new FormData();
-		formData2.append("file", audioBlob, "audio.wav");
-		formData2.append("model", "whisper-1");
-		formData2.append("language", "en");
-
-		const response = await fetch(`${this.whisperUrl}/v1/audio/transcriptions`, {
+		// Use whisper.cpp /inference endpoint
+		const response = await fetch(`${this.whisperUrl}/inference`, {
 			method: "POST",
 			headers,
-			body: formData2,
+			body: formData,
 		});
 
 		if (!response.ok) {

@@ -9,6 +9,7 @@ import {
   entersState,
   type AudioPlayer,
   EndBehaviorType,
+  StreamType,
 } from "@discordjs/voice";
 import type { VoiceChannel, Snowflake } from "discord.js";
 import { Readable, pipeline } from "node:stream";
@@ -32,6 +33,9 @@ export class VoiceConnectionManager {
 
   // Audio players by guild ID
   private audioPlayers: Map<Snowflake, AudioPlayer> = new Map();
+
+  // Cleanup callbacks for when connection is destroyed
+  private cleanupCallbacks: Map<Snowflake, () => void> = new Map();
 
   private logger: VoiceLogger;
 
@@ -152,6 +156,14 @@ export class VoiceConnectionManager {
         this.audioPlayers.delete(guildId);
       }
 
+      // Invoke cleanup callback before destroying connection
+      const cleanup = this.cleanupCallbacks.get(guildId);
+      if (cleanup) {
+        this.logger.debug(`Running cleanup callback for guild ${guildId}`);
+        cleanup();
+        this.cleanupCallbacks.delete(guildId);
+      }
+
       // Destroy the connection
       session.connection.destroy();
 
@@ -214,7 +226,7 @@ export class VoiceConnectionManager {
       const stream = Readable.from(audioBuffer);
       this.logger.debug("Created readable stream from buffer");
 
-      // Create audio resource (no inputType needed, defaults to Arbitrary)
+      // Create audio resource (defaults to Arbitrary which auto-detects format)
       const resource = createAudioResource(stream);
       this.logger.debug(
         `Created audio resource, playbackDuration: ${resource.playbackDuration}ms`
@@ -539,7 +551,17 @@ export class VoiceConnectionManager {
           `Failed to reconnect in guild ${session.guildId}`
         );
         connection.destroy();
+
+        // Invoke cleanup callback before removing session
+        const cleanup = this.cleanupCallbacks.get(session.guildId);
+        if (cleanup) {
+          this.logger.debug(`Running cleanup callback for guild ${session.guildId}`);
+          cleanup();
+          this.cleanupCallbacks.delete(session.guildId);
+        }
+
         this.sessions.delete(session.guildId);
+        this.audioPlayers.delete(session.guildId);
       }
     });
 
@@ -549,6 +571,16 @@ export class VoiceConnectionManager {
         error
       );
     });
+  }
+
+  /**
+   * Register a cleanup callback to be called when connection is destroyed
+   *
+   * @param guildId Guild ID
+   * @param callback Cleanup function
+   */
+  public onDisconnect(guildId: Snowflake, callback: () => void): void {
+    this.cleanupCallbacks.set(guildId, callback);
   }
 
   /**

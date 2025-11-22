@@ -7,6 +7,7 @@ import { TriggerWordDetector } from "./services/TriggerWordDetector.js";
 import { AIManager } from "../../ai/core/AIManager.js";
 import { config } from "../../config/index.js";
 import { VoiceLogger } from "./utils/VoiceLogger.js";
+import { AudioToneGenerator } from "./utils/AudioToneGenerator.js";
 import type { VoiceSession, TranscriptionEntry, TTSChunk } from "./types.js";
 import { VoiceAssistantEvent, VoiceAssistantErrorType } from "./types.js";
 
@@ -176,6 +177,15 @@ export class VoiceAssistantManager {
 		// Join the voice channel
 		const session = await this.connectionManager.joinChannel(channel);
 
+		// Register cleanup callback for when connection is lost
+		this.connectionManager.onDisconnect(session.guildId, () => {
+			this.logger.info(`Connection lost for guild ${session.guildId}, cleaning up...`);
+			this.stopTranscriptionInterval(session.guildId);
+			this.audioProcessor.cleanup(session.sessionId);
+			this.processingLocks.delete(session.guildId);
+			this.playbackControllers.delete(session.guildId);
+		});
+
 		// Start receiving audio
 		this.startReceivingAudio(session);
 
@@ -238,6 +248,56 @@ export class VoiceAssistantManager {
 		);
 	}
 
+	// Common Whisper hallucinations to filter out
+	private readonly HALLUCINATION_PATTERNS = [
+		/^applause$/i,
+		/^music$/i,
+		/^silence$/i,
+		/^\[.*\]$/i, // [BLANK_AUDIO], [MUSIC], etc.
+		/^thank you\.?$/i,
+		/^thanks for watching\.?$/i,
+		/^subscribe\.?$/i,
+		/^\(.*\)$/i, // (music), (applause), etc.
+		/^all right\.?$/i, // Very common filler hallucination
+		/^alright\.?$/i,
+		/^okay\.?$/i,
+		/^ok\.?$/i,
+		/^hmm\.?$/i,
+		/^hm\.?$/i,
+		/^uh\.?$/i,
+		/^um\.?$/i,
+		/^ah\.?$/i,
+	];
+
+	/**
+	 * Check if transcription is likely a Whisper hallucination
+	 *
+	 * @param text Transcription text
+	 * @returns True if likely hallucination
+	 */
+	private isHallucination(text: string): boolean {
+		const normalized = text.trim().toLowerCase();
+
+		// Check against known hallucination patterns
+		if (this.HALLUCINATION_PATTERNS.some((pattern) => pattern.test(normalized))) {
+			return true;
+		}
+
+		// Check for repetitive patterns (same word/phrase repeated 3+ times)
+		// e.g., "All right. All right. All right."
+		const words = normalized.split(/[\s.!?,;]+/).filter(w => w.length > 0);
+		if (words.length >= 3) {
+			// Check if all words are the same
+			const uniqueWords = new Set(words);
+			if (uniqueWords.size === 1 || uniqueWords.size === 2) {
+				// Single word repeated, or alternating pattern - likely hallucination
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	/**
 	 * Handle a complete audio chunk
 	 *
@@ -256,6 +316,18 @@ export class VoiceAssistantManager {
 
 			if (!transcription || transcription.trim().length === 0) {
 				return; // Ignore empty transcriptions
+			}
+
+			// Filter out Whisper hallucinations
+			if (this.isHallucination(transcription)) {
+				this.logger.debug(`Filtered hallucination: "${transcription}"`);
+				return;
+			}
+
+			// Filter out very short transcriptions (likely noise)
+			if (transcription.trim().length < 3) {
+				this.logger.debug(`Filtered short transcription: "${transcription}"`);
+				return;
 			}
 
 			this.logger.debug(`Transcription from ${userId}: "${transcription}"`);
@@ -315,6 +387,7 @@ export class VoiceAssistantManager {
 	private async processCompleteUtterance(session: VoiceSession): Promise<void> {
 		const utterance = session.transcriptionBuffer.trim();
 
+		// Early exit if buffer is empty - don't log anything
 		if (!utterance) {
 			return;
 		}
@@ -322,7 +395,8 @@ export class VoiceAssistantManager {
 		// Clear buffer immediately to prevent reprocessing
 		session.transcriptionBuffer = "";
 
-		const controlCommand = this.detectVoiceControlCommand(utterance);
+		// Check for control commands (only when relevant)
+		const controlCommand = this.detectVoiceControlCommand(utterance, session);
 		if (controlCommand) {
 			await this.handleVoiceControlCommand(session.guildId, controlCommand);
 			return;
@@ -357,12 +431,13 @@ export class VoiceAssistantManager {
 				// Extract query (text after trigger word)
 				const query = this.triggerDetector.extractQuery(
 					utterance,
-					triggerResult.position || 0
+					triggerResult.position || 0,
+					triggerResult.triggerWord
 				);
 
-				this.logger.debug(`Extracted query: "${query || utterance}"`);
+				this.logger.debug(`Extracted query: "${query || "(empty)"}"`);
 
-				// Generate and speak response
+				// Generate and speak response (use utterance as fallback only if query is truly empty)
 				await this.generateAndSpeakResponse(session, query || utterance);
 			} finally {
 				// Release lock
@@ -390,7 +465,7 @@ export class VoiceAssistantManager {
 		return true;
 	}
 
-	private detectVoiceControlCommand(utterance: string): VoiceControlCommand | null {
+	private detectVoiceControlCommand(utterance: string, session: VoiceSession): VoiceControlCommand | null {
 		const triggerResult = this.triggerDetector.detect(utterance);
 
 		if (!triggerResult.detected) {
@@ -398,7 +473,7 @@ export class VoiceAssistantManager {
 		}
 
 		const normalizedQuery = this.normalizeCommandText(
-			this.triggerDetector.extractQuery(utterance, triggerResult.position || 0)
+			this.triggerDetector.extractQuery(utterance, triggerResult.position || 0, triggerResult.triggerWord)
 		);
 		const normalizedUtterance = this.normalizeCommandText(utterance);
 
@@ -406,21 +481,28 @@ export class VoiceAssistantManager {
 			(text): text is string => Boolean(text && text.length > 0)
 		);
 
+		// Check if there's active playback or processing
+		const hasActivePlayback = session.isSpeaking || this.playbackControllers.has(session.guildId);
+		const isProcessing = this.processingLocks.get(session.guildId);
+
 		for (const text of candidates) {
 			if (this.matchesCommand(text, VoiceControlCommand.LEAVE)) {
 				return VoiceControlCommand.LEAVE;
 			}
 
-			if (this.matchesCommand(text, VoiceControlCommand.STOP)) {
-				return VoiceControlCommand.STOP;
-			}
+			// Only allow stop/pause/play commands if there's active playback or processing
+			if (hasActivePlayback || isProcessing) {
+				if (this.matchesCommand(text, VoiceControlCommand.STOP)) {
+					return VoiceControlCommand.STOP;
+				}
 
-			if (this.matchesCommand(text, VoiceControlCommand.PAUSE)) {
-				return VoiceControlCommand.PAUSE;
-			}
+				if (this.matchesCommand(text, VoiceControlCommand.PAUSE)) {
+					return VoiceControlCommand.PAUSE;
+				}
 
-			if (this.matchesCommand(text, VoiceControlCommand.PLAY)) {
-				return VoiceControlCommand.PLAY;
+				if (this.matchesCommand(text, VoiceControlCommand.PLAY)) {
+					return VoiceControlCommand.PLAY;
+				}
 			}
 		}
 
@@ -486,6 +568,24 @@ export class VoiceAssistantManager {
 	}
 
 	/**
+	 * Play a light "thinking" sound to acknowledge the trigger word
+	 * This lets the user know their request was received
+	 *
+	 * @param guildId Guild ID
+	 */
+	private async playThinkingSound(guildId: Snowflake): Promise<void> {
+		try {
+			// Generate a pleasant two-tone chime
+			const chimeBuffer = AudioToneGenerator.generateThinkingChime();
+			await this.connectionManager.playAudio(guildId, chimeBuffer);
+			this.logger.debug("Played thinking chime");
+		} catch (error) {
+			// Don't throw - thinking sound is nice-to-have, not critical
+			this.logger.warn("Failed to play thinking sound:", error);
+		}
+	}
+
+	/**
 	 * Generate AI response and speak it in voice channel
 	 *
 	 * @param session Voice session
@@ -501,8 +601,14 @@ export class VoiceAssistantManager {
 			// Get first participant (or use first user in channel)
 			const userId = Array.from(session.participants)[0] || "unknown";
 
-			// Generate AI response
-			const response = await this.aiManager.runWithGuildContext(
+			this.logger.debug(`Calling AI with userId: ${userId}, guildId: ${session.guildId}`);
+
+			// Generate AI response with timeout
+			const timeoutPromise = new Promise<never>((_, reject) => {
+				setTimeout(() => reject(new Error("AI response timeout after 45s")), 45000);
+			});
+
+			const responsePromise = this.aiManager.runWithGuildContext(
 				session.guildId,
 				async () => {
 					return await this.aiManager.generateVoiceResponse(
@@ -518,6 +624,10 @@ export class VoiceAssistantManager {
 				}
 			);
 
+			const response = await Promise.race([responsePromise, timeoutPromise]);
+
+			this.logger.debug(`AI response received: success=${response.success}`);
+
 			const responseText = response.content;
 
 			this.logger.debug(
@@ -528,6 +638,9 @@ export class VoiceAssistantManager {
 				this.logger.warn("Empty AI response, skipping TTS");
 				return;
 			}
+
+			// Play thinking sound to indicate response is ready and about to be spoken
+			await this.playThinkingSound(session.guildId);
 
 			this.logger.debug("Starting TTS generation...");
 			const { chunkCount, chunkPromises } = this.tts.createChunkSynthesisQueue(
