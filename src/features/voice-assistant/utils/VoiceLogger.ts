@@ -41,7 +41,7 @@ export class VoiceLogger {
 			return;
 		}
 
-		const prefix = `[${this.source}]`;
+		const prefix = `${this.source}`;
 
 		switch (level) {
 			case "debug":

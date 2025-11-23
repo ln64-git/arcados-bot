@@ -117,4 +117,78 @@ export class AudioToneGenerator {
 
 		return buffer;
 	}
+
+	/**
+	 * Generate an error tone
+	 * Lower pitch, slightly longer to indicate an issue
+	 *
+	 * @returns WAV audio buffer (PCM, 48kHz stereo)
+	 */
+	public static generateErrorTone(): Buffer {
+		const sampleRate = 48000;
+		const channels = 2;
+		const bitsPerSample = 16;
+		const duration = 0.2; // 200ms
+		const frequency = 440; // A4 - lower pitch for errors
+		const totalSamples = Math.floor(sampleRate * duration);
+
+		// Create buffer for PCM data
+		const pcmData = Buffer.alloc(totalSamples * channels * 2);
+
+		let bufferOffset = 0;
+
+		for (let i = 0; i < totalSamples; i++) {
+			const t = i / sampleRate;
+			const progress = i / totalSamples;
+
+			// Gentle attack and decay
+			const attackTime = 0.1;
+			const attack = progress < attackTime ? progress / attackTime : 1;
+			const decay = Math.exp(-3 * progress);
+			const envelope = attack * decay;
+
+			// Generate sine wave with envelope
+			const amplitude = 0.25; // 25% max amplitude
+			const value = Math.sin(2 * Math.PI * frequency * t) * envelope * amplitude;
+
+			// Convert to 16-bit signed integer
+			const sample = Math.max(
+				-32767,
+				Math.min(32767, Math.round(value * 32767))
+			);
+
+			// Write to both channels (stereo)
+			pcmData.writeInt16LE(sample, bufferOffset);
+			pcmData.writeInt16LE(sample, bufferOffset + 2);
+			bufferOffset += 4;
+		}
+
+		// Create WAV header
+		const byteRate = (sampleRate * channels * bitsPerSample) / 8;
+		const blockAlign = (channels * bitsPerSample) / 8;
+		const dataSize = pcmData.length;
+		const header = Buffer.alloc(44);
+
+		// "RIFF" chunk descriptor
+		header.write("RIFF", 0);
+		header.writeUInt32LE(36 + dataSize, 4);
+		header.write("WAVE", 8);
+
+		// "fmt " sub-chunk
+		header.write("fmt ", 12);
+		header.writeUInt32LE(16, 16);
+		header.writeUInt16LE(1, 20); // PCM
+		header.writeUInt16LE(channels, 22);
+		header.writeUInt32LE(sampleRate, 24);
+		header.writeUInt32LE(byteRate, 28);
+		header.writeUInt16LE(blockAlign, 32);
+		header.writeUInt16LE(bitsPerSample, 34);
+
+		// "data" sub-chunk
+		header.write("data", 36);
+		header.writeUInt32LE(dataSize, 40);
+
+		// Combine header and PCM data
+		return Buffer.concat([header, pcmData]);
+	}
 }

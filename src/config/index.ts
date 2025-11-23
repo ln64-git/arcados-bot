@@ -54,6 +54,11 @@ export interface BotConfig {
   voiceAssistantTriggerWord: string;
   voiceAssistantEnabled: boolean;
   voiceAssistantLogLevel: LogLevel;
+
+  // Cartesia TTS settings
+  cartesiaApiKey?: string;
+  cartesiaVoiceId?: string;
+  cartesiaModel?: string;
 }
 
 function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
@@ -172,6 +177,11 @@ function validateConfig(): BotConfig {
       process.env.VOICE_ASSISTANT_LOG_LEVEL,
       "info"
     ),
+
+    // Cartesia TTS settings
+    cartesiaApiKey: process.env.CARTESIA_API_KEY || undefined,
+    cartesiaVoiceId: process.env.CARTESIA_VOICE_ID || undefined,
+    cartesiaModel: process.env.CARTESIA_MODEL || undefined,
   };
 
   // Validate node environment

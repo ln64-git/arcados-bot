@@ -1,4 +1,8 @@
-import { SlashCommandBuilder, type ChatInputCommandInteraction } from "discord.js";
+import {
+  SlashCommandBuilder,
+  MessageFlags,
+  type ChatInputCommandInteraction,
+} from "discord.js";
 import type { Command } from "../../../types/index.js";
 import { VoiceAssistantManager } from "../VoiceAssistantManager.js";
 
@@ -14,7 +18,7 @@ const leaveCommand: Command = {
 	async execute(interaction: ChatInputCommandInteraction) {
 		try {
 			// Defer reply for async operations
-			await interaction.deferReply();
+			await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
 			const voiceAssistant = VoiceAssistantManager.getInstance();
 

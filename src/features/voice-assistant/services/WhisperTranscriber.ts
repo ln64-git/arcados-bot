@@ -3,6 +3,38 @@ import type { AudioChunk } from "../types.js";
 import { TRANSCRIPTION_CONSTANTS } from "../constants.js";
 
 /**
+ * Retry a function with exponential backoff
+ * @param fn Function to retry
+ * @param maxRetries Maximum number of retries
+ * @param baseDelay Base delay in milliseconds
+ * @returns Result of the function
+ */
+async function retryWithBackoff<T>(
+	fn: () => Promise<T>,
+	maxRetries: number = 2,
+	baseDelay: number = 500
+): Promise<T> {
+	let lastError: Error | undefined;
+
+	for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		try {
+			return await fn();
+		} catch (error) {
+			lastError = error as Error;
+
+			if (attempt < maxRetries) {
+				// Exponential backoff: 500ms, 1000ms, 2000ms
+				const delay = baseDelay * Math.pow(2, attempt);
+				console.log(`[Retry] Attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
+				await new Promise((resolve) => setTimeout(resolve, delay));
+			}
+		}
+	}
+
+	throw lastError;
+}
+
+/**
  * Whisper speech-to-text transcription service
  * Supports local Whisper (preferred) with OpenAI API fallback
  */
@@ -41,12 +73,12 @@ export class WhisperTranscriber {
 
 		let lastError: Error | undefined;
 
-		// Try local Whisper first (free and fast)
+		// Try local Whisper first (free and fast) with retry
 		if (this.whisperUrl) {
 			try {
-				return await this.transcribeLocal(audioChunk);
+				return await retryWithBackoff(() => this.transcribeLocal(audioChunk), 2, 500);
 			} catch (error: any) {
-				console.error("[WhisperTranscriber] Local Whisper transcription failed:", {
+				console.error("[WhisperTranscriber] Local Whisper transcription failed after retries:", {
 					message: error?.message,
 					response: error?.response?.data,
 					status: error?.response?.status,
@@ -62,10 +94,10 @@ export class WhisperTranscriber {
 			}
 		}
 
-		// Fallback to OpenAI Whisper API
+		// Fallback to OpenAI Whisper API with retry
 		if (this.openaiApiKey) {
 			try {
-				return await this.transcribeOpenAI(audioChunk);
+				return await retryWithBackoff(() => this.transcribeOpenAI(audioChunk), 2, 500);
 			} catch (error: any) {
 				console.error("[WhisperTranscriber] OpenAI Whisper transcription failed:", error);
 

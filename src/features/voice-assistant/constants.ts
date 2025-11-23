@@ -7,108 +7,141 @@
  * Audio Processing Constants
  */
 export const AUDIO_CONSTANTS = {
-	// Sample rates
-	SAMPLE_RATE: 48000, // Discord voice uses 48kHz
-	CHANNELS: 2, // Stereo
+  // Sample rates
+  SAMPLE_RATE: 48000, // Discord voice uses 48kHz
+  CHANNELS: 2, // Stereo
 
-	// Chunk configuration
-	CHUNK_DURATION_MS: 2000, // 2 second chunks for transcription
-	SILENCE_DURATION_MS: 1000, // 1 second of silence = end of utterance
+  // Chunk configuration
+  CHUNK_DURATION_MS: 1000, // 1 second chunks for transcription (reduced from 2s for faster response)
+  SILENCE_DURATION_MS: 600, // 600ms of silence = end of utterance (balanced for reliability)
 
-	// Buffer limits (prevent memory leaks)
-	MAX_BUFFER_DURATION_MS: 30000, // 30 seconds max buffer
-	MAX_BUFFER_SIZE_BYTES: 5_760_000, // ~30s at 48kHz stereo 16-bit (5.76MB)
+  // Buffer limits (prevent memory leaks)
+  MAX_BUFFER_DURATION_MS: 30000, // 30 seconds max buffer
+  MAX_BUFFER_SIZE_BYTES: 5_760_000, // ~30s at 48kHz stereo 16-bit (5.76MB)
 } as const;
 
 /**
  * Transcription Constants
  */
 export const TRANSCRIPTION_CONSTANTS = {
-	// Whisper configuration
-	WHISPER_TEMPERATURE: 0.0,
-	WHISPER_TEMPERATURE_INCREMENT: 0.2,
+  // Whisper configuration
+  WHISPER_TEMPERATURE: 0.0,
+  WHISPER_TEMPERATURE_INCREMENT: 0.2,
 
-	// Polling interval for silence detection
-	TRANSCRIPTION_CHECK_INTERVAL_MS: 500, // Check every 500ms
+  // Polling interval for silence detection
+  TRANSCRIPTION_CHECK_INTERVAL_MS: 500, // Check every 500ms
 } as const;
 
 /**
  * TTS (Text-to-Speech) Constants
  */
 export const TTS_CONSTANTS = {
-	// Cache configuration
-	CACHE_SIZE: 50, // Store last 50 synthesized phrases
+  // Cache configuration
+  CACHE_SIZE: 50, // Store last 50 synthesized phrases
 
-	// Rate limiting
-	MAX_CONCURRENT_REQUESTS: 3, // Max 3 concurrent TTS requests
+  // Rate limiting
+  MAX_CONCURRENT_REQUESTS: 6, // Max 6 concurrent TTS requests (increased from 3 for faster playback)
 
-	// Audio configuration
-	SAMPLE_RATE: 48000, // Discord voice supports 48kHz
-	ENCODING: "LINEAR16" as const,
+  // Audio configuration
+  SAMPLE_RATE: 48000, // Discord voice supports 48kHz
+  ENCODING: "LINEAR16" as const,
 
-	// Gemini TTS configuration
-	GEMINI_MODEL: "gemini-2.5-pro-tts",
-	GEMINI_PITCH: 0,
-	GEMINI_SPEAKING_RATE: 1,
-	GEMINI_PROMPT: "Read aloud in a warm, welcoming tone.",
+  // Gemini TTS configuration
+  GEMINI_MODEL: "gemini-2.5-pro-tts",
+  GEMINI_PITCH: 0,
+  GEMINI_SPEAKING_RATE: 1,
+  GEMINI_PROMPT: "Read aloud in a warm, welcoming tone.",
+} as const;
+
+/**
+ * Cartesia TTS Constants
+ */
+export const CARTESIA_CONSTANTS = {
+  // Model configuration
+  MODEL: "sonic-3" as const, // Latest Sonic model with 50+ emotions
+  DEFAULT_VOICE_ID: "f786b574-daa5-4673-aa0c-cbe3e8534c02", // Katie (American English)
+
+  // Audio output format (use 44100, closest to Discord's 48000 requirement)
+  OUTPUT_FORMAT: {
+    container: "raw" as const,
+    encoding: "pcm_s16le" as const, // 16-bit PCM little-endian
+    sampleRate: 44100, // Cartesia max supported, will resample to 48000
+  },
+
+  // Generation config
+  VOLUME: 1.0,
+  SPEED: 1.0,
+  EMOTION: "neutral" as const,
+  LANGUAGE: "en" as const,
+
+  // API version
+  API_VERSION: "2025-04-16" as const,
+
+  // WebSocket configuration
+  WS_IDLE_TIMEOUT_MS: 300000, // 5 minutes (Cartesia auto-closes at 5min)
+  WS_RECONNECT_DELAY_MS: 1000, // 1 second
 } as const;
 
 /**
  * Trigger Word Detection Constants
  */
 export const TRIGGER_CONSTANTS = {
-	// Fuzzy matching
-	SIMILARITY_THRESHOLD: 0.7, // 70% similarity required
+  // Fuzzy matching
+  SIMILARITY_THRESHOLD: 0.75, // 75% similarity required (balanced between accuracy and false positives)
 
-	// Cache limits
-	SIMILARITY_CACHE_SIZE: 1000, // Max cached similarity calculations
-	SIMILARITY_CACHE_EVICTION_RATIO: 0.5, // Clear 50% when limit reached
+  // Cache limits
+  SIMILARITY_CACHE_SIZE: 1000, // Max cached similarity calculations
+  SIMILARITY_CACHE_EVICTION_RATIO: 0.5, // Clear 50% when limit reached
 } as const;
 
 /**
  * AI Response Constants
  */
 export const AI_CONSTANTS = {
-	// Timeouts
-	RESPONSE_TIMEOUT_MS: 45000, // 45 second timeout for AI response generation
+  // Timeouts
+  RESPONSE_TIMEOUT_MS: 45000, // 45 second timeout for AI response generation
 
-	// Personas
-	DEFAULT_PERSONA: "casual" as const,
+  // Personas
+  DEFAULT_PERSONA: "casual" as const,
 } as const;
 
 /**
  * Playback Constants
  */
 export const PLAYBACK_CONSTANTS = {
-	// Timeouts
-	PLAYBACK_TIMEOUT_MS: 60000, // 60 second playback timeout
+  // Timeouts
+  PLAYBACK_TIMEOUT_MS: 60000, // 60 second playback timeout
 
-	// Polling intervals
-	PLAYBACK_STATE_POLL_INTERVAL_MS: 100, // Check playback state every 100ms
+  // Polling intervals
+  PLAYBACK_STATE_POLL_INTERVAL_MS: 100, // Check playback state every 100ms
 } as const;
 
 /**
  * Voice Connection Constants
  */
 export const CONNECTION_CONSTANTS = {
-	// Connection timeouts
-	CONNECTION_READY_TIMEOUT_MS: 30000, // 30 seconds to establish connection
-	RECONNECT_TIMEOUT_MS: 5000, // 5 seconds to attempt reconnection
+  // Connection timeouts
+  CONNECTION_READY_TIMEOUT_MS: 30000, // 30 seconds to establish connection
+  RECONNECT_TIMEOUT_MS: 5000, // 5 seconds to attempt reconnection
 } as const;
 
 /**
  * Tone Generation Constants
  */
 export const TONE_CONSTANTS = {
-	// Thinking chime
-	THINKING_CHIME_FREQUENCY_START: 880, // A5 (Hz)
-	THINKING_CHIME_FREQUENCY_END: 660, // E5 (Hz)
-	THINKING_CHIME_DURATION_MS: 300,
+  // Thinking chime
+  THINKING_CHIME_FREQUENCY_START: 880, // A5 (Hz)
+  THINKING_CHIME_FREQUENCY_END: 660, // E5 (Hz)
+  THINKING_CHIME_DURATION_MS: 300,
 
-	// Acknowledgment beep
-	ACK_BEEP_FREQUENCY: 880, // A5 (Hz)
-	ACK_BEEP_DURATION_MS: 100,
+  // Acknowledgment beep
+  ACK_BEEP_FREQUENCY: 880, // A5 (Hz)
+  ACK_BEEP_DURATION_MS: 100,
 
-	// Audio settings
-	TONE_SAMPLE_RATE: 48000, // Match Discord voice
+  // Error tone
+  ERROR_TONE_FREQUENCY: 440, // A4 (Hz) - lower pitch for errors
+  ERROR_TONE_DURATION_MS: 200,
+
+  // Audio settings
+  TONE_SAMPLE_RATE: 48000, // Match Discord voice
 } as const;

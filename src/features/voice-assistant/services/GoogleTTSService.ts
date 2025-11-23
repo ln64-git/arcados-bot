@@ -3,6 +3,38 @@ import type { TTSChunk } from "../types.js";
 import { TTS_CONSTANTS } from "../constants.js";
 
 /**
+ * Retry a function with exponential backoff
+ * @param fn Function to retry
+ * @param maxRetries Maximum number of retries
+ * @param baseDelay Base delay in milliseconds
+ * @returns Result of the function
+ */
+async function retryWithBackoff<T>(
+	fn: () => Promise<T>,
+	maxRetries: number = 2,
+	baseDelay: number = 500
+): Promise<T> {
+	let lastError: Error | undefined;
+
+	for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		try {
+			return await fn();
+		} catch (error) {
+			lastError = error as Error;
+
+			if (attempt < maxRetries) {
+				// Exponential backoff: 500ms, 1000ms, 2000ms
+				const delay = baseDelay * Math.pow(2, attempt);
+				console.log(`[TTS Retry] Attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
+				await new Promise((resolve) => setTimeout(resolve, delay));
+			}
+		}
+	}
+
+	throw lastError;
+}
+
+/**
  * Simple LRU cache for TTS audio
  */
 class LRUCache<K, V> {
@@ -201,7 +233,8 @@ export class GoogleTTSService {
 
 			const url = `${this.endpoint}?key=${this.apiKey}`;
 
-			try {
+			// Retry TTS synthesis with exponential backoff
+			const audioBuffer = await retryWithBackoff(async () => {
 				const response = await fetch(url, {
 					method: "POST",
 					headers: {
@@ -224,29 +257,29 @@ export class GoogleTTSService {
 				}
 
 				// Response is base64-encoded audio
-				const audioBuffer = Buffer.from(json.audioContent, "base64");
+				return Buffer.from(json.audioContent, "base64");
+			}, 2, 500);
 
-				// Cache the result
-				this.audioCache.set(cacheKey, audioBuffer);
+			// Cache the result
+			this.audioCache.set(cacheKey, audioBuffer);
 
-				return audioBuffer;
-			} catch (error) {
-				if (error instanceof Error) {
-					throw new Error(`Google TTS synthesis failed: ${error.message}`);
-				}
-				throw new Error("Google TTS synthesis failed: Unknown error");
-			}
+			return audioBuffer;
 		});
 	}
 
 	/**
 	 * Split text into natural speech chunks for streaming
+	 * Uses length-aware splitting with target chunk size of 100-150 chars
 	 * Splits on sentence boundaries (. ! ?) and commas for minimal latency
 	 *
 	 * @param text Full text to split
 	 * @returns Array of text chunks
 	 */
 	public splitIntoChunks(text: string): string[] {
+		const TARGET_CHUNK_SIZE = 125; // Target 125 chars (middle of 100-150 range)
+		const MIN_CHUNK_SIZE = 50; // Don't create tiny chunks
+		const MAX_CHUNK_SIZE = 200; // Hard limit to prevent very long chunks
+
 		const chunks: string[] = [];
 
 		// First split by sentence endings (. ! ?)
@@ -255,12 +288,16 @@ export class GoogleTTSService {
 		let currentChunk = "";
 
 		for (const part of sentences) {
-			// If it's a sentence ending, add to current chunk and flush
+			// If it's a sentence ending, add to current chunk
 			if (/^[.!?]\s+$/.test(part)) {
 				currentChunk += part.trim();
-				if (currentChunk.length > 0) {
-					chunks.push(currentChunk.trim());
-					currentChunk = "";
+
+				// Flush if we've reached target size or if chunk is already large
+				if (currentChunk.length >= TARGET_CHUNK_SIZE || currentChunk.length > MAX_CHUNK_SIZE) {
+					if (currentChunk.length > 0) {
+						chunks.push(currentChunk.trim());
+						currentChunk = "";
+					}
 				}
 			} else {
 				// For longer sentences, split on commas
@@ -271,12 +308,27 @@ export class GoogleTTSService {
 
 					if (!commaPart) continue; // Skip empty parts
 
-					if (i < commaParts.length - 1) {
-						// Not the last part - add comma and flush
-						chunks.push(commaPart.trim() + ",");
+					// Add comma back except for last part
+					const textToAdd = i < commaParts.length - 1 ? commaPart + "," : commaPart;
+
+					// Check if adding this would exceed max chunk size
+					if (currentChunk.length + textToAdd.length > MAX_CHUNK_SIZE) {
+						// Flush current chunk if it's not too small
+						if (currentChunk.length >= MIN_CHUNK_SIZE) {
+							chunks.push(currentChunk.trim());
+							currentChunk = textToAdd;
+						} else {
+							// Chunk too small, keep adding
+							currentChunk += (currentChunk.length > 0 ? " " : "") + textToAdd;
+						}
+					} else if (currentChunk.length + textToAdd.length >= TARGET_CHUNK_SIZE && i < commaParts.length - 1) {
+						// At a good break point (comma) and near target size
+						currentChunk += (currentChunk.length > 0 ? " " : "") + textToAdd;
+						chunks.push(currentChunk.trim());
+						currentChunk = "";
 					} else {
-						// Last part - keep in buffer for sentence ending
-						currentChunk = commaPart;
+						// Keep building chunk
+						currentChunk += (currentChunk.length > 0 ? " " : "") + textToAdd;
 					}
 				}
 			}
@@ -348,5 +400,19 @@ export class GoogleTTSService {
 			languageCode: this.languageCode,
 			voiceName: this.voiceName,
 		};
+	}
+
+	/**
+	 * Disconnect/cleanup (no-op for Google TTS, included for interface compatibility)
+	 */
+	public async disconnect(): Promise<void> {
+		// Google TTS uses HTTP requests, no persistent connection to close
+	}
+
+	/**
+	 * Clear the audio cache
+	 */
+	public clearCache(): void {
+		this.audioCache.clear();
 	}
 }
