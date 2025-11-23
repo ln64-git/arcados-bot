@@ -16,7 +16,7 @@ import { Readable, pipeline } from "node:stream";
 import { promisify } from "node:util";
 import prism from "prism-media";
 import type { VoiceSession } from "../types.js";
-import { VoiceConnectionState } from "../types.js";
+import { VoiceConnectionState, VoiceMode } from "../types.js";
 import { VoiceLogger } from "../utils/VoiceLogger.js";
 import { CONNECTION_CONSTANTS, PLAYBACK_CONSTANTS } from "../constants.js";
 
@@ -205,6 +205,8 @@ export class VoiceConnectionManager {
         isListening: true,
         isSpeaking: false,
         transcriptions: [],
+        mode: VoiceMode.COMMAND,
+        conversationHistory: [],
       };
 
       // Set up connection event handlers
@@ -556,7 +558,7 @@ export class VoiceConnectionManager {
       const opusStream = connection.receiver.subscribe(userId, {
         end: {
           behavior: EndBehaviorType.AfterSilence,
-          duration: 1000, // End after 1 second of silence
+          duration: 1500, // End after 1.5 seconds of silence (more forgiving for natural pauses)
         },
       });
 

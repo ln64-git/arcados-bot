@@ -40,6 +40,15 @@ export interface VoiceSession {
 
 	/** All transcribed utterances in this session */
 	transcriptions: TranscriptionEntry[];
+
+	/** Current voice mode (command or conversation) */
+	mode: VoiceMode;
+
+	/** Active conversation user ID (per-user conversations) */
+	conversationUserId?: string;
+
+	/** Conversation history for maintaining context */
+	conversationHistory?: Array<{ role: string; content: string }>;
 }
 
 /**
@@ -125,6 +134,14 @@ export interface VoiceResponse {
 
 	/** Total audio duration in milliseconds */
 	duration: number;
+}
+
+/**
+ * Voice assistant operational mode
+ */
+export enum VoiceMode {
+	COMMAND = "command",
+	CONVERSATION = "conversation",
 }
 
 /**

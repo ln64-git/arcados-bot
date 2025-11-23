@@ -9,14 +9,25 @@ import { config } from "../../config/index.js";
 import { VoiceLogger } from "./utils/VoiceLogger.js";
 import { AudioToneGenerator } from "./utils/AudioToneGenerator.js";
 import type { VoiceSession, TranscriptionEntry, TTSChunk } from "./types.js";
-import { VoiceAssistantEvent, VoiceAssistantErrorType } from "./types.js";
-import { TRANSCRIPTION_CONSTANTS, AI_CONSTANTS } from "./constants.js";
+import {
+  VoiceAssistantEvent,
+  VoiceAssistantErrorType,
+  VoiceMode,
+} from "./types.js";
+import {
+  TRANSCRIPTION_CONSTANTS,
+  AI_CONSTANTS,
+  CONVERSATION_CONSTANTS,
+  AUDIO_CONSTANTS,
+} from "./constants.js";
 
 export enum VoiceControlCommand {
   LEAVE = "leave",
   STOP = "stop",
   PAUSE = "pause",
   PLAY = "play",
+  SWITCH_TO_CONVERSATION = "switch_to_conversation",
+  SWITCH_TO_COMMAND = "switch_to_command",
 }
 
 interface PlaybackControllerState {
@@ -59,6 +70,15 @@ export class VoiceAssistantManager {
   // Playback controllers per guild for pause/stop coordination
   private playbackControllers: Map<Snowflake, PlaybackControllerState> =
     new Map();
+
+  // Mode state tracking
+  private sessionModes: Map<Snowflake, VoiceMode> = new Map();
+  private conversationUsers: Map<Snowflake, string> = new Map();
+
+  // Interruption tracking
+  private interruptionCallbacks: Map<Snowflake, (userId: string) => void> =
+    new Map();
+
   private readonly controlKeywords: Record<VoiceControlCommand, string[]> = {
     [VoiceControlCommand.LEAVE]: [
       "leave",
@@ -102,6 +122,21 @@ export class VoiceAssistantManager {
       "go ahead",
       "carry on",
       "start again",
+    ],
+    [VoiceControlCommand.SWITCH_TO_CONVERSATION]: [
+      "switch to conversation mode",
+      "conversation mode",
+      "let's have a conversation",
+      "let's talk",
+      "start conversation",
+      "conversation",
+    ],
+    [VoiceControlCommand.SWITCH_TO_COMMAND]: [
+      "switch to command mode",
+      "command mode",
+      "back to commands",
+      "exit conversation",
+      "command",
     ],
   };
 
@@ -170,9 +205,11 @@ export class VoiceAssistantManager {
       throw new Error("Voice assistant is disabled");
     }
 
-
     // Join the voice channel
     const session = await this.connectionManager.joinChannel(channel);
+
+    // Initialize mode state
+    this.sessionModes.set(session.guildId, VoiceMode.COMMAND);
 
     // Register cleanup callback for when connection is lost
     this.connectionManager.onDisconnect(session.guildId, () => {
@@ -183,7 +220,13 @@ export class VoiceAssistantManager {
       this.audioProcessor.cleanup(session.sessionId);
       this.processingLocks.delete(session.guildId);
       this.playbackControllers.delete(session.guildId);
+      this.sessionModes.delete(session.guildId);
+      this.conversationUsers.delete(session.guildId);
+      this.interruptionCallbacks.delete(session.guildId);
     });
+
+    // Set up interruption detection
+    this.setupInterruptionDetection(session);
 
     // Start receiving audio
     this.startReceivingAudio(session);
@@ -228,16 +271,12 @@ export class VoiceAssistantManager {
     this.connectionManager.startReceiving(
       session.guildId,
       (userId, audioData) => {
-        // Process received audio
-        const chunk = this.audioProcessor.processAudio(
+        // Process received audio (buffers it, but don't transcribe until silence)
+        this.audioProcessor.processAudio(
           session.sessionId,
           audioData
         );
-
-        // If chunk is ready, transcribe it
-        if (chunk) {
-          this.handleAudioChunk(session, chunk, userId);
-        }
+        // Note: Transcription happens in processCompleteUtterance after silence is detected
       }
     );
   }
@@ -261,6 +300,8 @@ export class VoiceAssistantManager {
     /^uh\.?$/i,
     /^um\.?$/i,
     /^ah\.?$/i,
+    /^bye\.?$/i, // Common hallucination on silence/background noise
+    /^goodbye\.?$/i, // Common hallucination variant
   ];
 
   /**
@@ -279,19 +320,147 @@ export class VoiceAssistantManager {
       return true;
     }
 
-    // Check for repetitive patterns (same word/phrase repeated 3+ times)
-    // e.g., "All right. All right. All right."
+    // Check for transcriptions that are mostly "bye" or "goodbye" with filler words
+    // This catches cases like "Bye only the good day young. Bye."
     const words = normalized.split(/[\s.!?,;]+/).filter((w) => w.length > 0);
-    if (words.length >= 3) {
-      // Check if all words are the same
-      const uniqueWords = new Set(words);
-      if (uniqueWords.size === 1 || uniqueWords.size === 2) {
-        // Single word repeated, or alternating pattern - likely hallucination
+    const byeWords = words.filter(
+      (w) => w === "bye" || w === "goodbye" || w === "by"
+    );
+    if (byeWords.length > 0 && words.length <= 10) {
+      // If "bye" appears and the total word count is low, check if it's mostly filler
+      const byeRatio = byeWords.length / words.length;
+      // If "bye" makes up a significant portion (30%+) of short phrases, likely hallucination
+      if (byeRatio >= 0.3) {
+        return true;
+      }
+      // Also check if "bye" appears at both start and end (common hallucination pattern)
+      if (
+        (words[0] === "bye" || words[0] === "goodbye" || words[0] === "by") &&
+        (words[words.length - 1] === "bye" ||
+          words[words.length - 1] === "goodbye" ||
+          words[words.length - 1] === "by")
+      ) {
         return true;
       }
     }
 
+    // Check for simple repetitions like "Bye. Bye." or "Bye. Bye. Bye."
+    // Split by sentence boundaries and check for repeated sentences
+    const sentences = normalized
+      .split(/[.!?]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
+    if (sentences.length >= 2) {
+      // Check if all sentences are identical (e.g., "Bye. Bye.")
+      const uniqueSentences = new Set(sentences);
+      if (uniqueSentences.size === 1) {
+        return true;
+      }
+
+      // Check if there's a clear pattern of repetition (e.g., "A. B. A. B.")
+      if (sentences.length >= 4 && uniqueSentences.size === 2) {
+        // Check if it's an alternating pattern
+        const [first, second] = Array.from(uniqueSentences);
+        let isAlternating = true;
+        for (let i = 0; i < sentences.length; i++) {
+          const expected = i % 2 === 0 ? first : second;
+          if (sentences[i] !== expected) {
+            isAlternating = false;
+            break;
+          }
+        }
+        if (isAlternating) {
+          return true;
+        }
+      }
+
+      // Check if a sequence of sentences repeats (e.g., "A. B. C. A. B. C.")
+      // This catches cases like "I didn't mean it. I'm sorry. I didn't mean it. I'm sorry."
+      if (sentences.length >= 4) {
+        // Try sequences of 2 or more sentences that might repeat
+        for (
+          let seqLength = 2;
+          seqLength <= Math.floor(sentences.length / 2);
+          seqLength++
+        ) {
+          const firstSequence = sentences.slice(0, seqLength);
+          const firstSequenceText = firstSequence.join(" ");
+
+          // Check if this sequence appears again later
+          for (
+            let start = seqLength;
+            start <= sentences.length - seqLength;
+            start++
+          ) {
+            const laterSequence = sentences.slice(start, start + seqLength);
+            const laterSequenceText = laterSequence.join(" ");
+            if (firstSequenceText === laterSequenceText) {
+              // Found a repeated sequence - likely hallucination
+              return true;
+            }
+          }
+        }
+      }
+    }
+
+    // Check for repeated phrases (longer sequences that repeat)
+    // Reuse words array from earlier check (or create if not already created)
+    if (words.length >= 2) {
+      // Check for simple word repetition (e.g., "bye bye" or "bye bye bye")
+      const uniqueWords = new Set(words);
+      if (uniqueWords.size === 1) {
+        // Single word repeated - likely hallucination
+        return true;
+      }
+
+      // Check for phrase repetition by looking for subsequences
+      // If the text is long enough, check if a significant portion repeats
+      if (words.length >= 6) {
+        // Try to find if a phrase of 3+ words repeats
+        for (
+          let phraseLength = 3;
+          phraseLength <= Math.floor(words.length / 2);
+          phraseLength++
+        ) {
+          const firstPhrase = words.slice(0, phraseLength).join(" ");
+          // Check if this phrase appears again later in the text
+          const remainingText = words.slice(phraseLength).join(" ");
+          if (remainingText.includes(firstPhrase)) {
+            // Found a repeated phrase - likely hallucination
+            return true;
+          }
+        }
+      }
+    }
+
     return false;
+  }
+
+  /**
+   * Calculate RMS (Root Mean Square) of audio to check if it's actual speech
+   * Filters out silence and very quiet background noise
+   *
+   * @param audioData PCM audio buffer (16-bit samples)
+   * @returns RMS value (higher = louder)
+   */
+  private calculateAudioRMS(audioData: Buffer): number {
+    if (audioData.length === 0) {
+      return 0;
+    }
+
+    let sumSquares = 0;
+    const sampleCount = audioData.length / 2; // 16-bit samples = 2 bytes per sample
+
+    for (let i = 0; i < audioData.length - 1; i += 2) {
+      // Read 16-bit signed integer (little-endian)
+      const sample = audioData.readInt16LE(i);
+      sumSquares += sample * sample;
+    }
+
+    // RMS = sqrt(mean of squares)
+    const meanSquare = sumSquares / sampleCount;
+    return Math.sqrt(meanSquare);
   }
 
   /**
@@ -307,6 +476,17 @@ export class VoiceAssistantManager {
     userId: string
   ): Promise<void> {
     try {
+      // Check audio level before transcription to filter out silence/noise
+      const audioRMS = this.calculateAudioRMS(chunk.data);
+      if (audioRMS < AUDIO_CONSTANTS.MIN_AUDIO_RMS) {
+        this.logger.debug(
+          `Filtered low audio level: RMS=${Math.round(audioRMS)} (min=${
+            AUDIO_CONSTANTS.MIN_AUDIO_RMS
+          })`
+        );
+        return; // Skip transcription for silence/noise
+      }
+
       // Transcribe the audio
       const transcription = await this.transcriber.transcribe(chunk);
 
@@ -381,13 +561,84 @@ export class VoiceAssistantManager {
    * @param session Voice session
    */
   private async processCompleteUtterance(session: VoiceSession): Promise<void> {
-    const utterance = session.transcriptionBuffer.trim();
-
-    // Early exit if buffer is empty - don't log anything
-    if (!utterance) {
+    // Flush the complete audio buffer and transcribe it as one piece
+    const completeAudioChunk = this.audioProcessor.flushBuffer(session.sessionId);
+    
+    if (!completeAudioChunk) {
+      // No audio buffered, check if we have any text in transcription buffer
+      const utterance = session.transcriptionBuffer.trim();
+      if (!utterance) {
+        return; // Nothing to process
+      }
+      // Use existing transcription buffer if no new audio
+      session.transcriptionBuffer = "";
+      await this.processTranscriptionBuffer(session, utterance);
       return;
     }
 
+    // Check audio level before transcription
+    const audioRMS = this.calculateAudioRMS(completeAudioChunk.data);
+    if (audioRMS < AUDIO_CONSTANTS.MIN_AUDIO_RMS) {
+      this.logger.debug(
+        `Filtered low audio level in complete utterance: RMS=${Math.round(audioRMS)} (min=${AUDIO_CONSTANTS.MIN_AUDIO_RMS})`
+      );
+      return; // Skip transcription for silence/noise
+    }
+
+    // Transcribe the complete audio chunk
+    try {
+      const transcription = await this.transcriber.transcribe(completeAudioChunk);
+      
+      if (!transcription || transcription.trim().length === 0) {
+        return; // Ignore empty transcriptions
+      }
+
+      // Filter out Whisper hallucinations
+      if (this.isHallucination(transcription)) {
+        this.logger.debug(`Filtered hallucination: "${transcription}"`);
+        return;
+      }
+
+      // Filter out very short transcriptions (likely noise)
+      if (transcription.trim().length < 3) {
+        this.logger.debug(`Filtered short transcription: "${transcription}"`);
+        return;
+      }
+
+      // Get user ID - try to get from recent transcriptions, otherwise use first participant
+      const userId = session.transcriptions.length > 0 
+        ? session.transcriptions[session.transcriptions.length - 1]?.userId 
+        : Array.from(session.participants)[0] || "unknown";
+
+      this.logger.debug(`Complete utterance transcription: "${transcription}"`);
+
+      // Store transcription entry for logging/history
+      const entry: TranscriptionEntry = {
+        text: transcription,
+        timestamp: new Date(),
+        containsTriggerWord: false,
+        userId,
+      };
+      session.transcriptions.push(entry);
+      session.lastActivity = new Date();
+
+      // Process the complete transcription
+      await this.processTranscriptionBuffer(session, transcription.trim());
+    } catch (error) {
+      this.logger.error("Transcription error in complete utterance:", error);
+    }
+  }
+
+  /**
+   * Process transcription buffer (common logic for both chunked and complete utterances)
+   *
+   * @param session Voice session
+   * @param utterance Complete transcribed utterance
+   */
+  private async processTranscriptionBuffer(
+    session: VoiceSession,
+    utterance: string
+  ): Promise<void> {
     // Clear buffer immediately to prevent reprocessing
     session.transcriptionBuffer = "";
 
@@ -426,6 +677,41 @@ export class VoiceAssistantManager {
 
     this.logger.info(`${displayName}: "${utterance}"`);
 
+    // Get current mode
+    const currentMode =
+      this.sessionModes.get(session.guildId) || VoiceMode.COMMAND;
+    session.mode = currentMode;
+
+    // Get the user who spoke
+    const lastEntry = session.transcriptions[session.transcriptions.length - 1];
+    const userId =
+      lastEntry?.userId || Array.from(session.participants)[0] || "unknown";
+
+    // Check for conversation end phrases (only in conversation mode)
+    if (currentMode === VoiceMode.CONVERSATION) {
+      const conversationEndPhrases = [
+        "thanks",
+        "thank you",
+        "end conversation",
+        "that's all",
+        "we're done",
+        "that's it",
+        "all done",
+      ];
+      const normalizedUtterance = utterance.toLowerCase().trim();
+      if (
+        conversationEndPhrases.some((phrase) =>
+          normalizedUtterance.includes(phrase)
+        )
+      ) {
+        this.logger.info(
+          `Conversation end detected, switching to command mode`
+        );
+        await this.switchToCommandMode(session.guildId);
+        return;
+      }
+    }
+
     // Check for trigger word
     const triggerResult = this.triggerDetector.detect(utterance);
 
@@ -435,31 +721,99 @@ export class VoiceAssistantManager {
       }, word="${triggerResult.triggerWord || "none"}"`
     );
 
-    if (triggerResult.detected) {
-      // Play thinking sound when silence window closes and trigger word is detected
+    // In conversation mode, check if this is the same user continuing the conversation
+    let shouldProcess = false;
+    let query = utterance;
+
+    if (currentMode === VoiceMode.CONVERSATION) {
+      const activeConversationUser = this.conversationUsers.get(
+        session.guildId
+      );
+
+      if (triggerResult.detected) {
+        // Trigger word detected - start or restart conversation
+        query =
+          this.triggerDetector.extractQuery(
+            utterance,
+            triggerResult.position || 0,
+            triggerResult.triggerWord
+          ) || utterance;
+        shouldProcess = true;
+        this.conversationUsers.set(session.guildId, userId);
+        session.conversationUserId = userId;
+      } else if (activeConversationUser === userId) {
+        // Same user continuing conversation - no trigger word needed
+        shouldProcess = true;
+        query = utterance;
+      } else if (activeConversationUser && activeConversationUser !== userId) {
+        // Different user - end previous conversation and start new one
+        this.logger.info(
+          `New user ${userId} starting conversation, ending previous user ${activeConversationUser}'s conversation`
+        );
+        session.conversationHistory = [];
+        this.conversationUsers.set(session.guildId, userId);
+        session.conversationUserId = userId;
+        // Still need trigger word to start new conversation
+        if (triggerResult.detected) {
+          query =
+            this.triggerDetector.extractQuery(
+              utterance,
+              triggerResult.position || 0,
+              triggerResult.triggerWord
+            ) || utterance;
+          shouldProcess = true;
+        }
+      } else {
+        // No active conversation user - need trigger word
+        if (triggerResult.detected) {
+          query =
+            this.triggerDetector.extractQuery(
+              utterance,
+              triggerResult.position || 0,
+              triggerResult.triggerWord
+            ) || utterance;
+          shouldProcess = true;
+          this.conversationUsers.set(session.guildId, userId);
+          session.conversationUserId = userId;
+        }
+      }
+    } else {
+      // Command mode - require trigger word
+      if (triggerResult.detected) {
+        query =
+          this.triggerDetector.extractQuery(
+            utterance,
+            triggerResult.position || 0,
+            triggerResult.triggerWord
+          ) || utterance;
+        shouldProcess = true;
+      }
+    }
+
+    if (shouldProcess) {
+      // Play thinking sound when processing
       await this.playThinkingSound(session.guildId);
 
       // Set processing lock
       this.processingLocks.set(session.guildId, true);
 
       try {
-        // Extract query (text after trigger word)
-        const query = this.triggerDetector.extractQuery(
-          utterance,
-          triggerResult.position || 0,
-          triggerResult.triggerWord
+        this.logger.debug(`Processing query: "${query || "(empty)"}"`);
+
+        // Generate and speak response
+        await this.generateAndSpeakResponse(
+          session,
+          query || utterance,
+          userId
         );
-
-        this.logger.debug(`Extracted query: "${query || "(empty)"}"`);
-
-        // Generate and speak response (use utterance as fallback only if query is truly empty)
-        await this.generateAndSpeakResponse(session, query || utterance);
       } finally {
         // Release lock
         this.processingLocks.delete(session.guildId);
       }
     } else {
-      this.logger.debug("✗ No trigger word detected, ignoring utterance");
+      this.logger.debug(
+        "✗ No trigger word detected or not in conversation, ignoring utterance"
+      );
     }
   }
 
@@ -511,7 +865,7 @@ export class VoiceAssistantManager {
         return VoiceControlCommand.PAUSE;
       }
 
-      if (this.matchesCommand(normalizedUtterance, VoiceControlCommand.PLAY)) {
+      if (this.matchesPlayCommand(normalizedUtterance)) {
         this.logger.debug(
           "Resume command detected during playback (no trigger word required)"
         );
@@ -552,9 +906,40 @@ export class VoiceAssistantManager {
         return VoiceControlCommand.PAUSE;
       }
 
-      if (this.matchesCommand(text, VoiceControlCommand.PLAY)) {
+      if (this.matchesPlayCommand(text)) {
         return VoiceControlCommand.PLAY;
       }
+
+      // Check for mode switch commands
+      if (
+        this.matchesCommand(text, VoiceControlCommand.SWITCH_TO_CONVERSATION)
+      ) {
+        return VoiceControlCommand.SWITCH_TO_CONVERSATION;
+      }
+
+      if (this.matchesCommand(text, VoiceControlCommand.SWITCH_TO_COMMAND)) {
+        return VoiceControlCommand.SWITCH_TO_COMMAND;
+      }
+    }
+
+    // Also check mode switches without trigger word (for easier switching)
+    const currentMode =
+      this.sessionModes.get(session.guildId) || VoiceMode.COMMAND;
+    if (
+      this.matchesCommand(
+        normalizedUtterance,
+        VoiceControlCommand.SWITCH_TO_CONVERSATION
+      )
+    ) {
+      return VoiceControlCommand.SWITCH_TO_CONVERSATION;
+    }
+    if (
+      this.matchesCommand(
+        normalizedUtterance,
+        VoiceControlCommand.SWITCH_TO_COMMAND
+      )
+    ) {
+      return VoiceControlCommand.SWITCH_TO_COMMAND;
     }
 
     return null;
@@ -579,6 +964,70 @@ export class VoiceAssistantManager {
   private matchesCommand(text: string, command: VoiceControlCommand): boolean {
     const keywords = this.controlKeywords[command] || [];
     return keywords.some((keyword) => text.includes(keyword));
+  }
+
+  /**
+   * Special handling for PLAY command to avoid false positives with music queries.
+   * Only matches "play" if it's:
+   * 1. Just "play" by itself (or with common filler words)
+   * 2. Followed by playback-related words (resume, continue, etc.)
+   * 3. NOT followed by what looks like a song/artist name
+   */
+  private matchesPlayCommand(text: string): boolean {
+    const keywords = this.controlKeywords[VoiceControlCommand.PLAY] || [];
+
+    // Check for non-"play" keywords first (resume, continue, etc.)
+    const otherKeywords = keywords.filter((k) => k !== "play");
+    if (otherKeywords.some((keyword) => text.includes(keyword))) {
+      return true;
+    }
+
+    // Check if text contains "play"
+    if (!text.includes("play")) {
+      return false;
+    }
+
+    // If "play" is in the text, check if it's followed by a song/artist name
+    // Extract text after "play"
+    const playIndex = text.indexOf("play");
+    const afterPlay = text.substring(playIndex + 4).trim();
+
+    // If nothing after "play" or just common filler, it's a control command
+    if (!afterPlay || afterPlay.length === 0) {
+      return true;
+    }
+
+    // Common filler words that might appear after "play"
+    const fillerWords = [
+      "the",
+      "a",
+      "an",
+      "it",
+      "that",
+      "this",
+      "music",
+      "audio",
+      "sound",
+    ];
+    const firstWord = afterPlay.split(/\s+/)[0]?.toLowerCase();
+
+    // If it's a filler word, check if there's more substantial content
+    if (firstWord && fillerWords.includes(firstWord)) {
+      const rest = afterPlay.substring(firstWord.length).trim();
+      // If there's substantial content after the filler, it's likely a music query
+      if (rest.length > 3) {
+        return false;
+      }
+      return true;
+    }
+
+    // If "play" is followed by something substantial (more than 2 chars),
+    // it's likely a music query, not a control command
+    if (afterPlay.length > 2) {
+      return false;
+    }
+
+    return true;
   }
 
   private async handleVoiceControlCommand(
@@ -608,11 +1057,35 @@ export class VoiceAssistantManager {
         break;
       }
       case VoiceControlCommand.PLAY: {
-        if (!this.resumeActivePlayback(guildId)) {
-          this.logger.warn(
-            `Resume requested for guild ${guildId} but no active playback`
-          );
+        const session = this.connectionManager.getSession(guildId);
+        const currentMode = this.sessionModes.get(guildId) || VoiceMode.COMMAND;
+
+        // Try to resume playback first
+        const resumed = this.resumeActivePlayback(guildId);
+
+        if (!resumed) {
+          // If no playback to resume, check if we're in conversation mode
+          if (currentMode === VoiceMode.CONVERSATION && session) {
+            // In conversation mode, "continue" or "resume" without playback
+            // can be treated as the user wanting to continue the conversation
+            // This will be handled naturally by the next utterance processing
+            this.logger.debug(
+              `Resume command in conversation mode with no playback - will process next utterance`
+            );
+          } else {
+            this.logger.warn(
+              `Resume requested for guild ${guildId} but no active playback`
+            );
+          }
         }
+        break;
+      }
+      case VoiceControlCommand.SWITCH_TO_CONVERSATION: {
+        await this.switchToConversationMode(guildId);
+        break;
+      }
+      case VoiceControlCommand.SWITCH_TO_COMMAND: {
+        await this.switchToCommandMode(guildId);
         break;
       }
       default:
@@ -678,23 +1151,129 @@ export class VoiceAssistantManager {
   }
 
   /**
+   * Switch to conversation mode
+   *
+   * @param guildId Guild ID
+   */
+  private async switchToConversationMode(guildId: Snowflake): Promise<void> {
+    const session = this.connectionManager.getSession(guildId);
+    if (!session) {
+      this.logger.warn(`Cannot switch mode: no session for guild ${guildId}`);
+      return;
+    }
+
+    this.sessionModes.set(guildId, VoiceMode.CONVERSATION);
+    session.mode = VoiceMode.CONVERSATION;
+    this.logger.info(`Switched to conversation mode for guild ${guildId}`);
+
+    // Acknowledge mode switch with TTS
+    const acknowledgment = "Alright, switched to conversation mode";
+    await this.speakText(guildId, acknowledgment);
+  }
+
+  /**
+   * Switch to command mode
+   *
+   * @param guildId Guild ID
+   */
+  private async switchToCommandMode(guildId: Snowflake): Promise<void> {
+    const session = this.connectionManager.getSession(guildId);
+    if (!session) {
+      this.logger.warn(`Cannot switch mode: no session for guild ${guildId}`);
+      return;
+    }
+
+    this.sessionModes.set(guildId, VoiceMode.COMMAND);
+    session.mode = VoiceMode.COMMAND;
+
+    // Clear conversation history and user tracking
+    session.conversationHistory = [];
+    session.conversationUserId = undefined;
+    this.conversationUsers.delete(guildId);
+
+    this.logger.info(`Switched to command mode for guild ${guildId}`);
+
+    // Acknowledge mode switch with TTS
+    const acknowledgment = "Alright, switched to command mode";
+    await this.speakText(guildId, acknowledgment);
+  }
+
+  /**
+   * Speak text using TTS (for acknowledgments, etc.)
+   *
+   * @param guildId Guild ID
+   * @param text Text to speak
+   */
+  private async speakText(guildId: Snowflake, text: string): Promise<void> {
+    try {
+      const { chunkCount, chunkPromises } =
+        this.tts.createChunkSynthesisQueue(text);
+
+      if (chunkCount === 0) {
+        this.logger.warn("No TTS chunks generated for acknowledgment");
+        return;
+      }
+
+      await this.streamAndPlayChunks(guildId, chunkPromises, chunkCount);
+    } catch (error) {
+      this.logger.error("Error speaking text:", error);
+    }
+  }
+
+  /**
+   * Set up interruption detection for a session
+   *
+   * @param session Voice session
+   */
+  private setupInterruptionDetection(session: VoiceSession): void {
+    const { connection } = session;
+
+    // Listen for when users start speaking
+    connection.receiver.speaking.on("start", (userId) => {
+      // Only handle interruptions if bot is currently speaking
+      if (session.isSpeaking) {
+        this.logger.info(
+          `Interruption detected: user ${userId} started speaking while bot is speaking`
+        );
+
+        // Pause playback immediately
+        this.pauseActivePlayback(session.guildId);
+
+        // Abort current playback
+        const controller = this.playbackControllers.get(session.guildId);
+        if (controller) {
+          controller.aborted = true;
+        }
+
+        // Stop current playback
+        this.connectionManager.stopPlayback(session.guildId);
+
+        // Clear transcription buffer for this user to avoid processing partial utterance
+        // The new utterance will be captured in the next silence detection cycle
+      }
+    });
+  }
+
+  /**
    * Generate AI response and speak it in voice channel
    *
    * @param session Voice session
    * @param query User query
+   * @param userId User ID who made the query
    */
   private async generateAndSpeakResponse(
     session: VoiceSession,
-    query: string
+    query: string,
+    userId: string
   ): Promise<void> {
     try {
       this.logger.info(`Generating response for: "${query}"`);
 
-      // Get first participant (or use first user in channel)
-      const userId = Array.from(session.participants)[0] || "unknown";
+      const currentMode =
+        this.sessionModes.get(session.guildId) || VoiceMode.COMMAND;
 
       this.logger.debug(
-        `Calling AI with userId: ${userId}, guildId: ${session.guildId}`
+        `Calling AI with userId: ${userId}, guildId: ${session.guildId}, mode: ${currentMode}`
       );
 
       // Generate AI response with timeout
@@ -713,16 +1292,46 @@ export class VoiceAssistantManager {
       const responsePromise = this.aiManager.runWithGuildContext(
         session.guildId,
         async () => {
-          return await this.aiManager.generateVoiceResponse(
-            query,
-            userId,
-            "grok",
-            session.guildId,
-            {
-              personaKey: AI_CONSTANTS.DEFAULT_PERSONA,
-              channelId: session.channelId,
+          if (currentMode === VoiceMode.CONVERSATION) {
+            // In conversation mode, use generateText with history
+            // Initialize history if not present
+            if (!session.conversationHistory) {
+              session.conversationHistory = [];
             }
-          );
+
+            // Add user message to history
+            session.conversationHistory.push({ role: "user", content: query });
+
+            // Limit history to prevent token overflow
+            if (
+              session.conversationHistory.length >
+              CONVERSATION_CONSTANTS.MAX_HISTORY_TURNS * 2
+            ) {
+              session.conversationHistory = session.conversationHistory.slice(
+                -CONVERSATION_CONSTANTS.MAX_HISTORY_TURNS * 2
+              );
+            }
+
+            return await this.aiManager.generateText(query, userId, "grok", {
+              personaKey: AI_CONSTANTS.DEFAULT_PERSONA,
+              history: session.conversationHistory.slice(0, -1), // Exclude current user message
+              channelId: session.channelId,
+              useDiscordFormatting: false,
+              mode: "chat",
+            });
+          } else {
+            // Command mode - use generateVoiceResponse
+            return await this.aiManager.generateVoiceResponse(
+              query,
+              userId,
+              "grok",
+              session.guildId,
+              {
+                personaKey: AI_CONSTANTS.DEFAULT_PERSONA,
+                channelId: session.channelId,
+              }
+            );
+          }
         }
       );
 
@@ -739,6 +1348,17 @@ export class VoiceAssistantManager {
       if (!responseText || responseText.trim().length === 0) {
         this.logger.warn("Empty AI response, skipping TTS");
         return;
+      }
+
+      // Add bot response to conversation history in conversation mode
+      if (
+        currentMode === VoiceMode.CONVERSATION &&
+        session.conversationHistory
+      ) {
+        session.conversationHistory.push({
+          role: "assistant",
+          content: responseText,
+        });
       }
 
       this.logger.debug("Starting TTS generation...");

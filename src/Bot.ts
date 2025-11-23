@@ -7,7 +7,7 @@
 
 import { PostgreSQLManager } from "./database/PostgreSQLManager";
 import { Client, Collection, GatewayIntentBits } from "discord.js";
-import type { Interaction } from "discord.js";
+import type { Interaction, VoiceState } from "discord.js";
 import { config } from "./config";
 import type { Command } from "./types";
 import { CommandDeployer } from "./utils/CommandDeployer";
@@ -15,6 +15,8 @@ import { StateSyncService } from "./features/discord-sync/StateSyncService";
 import { ConversationWorkflowManager } from "./features/social-intelligence";
 import { MessageHandler } from "./features/chat-assistant";
 import { VoiceAssistantManager } from "./features/voice-assistant/VoiceAssistantManager";
+import { MediaPlayerManager } from "./features/media-player/MediaPlayerManager";
+import { VoiceConnectionManager } from "./features/voice-assistant/services/VoiceConnectionManager";
 
 export class Bot {
   public client: Client;
@@ -78,12 +80,23 @@ export class Bot {
 
     // Slash command interactions
     this.client.on("interactionCreate", async (interaction: Interaction) => {
+      // Handle button interactions for media player
+      if (interaction.isButton() && interaction.customId.startsWith("media_")) {
+        await this.handleMediaButton(interaction);
+        return;
+      }
+
       await this.handleInteraction(interaction);
     });
 
     // Message events (for AI assistant)
     this.client.on("messageCreate", async (message) => {
       await this.messageHandler?.handleMessage(message);
+    });
+
+    // Voice state updates - disconnect if everyone leaves
+    this.client.on("voiceStateUpdate", async (oldState: VoiceState, newState: VoiceState) => {
+      await this.handleVoiceStateUpdate(oldState, newState);
     });
   }
 
@@ -125,7 +138,57 @@ export class Bot {
     this.voiceAssistant = VoiceAssistantManager.getInstance();
     this.voiceAssistant.initialize(this.client);
 
+    // Initialize media player
+    const mediaPlayer = MediaPlayerManager.getInstance();
+    mediaPlayer.initialize(this.client);
+
     console.log("✅ All features initialized successfully");
+  }
+
+  /**
+   * Handle media player button interactions
+   */
+  private async handleMediaButton(interaction: any): Promise<void> {
+    if (!interaction.guildId || !interaction.channel) {
+      return;
+    }
+
+    try {
+      const mediaPlayer = MediaPlayerManager.getInstance();
+      
+      // For queue button, we need to reply ephemerally, so don't defer
+      if (interaction.customId === "media_queue") {
+        await mediaPlayer.handleButtonInteraction(
+          interaction.guildId,
+          interaction.customId,
+          interaction.channel,
+          interaction
+        );
+        return; // Don't defer update for queue button
+      }
+
+      await mediaPlayer.handleButtonInteraction(
+        interaction.guildId,
+        interaction.customId,
+        interaction.channel,
+        interaction
+      );
+
+      // Acknowledge interaction
+      await interaction.deferUpdate().catch(() => {
+        // Ignore if already acknowledged
+      });
+    } catch (error) {
+      console.error("[Bot] Error handling media button:", error);
+      try {
+        await interaction.reply({
+          content: "An error occurred while handling that action.",
+          ephemeral: true,
+        });
+      } catch {
+        // Ignore if interaction already handled
+      }
+    }
   }
 
   /**
@@ -183,6 +246,70 @@ export class Bot {
 
     this.commandDeployer = new CommandDeployer(config.botToken, this.commands);
     await this.commandDeployer.deploy(appId, config.guildId);
+  }
+
+  /**
+   * Handle voice state updates - disconnect if everyone leaves
+   */
+  private async handleVoiceStateUpdate(
+    oldState: VoiceState,
+    newState: VoiceState
+  ): Promise<void> {
+    // Only check when someone leaves a channel (not when they join or switch)
+    if (!oldState.channelId) {
+      return; // User wasn't in a channel before
+    }
+
+    // Check if bot is connected to this channel
+    const connectionManager = VoiceConnectionManager.getInstance();
+    const session = connectionManager.getSession(oldState.guild.id);
+    
+    if (!session || session.channelId !== oldState.channelId) {
+      return; // Bot is not connected to this channel
+    }
+
+    // Fetch the channel to get current member count
+    const channel = await oldState.guild.channels.fetch(oldState.channelId);
+    if (!channel || !channel.isVoiceBased()) {
+      return;
+    }
+
+    // Count members in the channel (excluding the bot)
+    const botId = this.client.user?.id;
+    const memberCount = channel.members.filter(
+      (member) => member.id !== botId
+    ).size;
+
+    // If no other members remain, disconnect
+    if (memberCount === 0) {
+      console.log(
+        `🔹 Everyone left voice channel ${channel.name} in ${oldState.guild.name}, disconnecting bot`
+      );
+
+      // Disconnect voice assistant
+      if (this.voiceAssistant?.isInVoiceChannel(oldState.guild.id)) {
+        try {
+          await this.voiceAssistant.leaveVoiceChannel(oldState.guild.id);
+        } catch (error) {
+          console.error(
+            `🔸 Error disconnecting voice assistant:`,
+            error
+          );
+        }
+      }
+
+      // Stop and disconnect media player
+      const mediaPlayer = MediaPlayerManager.getInstance();
+      try {
+        await mediaPlayer.stop(oldState.guild.id);
+        // Also disconnect the connection if media player was using it
+        if (connectionManager.isConnected(oldState.guild.id)) {
+          await connectionManager.leaveChannel(oldState.guild.id);
+        }
+      } catch (error) {
+        console.error(`🔸 Error stopping media player:`, error);
+      }
+    }
   }
 
   /**

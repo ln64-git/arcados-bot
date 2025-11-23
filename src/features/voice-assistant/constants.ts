@@ -12,12 +12,16 @@ export const AUDIO_CONSTANTS = {
   CHANNELS: 2, // Stereo
 
   // Chunk configuration
-  CHUNK_DURATION_MS: 1000, // 1 second chunks for transcription (reduced from 2s for faster response)
-  SILENCE_DURATION_MS: 600, // 600ms of silence = end of utterance (balanced for reliability)
+  CHUNK_DURATION_MS: 2000, // 2 second chunks for transcription (allows more context for natural speech)
+  SILENCE_DURATION_MS: 1200, // 1.2 seconds of silence = end of utterance (more forgiving for natural pauses)
 
   // Buffer limits (prevent memory leaks)
   MAX_BUFFER_DURATION_MS: 30000, // 30 seconds max buffer
   MAX_BUFFER_SIZE_BYTES: 5_760_000, // ~30s at 48kHz stereo 16-bit (5.76MB)
+
+  // Audio level thresholds (filter silence/noise before transcription)
+  MIN_AUDIO_RMS: 200, // Minimum RMS (Root Mean Square) to consider audio as speech
+  // RMS of 200 corresponds to roughly -46dB, more forgiving for quieter or less clear speech
 } as const;
 
 /**
@@ -144,4 +148,18 @@ export const TONE_CONSTANTS = {
 
   // Audio settings
   TONE_SAMPLE_RATE: 48000, // Match Discord voice
+} as const;
+
+/**
+ * Conversation Mode Constants
+ */
+export const CONVERSATION_CONSTANTS = {
+  // History management
+  MAX_HISTORY_TURNS: 10, // Maximum conversation turns to keep in history (20 messages total)
+
+  // Response timing
+  CONVERSATION_RESPONSE_DELAY_MS: 200, // Brief pause between responses in conversation mode
+
+  // Interruption handling
+  INTERRUPTION_DEBOUNCE_MS: 500, // Debounce time for interruption detection
 } as const;

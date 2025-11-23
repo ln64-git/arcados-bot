@@ -47,14 +47,14 @@ const CATEGORY_CONFIG: Record<
 export function computeResponsePolicy(input: PolicyInput): PolicyOutput {
   const mode = input.mode || "structured";
 
-  // For chat mode: keep responses tight and natural
+  // For chat mode: allow flexible, natural responses
   if (mode === "chat") {
     return {
       category: "medium",
       guidance:
-        "Keep responses concise and Discord-friendly - aim for clarity over length.",
-      maxTokens: 300, // Allow room for both conversational and info-formatted responses
-      temperatureNudge: 0,
+        "Respond naturally - be as brief or detailed as needed to fully understand and help. Match the user's intent.",
+      maxTokens: 600, // Allow more room for natural, understanding responses
+      temperatureNudge: 0.05, // Slightly more creative/adaptive
       applyGuidance: true,
     };
   }

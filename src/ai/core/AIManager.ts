@@ -26,6 +26,8 @@ import { dramaAnalysisTools } from "../tools/drama/DramaAnalysisTools";
 import { semanticSearchTools } from "../tools/search/SemanticSearchTools";
 import { storylineTools } from "../tools/storyline/StorylineTools";
 import { voiceTools } from "../tools/voice/VoiceTools";
+import { musicTools } from "../tools/music/MusicTools";
+import { mediaPlayerTools } from "../tools/media/MediaPlayerTools";
 import {
   computeResponsePolicy,
   type ConversationMode,
@@ -92,6 +94,8 @@ When sharing info about people:
     this.databaseTools.registerTools(semanticSearchTools);
     this.databaseTools.registerTools(storylineTools);
     this.databaseTools.registerTools(voiceTools);
+    this.databaseTools.registerTools(musicTools);
+    this.databaseTools.registerTools(mediaPlayerTools);
   }
 
   /**
@@ -203,11 +207,15 @@ When sharing info about people:
   ): Promise<AIResponse> {
     const db = await this.getDb();
 
-    const methodPrompt = `You are Arcados' live voice assistant speaking in a Discord call. Keep responses conversational, concise, and easy to speak aloud. Break ideas into short sentences.
+    const methodPrompt = `You are Arcados' live voice assistant speaking in a Discord call. Be natural, understanding, and genuinely helpful. 
 
-If the user asks you to leave the call, stop, pause, resume, or otherwise control playback, call the appropriate voice tool instead of narrating instructions. Never mention tool names aloud—just execute them. Only describe outcomes when necessary.
+Respond naturally to what the user is actually asking - don't be overly constrained. If they need clarification, ask questions. If they want a detailed explanation, provide it. If they want a quick answer, keep it brief. Match their energy and intent.
 
-Default to a calm, friendly tone. Avoid markdown styling beyond basic sentences.`;
+Speak conversationally and naturally - like you're actually talking to them, not reading a script. Use natural pauses and flow. You can elaborate when it helps understanding, or be brief when that's what they need.
+
+If the user asks you to leave the call, stop, pause, resume, or otherwise control playback, call the appropriate voice tool instead of narrating instructions. Never mention tool names aloud—just execute them naturally.
+
+Be friendly and engaging. Show that you understand what they're asking, even if it's not perfectly phrased. Ask for clarification if something is unclear rather than guessing wrong.`;
 
     return this.generateWithTools(
       methodPrompt,
