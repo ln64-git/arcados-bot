@@ -1,16 +1,15 @@
 import type { Client, VoiceState } from "discord.js";
 import { v4 as uuidv4 } from "uuid";
-import type { SurrealDBManager } from "../../database/SurrealDBManager";
-import type { DatabaseResult, SurrealChannel } from "../../database/schema";
-import { discordVoiceStateToSurreal } from "../../database/schema";
+import type { PostgreSQLManager, DatabaseResult } from "../../database/PostgreSQLManager";
+import { discordVoiceStateToPostgres } from "./voiceStateUtils";
 
 export class VoiceSessionTracker {
 	private client: Client;
-	private db: SurrealDBManager;
+	private db: PostgreSQLManager;
 	private sessionStartTimes = new Map<string, Date>(); // user_id:guild_id -> Date
 	private stateChangeTimers = new Map<string, NodeJS.Timeout>(); // user_id:guild_id -> Timer
 
-	constructor(client: Client, db: SurrealDBManager) {
+	constructor(client: Client, db: PostgreSQLManager) {
 		this.client = client;
 		this.db = db;
 	}
@@ -52,10 +51,8 @@ export class VoiceSessionTracker {
 						id: channelId,
 						guild_id: guild.id,
 						name: channel.name,
-						type: channel.type.toString(),
+						type: channel.type,
 						active: true,
-						created_at: new Date(),
-						updated_at: new Date(),
 					};
 
 					const result = await this.db.upsertChannel(channelData);
@@ -160,7 +157,7 @@ export class VoiceSessionTracker {
 		});
 
 		// Update voice state
-		const voiceStateData = discordVoiceStateToSurreal(newState);
+		const voiceStateData = discordVoiceStateToPostgres(newState);
 		voiceStateData.id = `${guildId}_${userId}`;
 		voiceStateData.session_id = sessionId;
 		voiceStateData.joined_at = new Date();
@@ -268,7 +265,7 @@ export class VoiceSessionTracker {
 		}
 
 		// Update voice state
-		const voiceStateData = discordVoiceStateToSurreal(newState);
+		const voiceStateData = discordVoiceStateToPostgres(newState);
 		voiceStateData.id = `${guildId}_${userId}`;
 		const result = await this.retryDatabaseOperation(() =>
 			this.db.upsertVoiceState(voiceStateData),
@@ -323,8 +320,8 @@ export class VoiceSessionTracker {
 		);
 
 		// Update voice state
-		const voiceStateData = discordVoiceStateToSurreal(newState);
-		voiceStateData.id = `${guildId}_${userId}`; // Use underscore instead of colon
+		const voiceStateData = discordVoiceStateToPostgres(newState);
+		voiceStateData.id = `${guildId}_${userId}`;
 		const result = await this.retryDatabaseOperation(() =>
 			this.db.upsertVoiceState(voiceStateData),
 		);
@@ -444,6 +441,10 @@ export class VoiceSessionTracker {
 	private async recordVoiceHistory(
 		historyData: Record<string, unknown>,
 	): Promise<void> {
+		// Generate UUID for history entry if not provided
+		if (!historyData.id) {
+			historyData.id = uuidv4();
+		}
 		const result = await this.db.createVoiceHistory(historyData);
 		if (!result.success) {
 			console.error("🔸 Failed to record voice history:", result.error);

@@ -12,6 +12,7 @@ import type {
   StreamResult,
   StreamOptions,
   SearchResult,
+  StreamState,
 } from "./types.js";
 import { STREAM_CONSTANTS } from "./constants.js";
 import { Page } from "puppeteer";

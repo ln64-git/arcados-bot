@@ -4,144 +4,141 @@ import type { VoiceChannelManager } from "../VoiceChannelManager";
 
 // Extend the Client interface to include voiceChannelManager
 interface BotClient {
-	voiceChannelManager?: VoiceChannelManager;
+  voiceChannelManager?: VoiceChannelManager;
 }
 
 export const banCommand: Command = {
-	data: new SlashCommandBuilder()
-		.setName("ban")
-		.setDescription("Ban a user from your voice channels")
-		.addUserOption((option) =>
-			option
-				.setName("user")
-				.setDescription("The user to ban")
-				.setRequired(true),
-		),
+  data: new SlashCommandBuilder()
+    .setName("ban")
+    .setDescription("Ban a user from your voice channels")
+    .addUserOption((option) =>
+      option.setName("user").setDescription("The user to ban").setRequired(true)
+    ),
 
-	async execute(interaction) {
-		if (!interaction.guild || !interaction.member) {
-			await interaction.reply({
-				content: "🔸 This command can only be used in a server.",
-				ephemeral: true,
-			});
-			return;
-		}
+  async execute(interaction) {
+    if (!interaction.guild || !interaction.member) {
+      await interaction.reply({
+        content: "🔸 This command can only be used in a server.",
+        ephemeral: true,
+      });
+      return;
+    }
 
-		const member = interaction.member;
-		const targetUser = interaction.options.getUser("user", true);
-		const voiceChannel = member.voice.channel;
+    const member = interaction.member;
+    if (!("voice" in member)) {
+      await interaction.reply({
+        content: "🔸 This command requires a guild member.",
+        ephemeral: true,
+      });
+      return;
+    }
 
-		if (!voiceChannel) {
-			await interaction.reply({
-				content: "🔸 You must be in a voice channel to use this command.",
-				ephemeral: true,
-			});
-			return;
-		}
+    const targetUser = interaction.options.getUser("user", true);
+    const voiceChannel = member.voice.channel;
 
-		// Get the voice channel manager from the bot
-		const bot = interaction.client as BotClient;
-		const voiceChannelManager = bot.voiceChannelManager;
+    if (!voiceChannel) {
+      await interaction.reply({
+        content: "🔸 You must be in a voice channel to use this command.",
+        ephemeral: true,
+      });
+      return;
+    }
 
-		if (!voiceChannelManager) {
-			await interaction.reply({
-				content: "🔸 Voice channel manager is not available.",
-				ephemeral: true,
-			});
-			return;
-		}
+    // Get the voice channel manager from the bot
+    const bot = interaction.client as BotClient;
+    const voiceChannelManager = bot.voiceChannelManager;
 
-		try {
-			// Check if this is a user channel and user is the owner
-			const channelResult = await voiceChannelManager.db.query(
-				"SELECT current_owner_id FROM channels WHERE id = $channel_id AND is_user_channel = true",
-				{ channel_id: voiceChannel.id },
-			);
+    if (!voiceChannelManager) {
+      await interaction.reply({
+        content: "🔸 Voice channel manager is not available.",
+        ephemeral: true,
+      });
+      return;
+    }
 
-			const channel =
-				((channelResult[0] as Record<string, unknown>)?.[0] as Record<
-					string,
-					unknown
-				>) || {};
-			const currentOwnerId = channel.current_owner_id as string;
+    try {
+      // Check if this is a user channel and user is the owner
+      const ownerResult = await voiceChannelManager.getChannelOwner(
+        voiceChannel.id
+      );
 
-			if (!currentOwnerId) {
-				await interaction.reply({
-					content: "🔸 This is not a user-owned voice channel.",
-					ephemeral: true,
-				});
-				return;
-			}
+      if (!ownerResult.success || !ownerResult.data) {
+        await interaction.reply({
+          content: "🔸 This is not a user-owned voice channel.",
+          ephemeral: true,
+        });
+        return;
+      }
 
-			if (currentOwnerId !== member.id) {
-				await interaction.reply({
-					content: "🔸 You are not the owner of this channel.",
-					ephemeral: true,
-				});
-				return;
-			}
+      if (ownerResult.data !== member.user.id) {
+        await interaction.reply({
+          content: "🔸 You are not the owner of this channel.",
+          ephemeral: true,
+        });
+        return;
+      }
 
-			// Load current preferences
-			const preferencesResult = await voiceChannelManager.loadUserPreferences(
-				member.id,
-				interaction.guild.id,
-			);
-			if (!preferencesResult.success) {
-				await interaction.reply({
-					content: `🔸 Failed to load preferences: ${preferencesResult.error}`,
-					ephemeral: true,
-				});
-				return;
-			}
+      // Load current preferences
+      const preferencesResult = await voiceChannelManager.loadUserPreferences(
+        member.user.id,
+        interaction.guild.id
+      );
+      if (!preferencesResult.success) {
+        await interaction.reply({
+          content: `🔸 Failed to load preferences: ${preferencesResult.error}`,
+          ephemeral: true,
+        });
+        return;
+      }
 
-			const preferences = preferencesResult.data || {};
-			const bannedUsers = preferences.banned_users || [];
+      const preferences = preferencesResult.data || {};
+      const bannedUsers = (preferences.banned_users as string[]) || [];
 
-			// Check if already banned
-			if (bannedUsers.includes(targetUser.id)) {
-				await interaction.reply({
-					content: `🔸 **${targetUser.displayName}** is already banned from your channels.`,
-					ephemeral: true,
-				});
-				return;
-			}
+      // Check if already banned
+      if (bannedUsers.includes(targetUser.id)) {
+        await interaction.reply({
+          content: `🔸 **${targetUser.displayName}** is already banned from your channels.`,
+          ephemeral: true,
+        });
+        return;
+      }
 
-			// Add to ban list
-			bannedUsers.push(targetUser.id);
-			const updatedPreferences = { ...preferences, banned_users: bannedUsers };
+      // Add to ban list
+      bannedUsers.push(targetUser.id);
+      const updatedPreferences = { ...preferences, banned_users: bannedUsers };
 
-			const updateResult = await voiceChannelManager.updateUserPreferences(
-				member.id,
-				interaction.guild.id,
-				updatedPreferences,
-			);
+      const updateResult = await voiceChannelManager.updateUserPreferences(
+        member.user.id,
+        interaction.guild.id,
+        updatedPreferences
+      );
 
-			if (!updateResult.success) {
-				await interaction.reply({
-					content: `🔸 Failed to update ban list: ${updateResult.error}`,
-					ephemeral: true,
-				});
-				return;
-			}
+      if (!updateResult.success) {
+        await interaction.reply({
+          content: `🔸 Failed to update ban list: ${updateResult.error}`,
+          ephemeral: true,
+        });
+        return;
+      }
 
-			// Kick user if currently in channel
-			const targetMember = voiceChannel.members.get(targetUser.id);
-			if (targetMember) {
-				await targetMember.voice.disconnect(
-					"You have been banned from this channel",
-				);
-			}
+      // Kick user if currently in channel
+      const targetMember = voiceChannel.members.get(targetUser.id);
+      if (targetMember) {
+        await targetMember.voice.disconnect(
+          "You have been banned from this channel"
+        );
+      }
 
-			await interaction.reply({
-				content: `🔹 Banned **${targetUser.displayName}** from your voice channels.`,
-				ephemeral: false,
-			});
-		} catch (error) {
-			console.error("🔸 Error in ban command:", error);
-			await interaction.reply({
-				content: "🔸 An error occurred while trying to ban the user.",
-				ephemeral: true,
-			});
-		}
-	},
+      await interaction.reply({
+        content: `🔹 Banned **${targetUser.displayName}** from your voice channels.`,
+        ephemeral: false,
+      });
+    } catch (error) {
+      console.error("🔸 Error in ban command:", error);
+      await interaction.reply({
+        content: "🔸 An error occurred while trying to ban the user.",
+        ephemeral: true,
+      });
+    }
+  },
 };

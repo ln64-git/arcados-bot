@@ -158,7 +158,7 @@ export class PostgreSQLManager {
       });
 
       // Register pgvector types for every client from the pool
-      this.pool.on('connect', async (client) => {
+      this.pool.on("connect", async (client) => {
         await pgvector.registerType(client);
       });
 
@@ -457,6 +457,106 @@ export class PostgreSQLManager {
 				ADD COLUMN IF NOT EXISTS last_full_sync TIMESTAMP WITH TIME ZONE
 			`);
 
+      // Add voice channel ownership columns
+      await client.query(`
+				ALTER TABLE channels
+				ADD COLUMN IF NOT EXISTS is_user_channel BOOLEAN DEFAULT false,
+				ADD COLUMN IF NOT EXISTS current_owner_id VARCHAR(20)
+			`);
+
+      // Voice channel preferences - user preferences for voice channels
+      await client.query(`
+				CREATE TABLE IF NOT EXISTS voice_channel_preferences (
+					guild_id VARCHAR(20) NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+					user_id VARCHAR(20) NOT NULL,
+					channel_name VARCHAR(100),
+					default_user_limit INTEGER,
+					privacy_mode VARCHAR(20) DEFAULT 'public',
+					banned_users TEXT[] DEFAULT '{}',
+					muted_users TEXT[] DEFAULT '{}',
+					deafened_users TEXT[] DEFAULT '{}',
+					created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					PRIMARY KEY (guild_id, user_id)
+				)
+			`);
+
+      // Voice channel ownership history - track ownership changes
+      await client.query(`
+				CREATE TABLE IF NOT EXISTS voice_channel_ownership (
+					id VARCHAR(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+					guild_id VARCHAR(20) NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+					channel_id VARCHAR(20) NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+					user_id VARCHAR(20) NOT NULL,
+					owned_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					relinquished_at TIMESTAMP WITH TIME ZONE
+				)
+			`);
+
+      // Voice sessions - tracks user voice channel sessions
+      await client.query(`
+				CREATE TABLE IF NOT EXISTS voice_sessions (
+					id VARCHAR(50) PRIMARY KEY,
+					guild_id VARCHAR(20) NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+					user_id VARCHAR(20) NOT NULL,
+					channel_id VARCHAR(20) NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+					joined_at TIMESTAMP WITH TIME ZONE NOT NULL,
+					left_at TIMESTAMP WITH TIME ZONE,
+					duration INTEGER DEFAULT 0,
+					time_muted INTEGER DEFAULT 0,
+					time_deafened INTEGER DEFAULT 0,
+					time_streaming INTEGER DEFAULT 0,
+					owner_at_join BOOLEAN DEFAULT false,
+					is_grandfathered BOOLEAN DEFAULT false,
+					applied_moderation JSONB DEFAULT '{}',
+					active BOOLEAN DEFAULT true,
+					created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+				)
+			`);
+
+      // Voice states - current voice state of users
+      await client.query(`
+				CREATE TABLE IF NOT EXISTS voice_states (
+					id VARCHAR(50) PRIMARY KEY,
+					guild_id VARCHAR(20) NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+					user_id VARCHAR(20) NOT NULL,
+					channel_id VARCHAR(20) REFERENCES channels(id) ON DELETE CASCADE,
+					session_id VARCHAR(50) REFERENCES voice_sessions(id) ON DELETE SET NULL,
+					self_mute BOOLEAN DEFAULT false,
+					self_deaf BOOLEAN DEFAULT false,
+					server_mute BOOLEAN DEFAULT false,
+					server_deaf BOOLEAN DEFAULT false,
+					streaming BOOLEAN DEFAULT false,
+					self_video BOOLEAN DEFAULT false,
+					joined_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					UNIQUE(guild_id, user_id)
+				)
+			`);
+
+      // Voice history - historical events for voice state changes
+      await client.query(`
+				CREATE TABLE IF NOT EXISTS voice_history (
+					id VARCHAR(50) PRIMARY KEY,
+					guild_id VARCHAR(20) NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+					user_id VARCHAR(20) NOT NULL,
+					channel_id VARCHAR(20) REFERENCES channels(id) ON DELETE CASCADE,
+					event_type VARCHAR(20) NOT NULL,
+					from_channel_id VARCHAR(20),
+					to_channel_id VARCHAR(20),
+					session_id VARCHAR(50),
+					self_mute BOOLEAN DEFAULT false,
+					self_deaf BOOLEAN DEFAULT false,
+					server_mute BOOLEAN DEFAULT false,
+					server_deaf BOOLEAN DEFAULT false,
+					streaming BOOLEAN DEFAULT false,
+					self_video BOOLEAN DEFAULT false,
+					timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+				)
+			`);
+
       // Create indexes for better performance
       await client.query(`
 				CREATE INDEX IF NOT EXISTS idx_channels_guild_id ON channels(guild_id);
@@ -489,6 +589,21 @@ export class PostgreSQLManager {
 				CREATE INDEX IF NOT EXISTS conversation_segments_embedding_idx
 					ON conversation_segments USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
 					WHERE embedding IS NOT NULL;
+				CREATE INDEX IF NOT EXISTS idx_voice_sessions_guild_id ON voice_sessions(guild_id);
+				CREATE INDEX IF NOT EXISTS idx_voice_sessions_user_id ON voice_sessions(user_id);
+				CREATE INDEX IF NOT EXISTS idx_voice_sessions_channel_id ON voice_sessions(channel_id);
+				CREATE INDEX IF NOT EXISTS idx_voice_sessions_active ON voice_sessions(active) WHERE active = true;
+				CREATE INDEX IF NOT EXISTS idx_voice_states_guild_id ON voice_states(guild_id);
+				CREATE INDEX IF NOT EXISTS idx_voice_states_user_id ON voice_states(user_id);
+				CREATE INDEX IF NOT EXISTS idx_voice_states_channel_id ON voice_states(channel_id);
+				CREATE INDEX IF NOT EXISTS idx_voice_history_guild_id ON voice_history(guild_id);
+				CREATE INDEX IF NOT EXISTS idx_voice_history_user_id ON voice_history(user_id);
+				CREATE INDEX IF NOT EXISTS idx_voice_history_timestamp ON voice_history(timestamp DESC);
+				CREATE INDEX IF NOT EXISTS idx_channels_is_user_channel ON channels(is_user_channel) WHERE is_user_channel = true;
+				CREATE INDEX IF NOT EXISTS idx_channels_current_owner_id ON channels(current_owner_id);
+				CREATE INDEX IF NOT EXISTS idx_voice_channel_preferences_guild_user ON voice_channel_preferences(guild_id, user_id);
+				CREATE INDEX IF NOT EXISTS idx_voice_channel_ownership_channel ON voice_channel_ownership(channel_id);
+				CREATE INDEX IF NOT EXISTS idx_voice_channel_ownership_user ON voice_channel_ownership(user_id);
 			`);
     } catch (error) {
       console.error("🔸 Failed to initialize PostgreSQL schema:", error);
@@ -1685,7 +1800,12 @@ export class PostgreSQLManager {
         ORDER BY last_activity_at DESC
         LIMIT $3 OFFSET $4
       `;
-      const result = await client.query(query, [guildId, [userId], limit, offset]);
+      const result = await client.query(query, [
+        guildId,
+        [userId],
+        limit,
+        offset,
+      ]);
       return { success: true, data: result.rows };
     } catch (error) {
       console.error("🔸 Failed to get user conversation history:", error);
@@ -2120,6 +2240,320 @@ export class PostgreSQLManager {
       return { success: true, data: embeddingMap };
     } catch (error) {
       console.error("🔸 Failed to check embeddings exist:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  // ============================================================================
+  // Voice Session Operations
+  // ============================================================================
+
+  /**
+   * Create a new voice session
+   */
+  async createVoiceSession(
+    sessionData: Record<string, unknown>
+  ): Promise<DatabaseResult<any>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        INSERT INTO voice_sessions (
+          id, guild_id, user_id, channel_id, joined_at, left_at,
+          duration, time_muted, time_deafened, time_streaming,
+          owner_at_join, is_grandfathered, applied_moderation, active
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        RETURNING *
+      `;
+
+      const values = [
+        sessionData.id,
+        sessionData.guild_id,
+        sessionData.user_id,
+        sessionData.channel_id,
+        sessionData.joined_at,
+        sessionData.left_at || null,
+        sessionData.duration || 0,
+        sessionData.time_muted || 0,
+        sessionData.time_deafened || 0,
+        sessionData.time_streaming || 0,
+        sessionData.owner_at_join || false,
+        sessionData.is_grandfathered || false,
+        JSON.stringify(sessionData.applied_moderation || {}),
+        sessionData.active !== undefined ? sessionData.active : true,
+      ];
+
+      const result = await client.query(query, values);
+      return { success: true, data: result.rows[0] };
+    } catch (error) {
+      console.error("🔸 Failed to create voice session:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get active voice session for a user in a guild
+   */
+  async getActiveVoiceSession(
+    userId: string,
+    guildId: string
+  ): Promise<DatabaseResult<any>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        SELECT * FROM voice_sessions
+        WHERE user_id = $1 AND guild_id = $2 AND active = true
+        ORDER BY joined_at DESC
+        LIMIT 1
+      `;
+
+      const result = await client.query(query, [userId, guildId]);
+      return {
+        success: true,
+        data: result.rows[0] || null,
+      };
+    } catch (error) {
+      console.error("🔸 Failed to get active voice session:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Update voice session
+   */
+  async updateVoiceSession(
+    sessionId: string,
+    updates: Record<string, unknown>
+  ): Promise<DatabaseResult<void>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const updateFields: string[] = [];
+      const values: any[] = [];
+      let paramIndex = 1;
+
+      for (const [key, value] of Object.entries(updates)) {
+        if (key === "applied_moderation" && typeof value === "object") {
+          updateFields.push(`${key} = $${paramIndex}::jsonb`);
+          values.push(JSON.stringify(value));
+        } else {
+          updateFields.push(`${key} = $${paramIndex}`);
+          values.push(value);
+        }
+        paramIndex++;
+      }
+
+      if (updateFields.length === 0) {
+        return { success: true };
+      }
+
+      updateFields.push(`updated_at = NOW()`);
+      values.push(sessionId);
+
+      const query = `
+        UPDATE voice_sessions
+        SET ${updateFields.join(", ")}
+        WHERE id = $${paramIndex}
+      `;
+
+      await client.query(query, values);
+      return { success: true };
+    } catch (error) {
+      console.error("🔸 Failed to update voice session:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Upsert voice state
+   */
+  async upsertVoiceState(
+    voiceStateData: Record<string, unknown>
+  ): Promise<DatabaseResult<any>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        INSERT INTO voice_states (
+          id, guild_id, user_id, channel_id, session_id,
+          self_mute, self_deaf, server_mute, server_deaf,
+          streaming, self_video, joined_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ON CONFLICT (guild_id, user_id) DO UPDATE SET
+          channel_id = EXCLUDED.channel_id,
+          session_id = EXCLUDED.session_id,
+          self_mute = EXCLUDED.self_mute,
+          self_deaf = EXCLUDED.self_deaf,
+          server_mute = EXCLUDED.server_mute,
+          server_deaf = EXCLUDED.server_deaf,
+          streaming = EXCLUDED.streaming,
+          self_video = EXCLUDED.self_video,
+          joined_at = EXCLUDED.joined_at,
+          updated_at = NOW()
+        RETURNING *
+      `;
+
+      const values = [
+        voiceStateData.id,
+        voiceStateData.guild_id,
+        voiceStateData.user_id,
+        voiceStateData.channel_id || null,
+        voiceStateData.session_id || null,
+        voiceStateData.self_mute || false,
+        voiceStateData.self_deaf || false,
+        voiceStateData.server_mute || false,
+        voiceStateData.server_deaf || false,
+        voiceStateData.streaming || false,
+        voiceStateData.self_video || false,
+        voiceStateData.joined_at || new Date(),
+      ];
+
+      const result = await client.query(query, values);
+      return { success: true, data: result.rows[0] };
+    } catch (error) {
+      console.error("🔸 Failed to upsert voice state:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Delete voice state
+   */
+  async deleteVoiceState(voiceStateId: string): Promise<DatabaseResult<void>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `DELETE FROM voice_states WHERE id = $1`;
+      await client.query(query, [voiceStateId]);
+      return { success: true };
+    } catch (error) {
+      console.error("🔸 Failed to delete voice state:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get active voice states for a guild
+   */
+  async getActiveVoiceStates(guildId: string): Promise<DatabaseResult<any[]>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        SELECT * FROM voice_states
+        WHERE guild_id = $1 AND channel_id IS NOT NULL
+        ORDER BY joined_at DESC
+      `;
+
+      const result = await client.query(query, [guildId]);
+      return { success: true, data: result.rows };
+    } catch (error) {
+      console.error("🔸 Failed to get active voice states:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Create voice history entry
+   */
+  async createVoiceHistory(
+    historyData: Record<string, unknown>
+  ): Promise<DatabaseResult<any>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+        INSERT INTO voice_history (
+          id, guild_id, user_id, channel_id, event_type,
+          from_channel_id, to_channel_id, session_id,
+          self_mute, self_deaf, server_mute, server_deaf,
+          streaming, self_video, timestamp
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        RETURNING *
+      `;
+
+      const values = [
+        historyData.id,
+        historyData.guild_id,
+        historyData.user_id,
+        historyData.channel_id || null,
+        historyData.event_type,
+        historyData.from_channel_id || null,
+        historyData.to_channel_id || null,
+        historyData.session_id || null,
+        historyData.self_mute || false,
+        historyData.self_deaf || false,
+        historyData.server_mute || false,
+        historyData.server_deaf || false,
+        historyData.streaming || false,
+        historyData.self_video || false,
+        historyData.timestamp || new Date(),
+      ];
+
+      const result = await client.query(query, values);
+      return { success: true, data: result.rows[0] };
+    } catch (error) {
+      console.error("🔸 Failed to create voice history:", error);
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",

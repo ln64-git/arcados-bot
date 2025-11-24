@@ -152,9 +152,8 @@ export const streamContentTool: DatabaseTool = {
 
           return {
             success: true,
-            message: formattedMessage,
+            formatted: formattedMessage,
             summary: `Found ${result.searchResults.length} results. Waiting for user selection. When user replies with a number, call selectStreamResult tool.`,
-            formatted: formattedMessage, // Ensure formatted field is set for display
             data: {
               searchResults: result.searchResults,
               requiresSelection: true,
@@ -164,7 +163,7 @@ export const streamContentTool: DatabaseTool = {
 
         return {
           success: true,
-          message: result.message,
+          formatted: result.message,
           summary: `Started streaming "${query}"`,
         };
       } else {
@@ -257,7 +256,7 @@ export const selectStreamResultTool: DatabaseTool = {
       if (result.success) {
         return {
           success: true,
-          message: result.message,
+          formatted: result.message,
           summary: `Selected and started streaming option ${selectionIndex}`,
         };
       } else {
@@ -296,13 +295,12 @@ export const stopStreamTool: DatabaseTool = {
       }
 
       const streamManager = StreamPlayerManager.getInstance();
-      
+
       // Check if a stream is active (in any state)
       if (!streamManager.isStreaming(context.guildId)) {
         return {
           success: false,
           error: "No stream is currently active",
-          message: "There is no active stream to stop.",
         };
       }
 
@@ -311,7 +309,7 @@ export const stopStreamTool: DatabaseTool = {
 
       return {
         success: true,
-        message: "✅ Stream stopped successfully.",
+        formatted: "✅ Stream stopped successfully.",
         summary: "Stopped the current stream",
       };
     } catch (error) {
@@ -417,9 +415,8 @@ export const searchYouTubeTool: DatabaseTool = {
 
         return {
           success: true,
-          message: formattedMessage,
-          summary: `Found ${searchResults.length} YouTube results (returning existing results).`,
           formatted: formattedMessage,
+          summary: `Found ${searchResults.length} YouTube results (returning existing results).`,
           data: {
             searchResults,
             requiresSelection: true,
@@ -533,9 +530,8 @@ export const searchYouTubeTool: DatabaseTool = {
 
             return {
               success: true,
-              message: formattedMessage,
-              summary: `Found ${result.searchResults.length} YouTube results. Waiting for user selection.`,
               formatted: formattedMessage,
+              summary: `Found ${result.searchResults.length} YouTube results. Waiting for user selection.`,
               data: {
                 searchResults: result.searchResults,
                 requiresSelection: true,
@@ -545,7 +541,7 @@ export const searchYouTubeTool: DatabaseTool = {
 
           return {
             success: true,
-            message: result.message,
+            formatted: result.message,
             summary: `Started streaming YouTube video "${query}"`,
           };
         } else {
@@ -679,9 +675,8 @@ export const searchJellyfinTool: DatabaseTool = {
 
           return {
             success: true,
-            message: formattedMessage,
-            summary: `Found ${result.searchResults.length} Jellyfin results. Waiting for user selection. When user replies with a number, call selectStreamResult tool.`,
             formatted: formattedMessage,
+            summary: `Found ${result.searchResults.length} Jellyfin results. Waiting for user selection. When user replies with a number, call selectStreamResult tool.`,
             data: {
               searchResults: result.searchResults,
               requiresSelection: true,
@@ -691,7 +686,7 @@ export const searchJellyfinTool: DatabaseTool = {
 
         return {
           success: true,
-          message: result.message,
+          formatted: result.message,
           summary: `Started streaming Jellyfin content "${query}"`,
         };
       } else {
