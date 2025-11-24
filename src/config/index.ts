@@ -59,6 +59,22 @@ export interface BotConfig {
   cartesiaApiKey?: string;
   cartesiaVoiceId?: string;
   cartesiaModel?: string;
+
+  // Stream Player settings
+  streamPlayerEnabled: boolean;
+  streamPlayerHeadless: boolean;
+  streamPlayerTimeout: number;
+  streamPlayerMaxDuration: number;
+  streamPlayerUserEmail?: string; // Discord user account email for Go Live streaming
+  streamPlayerUserPassword?: string; // Discord user account password for Go Live streaming
+  streamPlayerUserToken?: string; // Alternative: Discord user account token (if using token auth)
+  streamPlayerUserAgent?: string;
+  streamPlayerTestOnInit: boolean; // Test Discord streaming workflow on bot initialization
+
+  // Jellyfin settings
+  jellyfinServerUrl?: string; // Jellyfin server base URL
+  jellyfinApiKey?: string; // API key for authentication
+  jellyfinUserId?: string; // User ID (optional, can be derived from API key)
 }
 
 function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
@@ -182,6 +198,36 @@ function validateConfig(): BotConfig {
     cartesiaApiKey: process.env.CARTESIA_API_KEY || undefined,
     cartesiaVoiceId: process.env.CARTESIA_VOICE_ID || undefined,
     cartesiaModel: process.env.CARTESIA_MODEL || undefined,
+
+    // Stream Player settings
+    streamPlayerEnabled: parseBoolean(process.env.STREAM_PLAYER_ENABLED, true),
+    streamPlayerHeadless: parseBoolean(
+      process.env.STREAM_PLAYER_HEADLESS,
+      true
+    ),
+    streamPlayerTimeout: Number.parseInt(
+      process.env.STREAM_PLAYER_TIMEOUT || "30000",
+      10
+    ),
+    streamPlayerMaxDuration: Number.parseInt(
+      process.env.STREAM_PLAYER_MAX_DURATION || "43200000",
+      10
+    ), // 12 hours default
+    streamPlayerUserEmail: process.env.STREAM_PLAYER_USER_EMAIL || undefined,
+    streamPlayerUserPassword: process.env.STREAM_PLAYER_USER_PASSWORD || undefined,
+    streamPlayerUserToken: process.env.STREAM_PLAYER_USER_TOKEN || undefined,
+    streamPlayerUserAgent:
+      process.env.STREAM_PLAYER_USER_AGENT ||
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    streamPlayerTestOnInit: parseBoolean(
+      process.env.STREAM_PLAYER_TEST_ON_INIT,
+      true
+    ),
+
+    // Jellyfin settings
+    jellyfinServerUrl: process.env.JELLYFIN_SERVER_URL || undefined,
+    jellyfinApiKey: process.env.JELLYFIN_API_KEY || undefined,
+    jellyfinUserId: process.env.JELLYFIN_USER_ID || undefined,
   };
 
   // Validate node environment

@@ -54,6 +54,68 @@ export class MessageHandler {
         return;
       }
 
+      // Check for stream selection first (even if not a reply)
+      // Only match single digits or small numbers (1-99) to avoid matching Discord IDs
+      const rawContent = message.content.trim();
+      console.log(`[MessageHandler] Raw message content: "${rawContent}"`);
+      const numberMatch = rawContent.match(/^\s*(\d{1,2})\s*$/);
+      if (numberMatch) {
+        const selectionNumber = parseInt(numberMatch[1], 10);
+        // Only process if it's a reasonable selection number (1-20)
+        if (selectionNumber < 1 || selectionNumber > 20) {
+          console.log(`[MessageHandler] Number ${selectionNumber} is out of range for selection, ignoring`);
+        } else {
+          console.log(`[MessageHandler] Detected number-only message: ${selectionNumber}`);
+        
+        try {
+          const { StreamPlayerManager } = await import("../../features/stream-player/StreamPlayerManager");
+          const streamManager = StreamPlayerManager.getInstance();
+          const activeSession = streamManager.getActiveSession(message.guildId!);
+          
+          console.log(`[MessageHandler] Active session check:`, {
+            hasActiveSession: !!activeSession,
+            sessionState: activeSession?.state,
+            hasPendingResults: !!(activeSession as any)?.pendingSearchResults,
+            guildId: activeSession?.guildId,
+            messageGuildId: message.guildId,
+            query: activeSession?.query,
+          });
+          
+          if (activeSession && 
+              activeSession.state === "searching" && 
+              (activeSession as any).pendingSearchResults) {
+            console.log(`[MessageHandler] Processing stream selection ${selectionNumber} for guild ${message.guildId}`);
+            const result = await streamManager.streamWithSelection(
+              message.guildId!,
+              selectionNumber
+            );
+            
+            console.log(`[MessageHandler] streamWithSelection result:`, {
+              success: result.success,
+              message: result.message,
+              error: result.error,
+            });
+            
+            if (result.success) {
+              await message.reply(result.message);
+              return;
+            } else {
+              await message.reply(result.message || result.error || "Failed to process selection");
+              return;
+            }
+          } else {
+            console.log(`[MessageHandler] No active stream session waiting for selection`, {
+              hasSession: !!activeSession,
+              state: activeSession?.state,
+              hasPending: !!(activeSession as any)?.pendingSearchResults,
+            });
+          }
+        } catch (error) {
+          console.error("[MessageHandler] Error checking stream selection:", error);
+        }
+        } // Close the selectionNumber range check
+      }
+
       // Handle chat session continuation (replies to bot messages)
       const refId = message.reference?.messageId;
       if (refId) {
@@ -169,19 +231,24 @@ export class MessageHandler {
     message: Message,
     refId: string
   ): Promise<void> {
+    console.log(`[MessageHandler] handleSessionContinuation called: refId=${refId}, content="${message.content}"`);
+    
     const found = getSessionByRepliedMessageId(refId);
     if (!found) {
+      console.log(`[MessageHandler] No session found for refId ${refId}`);
       return;
     }
 
     // Ignore replies with no meaningful text
     const rawReplyText = (message.content || "").trim();
     if (!rawReplyText) {
+      console.log("[MessageHandler] Empty reply text");
       return;
     }
 
     const textWithoutUserMentions = rawReplyText.replace(/<@!?\d+>/g, "");
     if (textWithoutUserMentions.trim().length === 0) {
+      console.log("[MessageHandler] Reply text empty after removing mentions");
       return;
     }
 
@@ -204,6 +271,63 @@ export class MessageHandler {
       } catch (err) {
         console.error("🔸 Error resolving mentions in reply:", err);
       }
+    }
+
+    // Check if this is a stream selection (user replied with just a number)
+    // This is a fallback check in case the main handler didn't catch it
+    // Only match single digits or small numbers (1-99) to avoid matching Discord IDs
+    console.log(`[MessageHandler] handleSessionContinuation: Raw reply text: "${rawReplyText}"`);
+    const numberMatch = rawReplyText.match(/^\s*(\d{1,2})\s*$/);
+    if (numberMatch) {
+      const selectionNumber = parseInt(numberMatch[1], 10);
+      // Only process if it's a reasonable selection number (1-20)
+      if (selectionNumber < 1 || selectionNumber > 20) {
+        console.log(`[MessageHandler] handleSessionContinuation: Number ${selectionNumber} is out of range, ignoring`);
+        // Continue with normal AI processing
+      } else {
+        console.log(`[MessageHandler] handleSessionContinuation: Detected potential stream selection: ${selectionNumber}`);
+      
+      try {
+        const { StreamPlayerManager } = await import("../../features/stream-player/StreamPlayerManager");
+        const streamManager = StreamPlayerManager.getInstance();
+        const activeSession = streamManager.getActiveSession(message.guildId!);
+        
+        console.log(`[MessageHandler] handleSessionContinuation: Active session check:`, {
+          hasActiveSession: !!activeSession,
+          sessionState: activeSession?.state,
+          hasPendingResults: !!(activeSession as any)?.pendingSearchResults,
+          guildId: activeSession?.guildId,
+          messageGuildId: message.guildId,
+          query: activeSession?.query,
+        });
+        
+        if (activeSession && 
+            activeSession.state === "searching" && 
+            (activeSession as any).pendingSearchResults) {
+          console.log(`[MessageHandler] handleSessionContinuation: Processing stream selection ${selectionNumber}`);
+          const result = await streamManager.streamWithSelection(
+            message.guildId!,
+            selectionNumber
+          );
+          
+          console.log(`[MessageHandler] handleSessionContinuation: streamWithSelection result:`, {
+            success: result.success,
+            message: result.message,
+            error: result.error,
+          });
+          
+          if (result.success) {
+            await message.reply(result.message);
+            return;
+          } else {
+            await message.reply(result.message || result.error || "Failed to process selection");
+            return;
+          }
+        }
+      } catch (error) {
+        console.error("[MessageHandler] handleSessionContinuation: Error processing stream selection:", error);
+      }
+      } // Close the selectionNumber range check
     }
 
     // Get session history for context

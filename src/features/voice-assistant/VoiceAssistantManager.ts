@@ -8,6 +8,7 @@ import { AIManager } from "../../ai/core/AIManager.js";
 import { config } from "../../config/index.js";
 import { VoiceLogger } from "./utils/VoiceLogger.js";
 import { AudioToneGenerator } from "./utils/AudioToneGenerator.js";
+import { MediaPlayerManager } from "../media-player/MediaPlayerManager.js";
 import type { VoiceSession, TranscriptionEntry, TTSChunk } from "./types.js";
 import {
   VoiceAssistantEvent,
@@ -58,6 +59,7 @@ export class VoiceAssistantManager {
   private tts: TTSManager;
   private triggerDetector: TriggerWordDetector;
   private aiManager: AIManager;
+  private mediaPlayer: MediaPlayerManager;
   private client?: Client;
   private logger: VoiceLogger;
 
@@ -78,6 +80,9 @@ export class VoiceAssistantManager {
   // Interruption tracking
   private interruptionCallbacks: Map<Snowflake, (userId: string) => void> =
     new Map();
+
+  // Track when sessions started to ignore audio for a brief period after joining
+  private sessionStartTimes: Map<Snowflake, number> = new Map();
 
   private readonly controlKeywords: Record<VoiceControlCommand, string[]> = {
     [VoiceControlCommand.LEAVE]: [
@@ -147,6 +152,7 @@ export class VoiceAssistantManager {
     this.tts = TTSManager.getInstance();
     this.triggerDetector = TriggerWordDetector.getInstance();
     this.aiManager = AIManager.getInstance();
+    this.mediaPlayer = MediaPlayerManager.getInstance();
     this.logger = new VoiceLogger("🎧");
   }
 
@@ -208,6 +214,32 @@ export class VoiceAssistantManager {
     // Join the voice channel
     const session = await this.connectionManager.joinChannel(channel);
 
+    // Stop any existing transcription interval first to prevent processing old audio
+    this.stopTranscriptionInterval(session.guildId);
+
+    // Stop any existing audio receiving to prevent processing old audio
+    this.connectionManager.stopReceiving(session.guildId);
+
+    // Clear any stale buffers and state when joining
+    // Note: VoiceConnectionManager may have already generated a new sessionId
+    // Store the current sessionId to clean up
+    const currentSessionId = session.sessionId;
+
+    // Clear all buffers and state
+    session.transcriptionBuffer = "";
+    session.transcriptions = [];
+    session.conversationHistory = [];
+    session.conversationUserId = undefined;
+    session.lastActivity = new Date();
+
+    // Cleanup audio processor buffer for current sessionId
+    this.audioProcessor.cleanup(currentSessionId);
+
+    // Clear processing state
+    this.processingLocks.delete(session.guildId);
+    this.conversationUsers.delete(session.guildId);
+    this.playbackControllers.delete(session.guildId);
+
     // Initialize mode state
     this.sessionModes.set(session.guildId, VoiceMode.COMMAND);
 
@@ -225,10 +257,21 @@ export class VoiceAssistantManager {
       this.interruptionCallbacks.delete(session.guildId);
     });
 
+    // Clear audio processor buffer one more time right before starting to receive
+    // This ensures no stale audio from previous sessions
+    this.audioProcessor.cleanup(session.sessionId);
+
+    // Set session start time RIGHT BEFORE starting to receive audio
+    // VoiceConnectionManager has already cleared all receiver subscriptions
+    // at the connection level, so we can start immediately
+    const sessionStartTime = Date.now();
+    session.sessionStartTime = sessionStartTime;
+    this.sessionStartTimes.set(session.guildId, sessionStartTime);
+
     // Set up interruption detection
     this.setupInterruptionDetection(session);
 
-    // Start receiving audio
+    // Start receiving audio (stopReceiving was already called earlier)
     this.startReceivingAudio(session);
 
     // Start transcription check interval
@@ -248,11 +291,17 @@ export class VoiceAssistantManager {
     // Stop transcription interval
     this.stopTranscriptionInterval(guildId);
 
+    // Stop receiving audio
+    this.connectionManager.stopReceiving(guildId);
+
     // Clean up audio processor
     const session = this.connectionManager.getSession(guildId);
     if (session) {
       this.audioProcessor.cleanup(session.sessionId);
     }
+
+    // Clear session start time
+    this.sessionStartTimes.delete(guildId);
 
     // Leave the channel
     await this.connectionManager.leaveChannel(guildId);
@@ -264,19 +313,28 @@ export class VoiceAssistantManager {
    * @param session Voice session
    */
   private startReceivingAudio(session: VoiceSession): void {
-    this.logger.debug(
-      `Starting audio receiver for session ${session.sessionId}`
-    );
-
     this.connectionManager.startReceiving(
       session.guildId,
-      (userId, audioData) => {
-        // Process received audio (buffers it, but don't transcribe until silence)
-        this.audioProcessor.processAudio(
+      async (userId, audioData) => {
+        // Brief safety margin to catch any edge cases
+        // VoiceConnectionManager clears receiver subscriptions at the source
+        const sessionStartTime = session.sessionStartTime || this.sessionStartTimes.get(session.guildId);
+        if (sessionStartTime && Date.now() - sessionStartTime < 100) {
+          // Don't process audio in the first 100ms after starting
+          return;
+        }
+
+        // Process received audio (buffers it, creates chunks when ready)
+        const chunk = this.audioProcessor.processAudio(
           session.sessionId,
           audioData
         );
-        // Note: Transcription happens in processCompleteUtterance after silence is detected
+
+        if (chunk) {
+          // Transcribe the chunk immediately
+          await this.handleAudioChunk(session, chunk, userId);
+        }
+        // Note: We also check for complete utterances after silence in processCompleteUtterance
       }
     );
   }
@@ -302,6 +360,8 @@ export class VoiceAssistantManager {
     /^ah\.?$/i,
     /^bye\.?$/i, // Common hallucination on silence/background noise
     /^goodbye\.?$/i, // Common hallucination variant
+    /^blank.*audio$/i, // [BLANK_AUDIO] variations
+    /^blank_audio$/i,
   ];
 
   /**
@@ -440,22 +500,36 @@ export class VoiceAssistantManager {
   /**
    * Calculate RMS (Root Mean Square) of audio to check if it's actual speech
    * Filters out silence and very quiet background noise
+   * Handles both mono and stereo audio
    *
    * @param audioData PCM audio buffer (16-bit samples)
+   * @param channels Number of audio channels (1 for mono, 2 for stereo)
    * @returns RMS value (higher = louder)
    */
-  private calculateAudioRMS(audioData: Buffer): number {
+  private calculateAudioRMS(audioData: Buffer, channels: number = 2): number {
     if (audioData.length === 0) {
       return 0;
     }
 
     let sumSquares = 0;
-    const sampleCount = audioData.length / 2; // 16-bit samples = 2 bytes per sample
+    const bytesPerSample = 2; // 16-bit = 2 bytes
+    const bytesPerFrame = bytesPerSample * channels; // For stereo: 4 bytes per frame (L+R)
+    const sampleCount = audioData.length / bytesPerFrame;
 
-    for (let i = 0; i < audioData.length - 1; i += 2) {
-      // Read 16-bit signed integer (little-endian)
-      const sample = audioData.readInt16LE(i);
-      sumSquares += sample * sample;
+    // For stereo, average left and right channels for each frame
+    // For mono, just read each sample
+    for (let i = 0; i < audioData.length - (bytesPerFrame - 1); i += bytesPerFrame) {
+      if (channels === 2) {
+        // Stereo: average left and right channels
+        const left = audioData.readInt16LE(i);
+        const right = audioData.readInt16LE(i + 2);
+        const sample = Math.floor((left + right) / 2);
+        sumSquares += sample * sample;
+      } else {
+        // Mono: just read the sample
+        const sample = audioData.readInt16LE(i);
+        sumSquares += sample * sample;
+      }
     }
 
     // RMS = sqrt(mean of squares)
@@ -477,36 +551,102 @@ export class VoiceAssistantManager {
   ): Promise<void> {
     try {
       // Check audio level before transcription to filter out silence/noise
-      const audioRMS = this.calculateAudioRMS(chunk.data);
-      if (audioRMS < AUDIO_CONSTANTS.MIN_AUDIO_RMS) {
-        this.logger.debug(
-          `Filtered low audio level: RMS=${Math.round(audioRMS)} (min=${
-            AUDIO_CONSTANTS.MIN_AUDIO_RMS
-          })`
-        );
+      const audioRMS = this.calculateAudioRMS(chunk.data, chunk.channels);
+      
+      // Use a slightly lower threshold for chunks that are long enough (more likely to be real speech)
+      // But be stricter for very short chunks (more likely to be noise)
+      const effectiveMinRMS = chunk.duration >= 3000 
+        ? AUDIO_CONSTANTS.MIN_AUDIO_RMS * 0.8  // 80% of threshold for longer chunks
+        : AUDIO_CONSTANTS.MIN_AUDIO_RMS;        // Full threshold for short chunks
+      
+      if (audioRMS < effectiveMinRMS) {
         return; // Skip transcription for silence/noise
       }
 
-      // Transcribe the audio
-      const transcription = await this.transcriber.transcribe(chunk);
+      // Convert stereo to mono for better Whisper transcription
+      let audioChunkForTranscription = chunk;
+      if (chunk.channels === 2) {
+        const monoData = this.audioProcessor.stereoToMono(chunk.data);
+        audioChunkForTranscription = {
+          ...chunk,
+          data: monoData,
+          channels: 1,
+          duration: chunk.duration, // Duration stays the same
+        };
+      }
+
+      // Transcribe the audio (using mono version if converted)
+      let transcription = await this.transcriber.transcribe(audioChunkForTranscription);
 
       if (!transcription || transcription.trim().length === 0) {
         return; // Ignore empty transcriptions
       }
 
+      // Filter out [BLANK_AUDIO] and similar patterns explicitly
+      const blankCheckNormalized = transcription.trim().toLowerCase();
+      if (
+        blankCheckNormalized === "[blank_audio]" ||
+        blankCheckNormalized === "blank_audio" ||
+        blankCheckNormalized === "blank audio" ||
+        blankCheckNormalized.startsWith("[blank") ||
+        blankCheckNormalized === ""
+      ) {
+        return;
+      }
+
+      // Explicitly filter "Bye." and variations - very common Whisper hallucination on silence
+      // Also strip "Bye." from the start of transcriptions if there's other content
+      let cleanedTranscription = transcription.trim();
+      const normalizedTranscription = cleanedTranscription.toLowerCase();
+      
+      // Strip "Bye." or "Goodbye." from the start of transcriptions (common hallucination prefix)
+      // Handles cases like "Bye.\n to where..." or "Bye. to where..." or "Bye.  to where..."
+      const byePrefixPattern = /^(bye|goodbye)[.\s\n]+/i;
+      if (byePrefixPattern.test(cleanedTranscription)) {
+        cleanedTranscription = cleanedTranscription.replace(byePrefixPattern, "").trim();
+        
+        // If nothing left after stripping, it was just "Bye." - filter it out
+        if (!cleanedTranscription || cleanedTranscription.length === 0) {
+          return;
+        }
+        
+        // Use the cleaned version
+        transcription = cleanedTranscription;
+      }
+      
+      // Check if the entire transcription is just "bye" or "goodbye" (after any cleaning)
+      const finalNormalized = transcription.trim().toLowerCase();
+      const trimmedTranscription = finalNormalized.replace(/[.!?]+$/, ""); // Remove trailing punctuation
+      if (
+        trimmedTranscription === "bye" ||
+        trimmedTranscription === "goodbye" ||
+        finalNormalized === "bye." ||
+        finalNormalized === "goodbye." ||
+        (finalNormalized.startsWith("bye ") && finalNormalized.split(/\s+/).length <= 3) ||
+        (finalNormalized.startsWith("goodbye ") && finalNormalized.split(/\s+/).length <= 3)
+      ) {
+        return;
+      }
+
       // Filter out Whisper hallucinations
       if (this.isHallucination(transcription)) {
-        this.logger.debug(`Filtered hallucination: "${transcription}"`);
         return;
       }
 
       // Filter out very short transcriptions (likely noise)
       if (transcription.trim().length < 3) {
-        this.logger.debug(`Filtered short transcription: "${transcription}"`);
         return;
       }
 
-      this.logger.debug(`Transcription from ${userId}: "${transcription}"`);
+      // Check for duplicate transcriptions (prevent same text from being added multiple times)
+      const recentTranscriptions = session.transcriptions.slice(-5); // Check last 5 transcriptions
+      const isDuplicate = recentTranscriptions.some(
+        (entry) => entry.text.toLowerCase().trim() === transcription.toLowerCase().trim()
+      );
+      
+      if (isDuplicate) {
+        return;
+      }
 
       // Add to transcription buffer
       session.transcriptionBuffer += ` ${transcription}`;
@@ -521,6 +661,22 @@ export class VoiceAssistantManager {
       };
 
       session.transcriptions.push(entry);
+      
+      // Limit transcription history to prevent unbounded growth
+      if (session.transcriptions.length > 50) {
+        session.transcriptions = session.transcriptions.slice(-50);
+      }
+      
+      // Check if this session just started - brief safety margin
+      const sessionStartTime = session.sessionStartTime || this.sessionStartTimes.get(session.guildId);
+      if (sessionStartTime && Date.now() - sessionStartTime < 100) {
+        // Session just started, ignore this transcription
+        return;
+      }
+
+      // Process the transcription immediately for chunked transcriptions
+      // This provides real-time responsiveness instead of waiting for silence
+      await this.processTranscriptionBuffer(session, transcription.trim());
     } catch (error) {
       this.logger.error("Transcription error:", error);
     }
@@ -534,7 +690,10 @@ export class VoiceAssistantManager {
   private startTranscriptionInterval(session: VoiceSession): void {
     const interval = setInterval(async () => {
       // Check if silence detected (utterance complete)
-      if (this.audioProcessor.isSilenceDetected(session.sessionId)) {
+      const isSilence = this.audioProcessor.isSilenceDetected(session.sessionId);
+      const bufferStatus = this.audioProcessor.getBufferStatus(session.sessionId);
+      
+      if (isSilence && bufferStatus.totalBytes > 0) {
         await this.processCompleteUtterance(session);
       }
     }, TRANSCRIPTION_CONSTANTS.TRANSCRIPTION_CHECK_INTERVAL_MS);
@@ -561,47 +720,106 @@ export class VoiceAssistantManager {
    * @param session Voice session
    */
   private async processCompleteUtterance(session: VoiceSession): Promise<void> {
+    // Clear old transcriptions from buffer before processing new utterance
+    // This prevents accumulation of old transcriptions
+    session.transcriptionBuffer = "";
+
     // Flush the complete audio buffer and transcribe it as one piece
     const completeAudioChunk = this.audioProcessor.flushBuffer(session.sessionId);
     
     if (!completeAudioChunk) {
       // No audio buffered, check if we have any text in transcription buffer
-      const utterance = session.transcriptionBuffer.trim();
-      if (!utterance) {
-        return; // Nothing to process
+      // But wait - we just cleared it above! Let's check transcriptions array instead
+      if (session.transcriptions.length > 0) {
+        const lastTranscription = session.transcriptions[session.transcriptions.length - 1];
+        // Process the last transcription if it exists
+        if (lastTranscription) {
+          await this.processTranscriptionBuffer(session, lastTranscription.text);
+        }
+        return;
       }
-      // Use existing transcription buffer if no new audio
-      session.transcriptionBuffer = "";
-      await this.processTranscriptionBuffer(session, utterance);
-      return;
+      return; // Nothing to process
     }
 
     // Check audio level before transcription
-    const audioRMS = this.calculateAudioRMS(completeAudioChunk.data);
+    const audioRMS = this.calculateAudioRMS(completeAudioChunk.data, completeAudioChunk.channels);
     if (audioRMS < AUDIO_CONSTANTS.MIN_AUDIO_RMS) {
-      this.logger.debug(
-        `Filtered low audio level in complete utterance: RMS=${Math.round(audioRMS)} (min=${AUDIO_CONSTANTS.MIN_AUDIO_RMS})`
-      );
       return; // Skip transcription for silence/noise
+    }
+
+    // Convert stereo to mono for better Whisper transcription
+    let audioChunkForTranscription = completeAudioChunk;
+    if (completeAudioChunk.channels === 2) {
+      const monoData = this.audioProcessor.stereoToMono(completeAudioChunk.data);
+      audioChunkForTranscription = {
+        ...completeAudioChunk,
+        data: monoData,
+        channels: 1,
+        duration: completeAudioChunk.duration,
+      };
     }
 
     // Transcribe the complete audio chunk
     try {
-      const transcription = await this.transcriber.transcribe(completeAudioChunk);
+      let transcription = await this.transcriber.transcribe(audioChunkForTranscription);
       
       if (!transcription || transcription.trim().length === 0) {
         return; // Ignore empty transcriptions
       }
 
+      // Filter out [BLANK_AUDIO] and similar patterns explicitly
+      const blankCheckNormalized = transcription.trim().toLowerCase();
+      if (
+        blankCheckNormalized === "[blank_audio]" ||
+        blankCheckNormalized === "blank_audio" ||
+        blankCheckNormalized === "blank audio" ||
+        blankCheckNormalized.startsWith("[blank") ||
+        blankCheckNormalized === ""
+      ) {
+        return;
+      }
+
+      // Explicitly filter "Bye." and variations - very common Whisper hallucination on silence
+      // Also strip "Bye." from the start of transcriptions if there's other content
+      let cleanedTranscription = transcription.trim();
+      const normalizedTranscription = cleanedTranscription.toLowerCase();
+      
+      // Strip "Bye." or "Goodbye." from the start of transcriptions (common hallucination prefix)
+      // Handles cases like "Bye.\n to where..." or "Bye. to where..."
+      const byePrefixPattern = /^(bye|goodbye)[.\s\n]+/i;
+      if (byePrefixPattern.test(cleanedTranscription)) {
+        cleanedTranscription = cleanedTranscription.replace(byePrefixPattern, "").trim();
+        
+        // If nothing left after stripping, it was just "Bye." - filter it out
+        if (!cleanedTranscription || cleanedTranscription.length === 0) {
+          return;
+        }
+        
+        // Use the cleaned version
+        transcription = cleanedTranscription;
+      }
+      
+      // Check if the entire transcription is just "bye" or "goodbye" (after any cleaning)
+      const finalNormalized = transcription.trim().toLowerCase();
+      const trimmedTranscription = finalNormalized.replace(/[.!?]+$/, ""); // Remove trailing punctuation
+      if (
+        trimmedTranscription === "bye" ||
+        trimmedTranscription === "goodbye" ||
+        finalNormalized === "bye." ||
+        finalNormalized === "goodbye." ||
+        (finalNormalized.startsWith("bye ") && finalNormalized.split(/\s+/).length <= 3) ||
+        (finalNormalized.startsWith("goodbye ") && finalNormalized.split(/\s+/).length <= 3)
+      ) {
+        return;
+      }
+
       // Filter out Whisper hallucinations
       if (this.isHallucination(transcription)) {
-        this.logger.debug(`Filtered hallucination: "${transcription}"`);
         return;
       }
 
       // Filter out very short transcriptions (likely noise)
       if (transcription.trim().length < 3) {
-        this.logger.debug(`Filtered short transcription: "${transcription}"`);
         return;
       }
 
@@ -610,8 +828,6 @@ export class VoiceAssistantManager {
         ? session.transcriptions[session.transcriptions.length - 1]?.userId 
         : Array.from(session.participants)[0] || "unknown";
 
-      this.logger.debug(`Complete utterance transcription: "${transcription}"`);
-
       // Store transcription entry for logging/history
       const entry: TranscriptionEntry = {
         text: transcription,
@@ -619,6 +835,13 @@ export class VoiceAssistantManager {
         containsTriggerWord: false,
         userId,
       };
+      // Check if this session just started - brief safety margin
+      const sessionStartTime = session.sessionStartTime || this.sessionStartTimes.get(session.guildId);
+      if (sessionStartTime && Date.now() - sessionStartTime < 100) {
+        // Session just started, ignore this transcription
+        return;
+      }
+
       session.transcriptions.push(entry);
       session.lastActivity = new Date();
 
@@ -639,7 +862,21 @@ export class VoiceAssistantManager {
     session: VoiceSession,
     utterance: string
   ): Promise<void> {
+    // Check if this session just started - brief safety margin
+    const sessionStartTime = session.sessionStartTime || this.sessionStartTimes.get(session.guildId);
+    if (sessionStartTime && Date.now() - sessionStartTime < 100) {
+      // Session just started, ignore this transcription
+      return;
+    }
+
     // Clear buffer immediately to prevent reprocessing
+    // Also clear old transcriptions that are older than 30 seconds to prevent accumulation
+    const now = Date.now();
+    const thirtySecondsAgo = now - 30000;
+    session.transcriptions = session.transcriptions.filter(
+      (entry) => entry.timestamp.getTime() > thirtySecondsAgo
+    );
+
     session.transcriptionBuffer = "";
 
     // Check for control commands (only when relevant)
@@ -650,10 +887,8 @@ export class VoiceAssistantManager {
     }
 
     // Check if already processing for this guild
-    if (this.processingLocks.get(session.guildId)) {
-      this.logger.debug(
-        `Already processing utterance for guild ${session.guildId}, skipping duplicate`
-      );
+    const isLocked = this.processingLocks.get(session.guildId);
+    if (isLocked) {
       return;
     }
 
@@ -675,7 +910,7 @@ export class VoiceAssistantManager {
       }
     }
 
-    this.logger.info(`${displayName}: "${utterance}"`);
+    this.logger.info(`[${displayName}]: "${utterance}"`);
 
     // Get current mode
     const currentMode =
@@ -715,12 +950,6 @@ export class VoiceAssistantManager {
     // Check for trigger word
     const triggerResult = this.triggerDetector.detect(utterance);
 
-    this.logger.debug(
-      `Trigger word check: detected=${triggerResult.detected}, confidence=${
-        triggerResult.confidence
-      }, word="${triggerResult.triggerWord || "none"}"`
-    );
-
     // In conversation mode, check if this is the same user continuing the conversation
     let shouldProcess = false;
     let query = utterance;
@@ -747,9 +976,6 @@ export class VoiceAssistantManager {
         query = utterance;
       } else if (activeConversationUser && activeConversationUser !== userId) {
         // Different user - end previous conversation and start new one
-        this.logger.info(
-          `New user ${userId} starting conversation, ending previous user ${activeConversationUser}'s conversation`
-        );
         session.conversationHistory = [];
         this.conversationUsers.set(session.guildId, userId);
         session.conversationUserId = userId;
@@ -798,22 +1024,19 @@ export class VoiceAssistantManager {
       this.processingLocks.set(session.guildId, true);
 
       try {
-        this.logger.debug(`Processing query: "${query || "(empty)"}"`);
-
         // Generate and speak response
         await this.generateAndSpeakResponse(
           session,
           query || utterance,
           userId
         );
+      } catch (error) {
+        this.logger.error("Error during response generation:", error);
+        throw error;
       } finally {
         // Release lock
         this.processingLocks.delete(session.guildId);
       }
-    } else {
-      this.logger.debug(
-        "✗ No trigger word detected or not in conversation, ignoring utterance"
-      );
     }
   }
 
@@ -1041,18 +1264,23 @@ export class VoiceAssistantManager {
     switch (command) {
       case VoiceControlCommand.LEAVE: {
         await this.stopActivePlayback(guildId);
+        this.mediaPlayer.stop(guildId);
         await this.leaveVoiceChannel(guildId);
         break;
       }
       case VoiceControlCommand.STOP: {
+        // Stop both voice assistant and media player
         await this.stopActivePlayback(guildId);
+        this.mediaPlayer.stop(guildId);
         break;
       }
       case VoiceControlCommand.PAUSE: {
-        if (!this.pauseActivePlayback(guildId)) {
-          this.logger.warn(
-            `Pause requested for guild ${guildId} but no active playback`
-          );
+        // Pause both voice assistant and media player
+        const voicePaused = this.pauseActivePlayback(guildId);
+        this.mediaPlayer.pause(guildId);
+        
+        if (!voicePaused) {
+          // Media player pause is always attempted, so no warning needed
         }
         break;
       }
@@ -1060,22 +1288,16 @@ export class VoiceAssistantManager {
         const session = this.connectionManager.getSession(guildId);
         const currentMode = this.sessionModes.get(guildId) || VoiceMode.COMMAND;
 
-        // Try to resume playback first
-        const resumed = this.resumeActivePlayback(guildId);
+        // Try to resume both voice assistant and media player
+        const voiceResumed = this.resumeActivePlayback(guildId);
+        this.mediaPlayer.resume(guildId);
 
-        if (!resumed) {
-          // If no playback to resume, check if we're in conversation mode
+        if (!voiceResumed) {
+          // If no voice playback to resume, check if we're in conversation mode
           if (currentMode === VoiceMode.CONVERSATION && session) {
             // In conversation mode, "continue" or "resume" without playback
             // can be treated as the user wanting to continue the conversation
             // This will be handled naturally by the next utterance processing
-            this.logger.debug(
-              `Resume command in conversation mode with no playback - will process next utterance`
-            );
-          } else {
-            this.logger.warn(
-              `Resume requested for guild ${guildId} but no active playback`
-            );
           }
         }
         break;
@@ -1261,6 +1483,13 @@ export class VoiceAssistantManager {
    * @param query User query
    * @param userId User ID who made the query
    */
+  /**
+   * Generate AI response and speak it
+   *
+   * @param session Voice session
+   * @param query User query
+   * @param userId User ID
+   */
   private async generateAndSpeakResponse(
     session: VoiceSession,
     query: string,
@@ -1271,10 +1500,6 @@ export class VoiceAssistantManager {
 
       const currentMode =
         this.sessionModes.get(session.guildId) || VoiceMode.COMMAND;
-
-      this.logger.debug(
-        `Calling AI with userId: ${userId}, guildId: ${session.guildId}, mode: ${currentMode}`
-      );
 
       // Generate AI response with timeout
       const timeoutPromise = new Promise<never>((_, reject) => {
@@ -1337,13 +1562,7 @@ export class VoiceAssistantManager {
 
       const response = await Promise.race([responsePromise, timeoutPromise]);
 
-      this.logger.debug(`AI response received: success=${response.success}`);
-
       const responseText = response.content;
-
-      this.logger.debug(
-        `AI response (${responseText.length} chars): "${responseText}"`
-      );
 
       if (!responseText || responseText.trim().length === 0) {
         this.logger.warn("Empty AI response, skipping TTS");
@@ -1361,7 +1580,6 @@ export class VoiceAssistantManager {
         });
       }
 
-      this.logger.debug("Starting TTS generation...");
       const { chunkCount, chunkPromises } =
         this.tts.createChunkSynthesisQueue(responseText);
 
@@ -1369,8 +1587,6 @@ export class VoiceAssistantManager {
         this.logger.warn("No TTS chunks generated, skipping playback");
         return;
       }
-
-      this.logger.debug(`Scheduled ${chunkCount} chunk syntheses for playback`);
 
       this.logger.info("Starting audio playback...");
       await this.streamAndPlayChunks(

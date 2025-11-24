@@ -1,4 +1,5 @@
 import type { MediaTrack } from "./types.js";
+import { LoopMode } from "./types.js";
 
 /**
  * Manages the audio queue for media playback
@@ -7,6 +8,7 @@ export class AudioQueue {
 	private queue: MediaTrack[] = [];
 	private currentIndex: number = -1;
 	private shuffleOrder: number[] = [];
+	private loopMode: LoopMode = LoopMode.OFF;
 
 	/**
 	 * Add a track to the queue
@@ -57,20 +59,36 @@ export class AudioQueue {
 	getNext(): MediaTrack | null {
 		if (this.queue.length === 0) return null;
 
+		// Loop ONE: repeat current track
+		if (this.loopMode === LoopMode.ONE && this.currentIndex !== -1) {
+			return this.queue[this.currentIndex] || null;
+		}
+
 		if (this.shuffleOrder.length > 0) {
 			// Use shuffle order
 			this.currentIndex = this.shuffleOrder[0];
 			this.shuffleOrder.shift();
+
+			// If shuffle order is exhausted and loop ALL is enabled, regenerate
+			if (this.shuffleOrder.length === 0 && this.loopMode === LoopMode.ALL) {
+				this.updateShuffleOrder();
+			}
+
 			return this.queue[this.currentIndex] || null;
 		}
 
 		// Normal order
 		this.currentIndex++;
 		if (this.currentIndex >= this.queue.length) {
+			// Loop ALL: restart queue
+			if (this.loopMode === LoopMode.ALL) {
+				this.currentIndex = 0;
+				return this.queue[this.currentIndex] || null;
+			}
 			return null; // End of queue
 		}
 
-		return this.queue[this.currentIndex];
+		return this.queue[this.currentIndex] || null;
 	}
 
 	/**
@@ -80,7 +98,7 @@ export class AudioQueue {
 		if (this.queue.length === 0 || this.currentIndex <= 0) return null;
 
 		this.currentIndex--;
-		return this.queue[this.currentIndex];
+		return this.queue[this.currentIndex] || null;
 	}
 
 	/**
@@ -158,7 +176,39 @@ export class AudioQueue {
 		}
 
 		this.currentIndex = position;
-		return this.queue[this.currentIndex];
+		return this.queue[this.currentIndex] || null;
+	}
+
+	/**
+	 * Set loop mode
+	 */
+	setLoopMode(mode: LoopMode): void {
+		this.loopMode = mode;
+	}
+
+	/**
+	 * Get current loop mode
+	 */
+	getLoopMode(): LoopMode {
+		return this.loopMode;
+	}
+
+	/**
+	 * Toggle loop mode (cycles through OFF -> ALL -> ONE -> OFF)
+	 */
+	toggleLoopMode(): LoopMode {
+		switch (this.loopMode) {
+			case LoopMode.OFF:
+				this.loopMode = LoopMode.ALL;
+				break;
+			case LoopMode.ALL:
+				this.loopMode = LoopMode.ONE;
+				break;
+			case LoopMode.ONE:
+				this.loopMode = LoopMode.OFF;
+				break;
+		}
+		return this.loopMode;
 	}
 }
 

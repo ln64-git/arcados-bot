@@ -8,7 +8,7 @@ import {
   type Snowflake,
 } from "discord.js";
 import type { MediaTrack, MediaPlayerState } from "./types.js";
-import { PlaybackState } from "./types.js";
+import { PlaybackState, LoopMode } from "./types.js";
 
 /**
  * Configuration for custom emoji IDs (for white/monochrome icons)
@@ -189,9 +189,8 @@ export class EmbedController {
       embed.setThumbnail(squareThumbnail);
 
       // Description: Queued by user at top, then artist and duration
-      const queuedBy = track.queuedBy.displayName || track.queuedBy.username;
       embed.setDescription(
-        `**Queued by:** ${queuedBy} • **${artist}** [${duration}]`
+        `**Queued by:** <@${track.queuedBy.id}>\n**${artist}** [${duration}]`
       );
 
       // Volume
@@ -270,8 +269,18 @@ export class EmbedController {
         .setDisabled(state.currentTrack === null),
       new ButtonBuilder()
         .setCustomId("media_loop")
-        .setLabel("🔁")
-        .setStyle(ButtonStyle.Secondary)
+        .setLabel(
+          state.loopMode === LoopMode.ONE
+            ? "🔂" // Loop one
+            : state.loopMode === LoopMode.ALL
+            ? "🔁" // Loop all
+            : "🔁" // Loop off (same icon, but different style)
+        )
+        .setStyle(
+          state.loopMode !== LoopMode.OFF
+            ? ButtonStyle.Primary
+            : ButtonStyle.Secondary
+        )
         .setDisabled(state.currentTrack === null),
       new ButtonBuilder()
         .setCustomId("media_volume_down")

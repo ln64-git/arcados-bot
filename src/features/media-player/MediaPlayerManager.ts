@@ -9,6 +9,7 @@ import {
   createAudioPlayer,
   AudioPlayerStatus,
   entersState,
+  VoiceConnectionStatus,
 } from "@discordjs/voice";
 import { VoiceConnectionManager } from "../voice-assistant/services/VoiceConnectionManager.js";
 import { AudioQueue } from "./AudioQueue.js";
@@ -16,7 +17,7 @@ import { PlaybackController } from "./PlaybackController.js";
 import { EmbedController } from "./EmbedController.js";
 import { YouTubeService } from "./services/YouTubeService.js";
 import type { MediaTrack, MediaPlayerState } from "./types.js";
-import { PlaybackState } from "./types.js";
+import { PlaybackState, LoopMode } from "./types.js";
 
 /**
  * Main orchestrator for media player functionality
@@ -93,15 +94,27 @@ export class MediaPlayerManager {
 
       // Join voice channel if needed
       if (voiceChannel) {
-        const session = this.connectionManager.getSession(guildId);
+        let session = this.connectionManager.getSession(guildId);
         if (!session) {
           await this.connectionManager.joinChannel(voiceChannel);
+          session = this.connectionManager.getSession(guildId);
         }
+
         // Ensure player is subscribed to connection
         this.ensurePlayer(guildId);
 
-        // Wait a bit for connection to be ready
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        // Wait for connection to be ready (max 10 seconds)
+        if (session?.connection) {
+          try {
+            await entersState(session.connection, VoiceConnectionStatus.Ready, 10_000);
+          } catch (error) {
+            console.error(
+              "[MediaPlayerManager] Connection failed to become ready:",
+              error,
+            );
+            throw new Error("Failed to establish voice connection");
+          }
+        }
       }
 
       // Start playback if queue was empty
@@ -167,7 +180,44 @@ export class MediaPlayerManager {
     }
 
     // Play track
-    await player.play(track);
+    try {
+      await player.play(track);
+    } catch (error) {
+      console.error("[MediaPlayerManager] Failed to play track:", error);
+
+      // Provide specific error message based on error type
+      const errorMsg = error instanceof Error ? error.message.toLowerCase() : String(error);
+      let userMessage = "❌ Failed to play track";
+
+      if (errorMsg.includes("yt-dlp") && errorMsg.includes("not found")) {
+        userMessage += ": yt-dlp is not installed on this server";
+      } else if (errorMsg.includes("ffmpeg") && errorMsg.includes("not found")) {
+        userMessage += ": ffmpeg is not installed on this server";
+      } else if (errorMsg.includes("network") || errorMsg.includes("econnrefused")) {
+        userMessage += ": Network connection failed. Please try again later";
+      } else if (errorMsg.includes("timeout")) {
+        userMessage += ": Request timed out. The video may be too long or unavailable";
+      } else if (errorMsg.includes("unavailable") || errorMsg.includes("private")) {
+        userMessage += ": Video is unavailable or private";
+      } else {
+        userMessage += ". Please try another song";
+      }
+
+      // Send error message to channel
+      await channel.send(userMessage);
+
+      // Reset state
+      state.currentTrack = null;
+      state.state = PlaybackState.IDLE;
+
+      // Try playing next track if available
+      const nextTrack = queue.getNext();
+      if (nextTrack) {
+        await this.startPlayback(guildId, channel);
+      }
+
+      return;
+    }
 
     // Create/update embed
     const message = await this.embedController.createOrUpdateEmbed(
@@ -334,6 +384,38 @@ export class MediaPlayerManager {
   }
 
   /**
+   * Seek forward by specified seconds
+   */
+  async seekForward(guildId: Snowflake, seconds: number): Promise<void> {
+    const player = this.getPlayer(guildId);
+    const currentPosition = player.getPosition();
+    const newPosition = currentPosition + seconds;
+
+    try {
+      await player.seek(newPosition);
+      this.updateEmbedIfNeeded(guildId);
+    } catch (error) {
+      console.error("[MediaPlayerManager] Seek forward error:", error);
+    }
+  }
+
+  /**
+   * Seek backward by specified seconds
+   */
+  async seekBackward(guildId: Snowflake, seconds: number): Promise<void> {
+    const player = this.getPlayer(guildId);
+    const currentPosition = player.getPosition();
+    const newPosition = Math.max(0, currentPosition - seconds);
+
+    try {
+      await player.seek(newPosition);
+      this.updateEmbedIfNeeded(guildId);
+    } catch (error) {
+      console.error("[MediaPlayerManager] Seek backward error:", error);
+    }
+  }
+
+  /**
    * Set volume
    */
   setVolume(guildId: Snowflake, volume: number): void {
@@ -451,7 +533,7 @@ export class MediaPlayerManager {
         volume: 100,
         muted: false,
         previousVolume: 100,
-        loop: false,
+        loopMode: LoopMode.OFF,
         shuffle: false,
         embedChannelId: null,
         embedMessageId: null,
@@ -601,10 +683,10 @@ export class MediaPlayerManager {
         await this.skipBack(guildId);
         break;
       case "media_forward":
-        // Skip forward 10 seconds (not implemented yet)
+        await this.seekForward(guildId, 10);
         break;
       case "media_back":
-        // Skip back 10 seconds (not implemented yet)
+        await this.seekBackward(guildId, 10);
         break;
       case "media_shuffle":
         const state = this.getState(guildId);
@@ -615,8 +697,10 @@ export class MediaPlayerManager {
         await this.updateEmbed(guildId, channel);
         break;
       case "media_loop":
+        const queue = this.getQueue(guildId);
+        const newLoopMode = queue.toggleLoopMode();
         const state2 = this.getState(guildId);
-        state2.loop = !state2.loop;
+        state2.loopMode = newLoopMode;
         await this.updateEmbed(guildId, channel);
         break;
       case "media_volume_down":
@@ -631,5 +715,48 @@ export class MediaPlayerManager {
         await this.starTrack(guildId, channel);
         break;
     }
+  }
+
+  /**
+   * Cleanup resources for a specific guild
+   * Called when bot leaves voice channel or guild
+   */
+  cleanupGuild(guildId: Snowflake): void {
+    // Stop embed updates
+    this.stopEmbedUpdates(guildId);
+
+    // Cleanup player and kill any active processes
+    const player = this.players.get(guildId);
+    if (player) {
+      player.cleanup();
+      this.players.delete(guildId);
+    }
+
+    // Clear queue
+    const queue = this.queues.get(guildId);
+    if (queue) {
+      queue.clear();
+      this.queues.delete(guildId);
+    }
+
+    // Clear state
+    this.states.delete(guildId);
+
+    console.log(`[MediaPlayerManager] Cleaned up resources for guild ${guildId}`);
+  }
+
+  /**
+   * Cleanup all resources
+   * Called when bot shuts down
+   */
+  cleanupAll(): void {
+    console.log("[MediaPlayerManager] Cleaning up all resources...");
+
+    // Cleanup all guilds
+    for (const guildId of this.players.keys()) {
+      this.cleanupGuild(guildId);
+    }
+
+    console.log("[MediaPlayerManager] All resources cleaned up");
   }
 }

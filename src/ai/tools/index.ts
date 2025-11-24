@@ -10,3 +10,4 @@ export * from "./live/LiveConversationTools";
 export * from "./drama/DramaAnalysisTools";
 export * from "./search/SemanticSearchTools";
 export * from "./storyline/StorylineTools";
+export * from "./stream/StreamPlayerTools";

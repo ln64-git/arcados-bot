@@ -17,6 +17,7 @@ import { MessageHandler } from "./features/chat-assistant";
 import { VoiceAssistantManager } from "./features/voice-assistant/VoiceAssistantManager";
 import { MediaPlayerManager } from "./features/media-player/MediaPlayerManager";
 import { VoiceConnectionManager } from "./features/voice-assistant/services/VoiceConnectionManager";
+import { StreamPlayerManager } from "./features/stream-player/StreamPlayerManager";
 
 export class Bot {
   public client: Client;
@@ -141,6 +142,10 @@ export class Bot {
     // Initialize media player
     const mediaPlayer = MediaPlayerManager.getInstance();
     mediaPlayer.initialize(this.client);
+
+    // Initialize stream player
+    const streamPlayer = StreamPlayerManager.getInstance();
+    await streamPlayer.initialize(this.client);
 
     console.log("✅ All features initialized successfully");
   }
@@ -327,6 +332,10 @@ export class Bot {
     if (this.stateSyncService) {
       await this.stateSyncService.stop();
     }
+
+    // Shutdown stream player
+    const streamPlayer = StreamPlayerManager.getInstance();
+    await streamPlayer.shutdown();
 
     // Destroy Discord client
     this.client.destroy();

@@ -7,6 +7,7 @@
 	"scripts": {
 		"start": "bun run src/main.ts",
 		"test:ai": "npx tsx src/features/ai-assistant/scripts/test-ai-assistant.ts",
+		"test:discord-stream": "bun run src/features/stream-player/tests/test-discord-stream.ts",
 		"view-conversations": "bun run src/scripts/view-conversations.ts",
 		"regenerate:conversations": "bun run src/scripts/regenerate-conversations.ts",
 		"analyze:grouping": "bun run src/scripts/analyze-conversation-grouping.ts",
@@ -63,6 +64,8 @@
 		"pg": "^8.16.3",
 		"pgvector": "^0.2.1",
 		"prism-media": "^1.3.5",
+		"puppeteer": "^24.31.0",
+		"puppeteer-stream": "^3.0.22",
 		"uuid": "^13.0.0"
 	},
 	"engines": {

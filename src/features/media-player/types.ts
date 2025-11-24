@@ -43,6 +43,15 @@ export enum PlaybackState {
 }
 
 /**
+ * Loop mode for queue
+ */
+export enum LoopMode {
+	OFF = "off",
+	ONE = "one", // Loop current track
+	ALL = "all", // Loop entire queue
+}
+
+/**
  * Media player state for a guild
  */
 export interface MediaPlayerState {
@@ -64,8 +73,8 @@ export interface MediaPlayerState {
 	/** Previous volume before muting (for unmute) */
 	previousVolume: number;
 
-	/** Whether queue is looping */
-	loop: boolean;
+	/** Loop mode (off, one, all) */
+	loopMode: LoopMode;
 
 	/** Whether queue is shuffled */
 	shuffle: boolean;

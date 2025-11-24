@@ -179,3 +179,6 @@ dist
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Puppeteer user data directory (contains browser extensions)
+.puppeteer-user-data

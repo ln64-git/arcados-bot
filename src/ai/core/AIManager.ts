@@ -28,6 +28,7 @@ import { storylineTools } from "../tools/storyline/StorylineTools";
 import { voiceTools } from "../tools/voice/VoiceTools";
 import { musicTools } from "../tools/music/MusicTools";
 import { mediaPlayerTools } from "../tools/media/MediaPlayerTools";
+import { streamPlayerTools } from "../tools/stream/StreamPlayerTools";
 import {
   computeResponsePolicy,
   type ConversationMode,
@@ -96,6 +97,7 @@ When sharing info about people:
     this.databaseTools.registerTools(voiceTools);
     this.databaseTools.registerTools(musicTools);
     this.databaseTools.registerTools(mediaPlayerTools);
+    this.databaseTools.registerTools(streamPlayerTools);
   }
 
   /**

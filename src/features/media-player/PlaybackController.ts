@@ -19,6 +19,11 @@ export class PlaybackController {
 	private position: number = 0;
 	private positionUpdateInterval?: NodeJS.Timeout;
 	private onTrackEndCallback?: () => void;
+	private activeProcesses: {
+		ytdlp?: ReturnType<typeof spawn>;
+		ffmpeg?: ReturnType<typeof spawn>;
+		timeout?: NodeJS.Timeout;
+	} = {};
 
 	constructor(player: AudioPlayer) {
 		this.player = player;
@@ -47,6 +52,9 @@ export class PlaybackController {
 	 */
 	async play(track: MediaTrack): Promise<void> {
 		try {
+			// Clean up any existing processes first
+			this.killActiveProcesses();
+
 			this.currentTrack = track;
 			this.position = 0;
 
@@ -76,6 +84,24 @@ export class PlaybackController {
 				"pipe:1", // Output to stdout
 			]);
 
+			// Store active processes for cleanup
+			this.activeProcesses.ytdlp = ytdlpProcess;
+			this.activeProcesses.ffmpeg = ffmpegProcess;
+
+			// Unified cleanup function
+			const cleanup = (reason?: string) => {
+				if (reason) {
+					console.error(`[PlaybackController] Cleaning up processes: ${reason}`);
+				}
+				this.killActiveProcesses();
+			};
+
+			// Set 30-second timeout for startup
+			this.activeProcesses.timeout = setTimeout(() => {
+				cleanup("30-second timeout exceeded");
+				this.player.stop();
+			}, 30000);
+
 			// Pipe yt-dlp output to ffmpeg input
 			ytdlpProcess.stdout?.pipe(ffmpegProcess.stdin!);
 			ytdlpProcess.stderr?.on("data", () => {
@@ -84,13 +110,44 @@ export class PlaybackController {
 
 			// Handle errors
 			ytdlpProcess.on("error", (error) => {
-				console.error("[PlaybackController] yt-dlp error:", error);
+				const errorMsg = error.message.toLowerCase();
+				if (errorMsg.includes("enoent") || errorMsg.includes("not found")) {
+					console.error("[PlaybackController] yt-dlp not found - please install yt-dlp");
+				} else if (errorMsg.includes("econnrefused") || errorMsg.includes("network")) {
+					console.error("[PlaybackController] Network error while downloading audio");
+				} else {
+					console.error("[PlaybackController] yt-dlp error:", error);
+				}
+				cleanup("yt-dlp error");
 				this.player.stop();
 			});
 
 			ffmpegProcess.on("error", (error) => {
-				console.error("[PlaybackController] ffmpeg error:", error);
+				const errorMsg = error.message.toLowerCase();
+				if (errorMsg.includes("enoent") || errorMsg.includes("not found")) {
+					console.error("[PlaybackController] ffmpeg not found - please install ffmpeg");
+				} else {
+					console.error("[PlaybackController] ffmpeg error:", error);
+				}
+				cleanup("ffmpeg error");
 				this.player.stop();
+			});
+
+			// Handle unexpected exits
+			ytdlpProcess.on("exit", (code) => {
+				if (code !== 0 && code !== null) {
+					console.error(`[PlaybackController] yt-dlp exited with code ${code}`);
+					cleanup("yt-dlp unexpected exit");
+					this.player.stop();
+				}
+			});
+
+			ffmpegProcess.on("exit", (code) => {
+				if (code !== 0 && code !== null && this.state === PlaybackState.PLAYING) {
+					console.error(`[PlaybackController] ffmpeg exited with code ${code}`);
+					cleanup("ffmpeg unexpected exit");
+					this.player.stop();
+				}
 			});
 
 			// Suppress ffmpeg stderr (info messages)
@@ -103,7 +160,6 @@ export class PlaybackController {
 			}
 
 			// Create audio resource from the PCM stream
-			// Use Raw type for PCM audio (like the voice assistant does)
 			const resource = createAudioResource(ffmpegProcess.stdout, {
 				inputType: StreamType.Raw,
 				inlineVolume: true,
@@ -112,9 +168,9 @@ export class PlaybackController {
 			// Set volume
 			resource.volume?.setVolume(this.volume / 100);
 
-			// Cleanup processes when done
+			// Cleanup processes when done normally
 			ffmpegProcess.on("close", () => {
-				ytdlpProcess.kill();
+				cleanup();
 			});
 
 			// Play
@@ -124,6 +180,7 @@ export class PlaybackController {
 			console.log(`[PlaybackController] Started playing: ${track.title}`);
 		} catch (error) {
 			console.error("[PlaybackController] Play error:", error);
+			this.killActiveProcesses();
 			throw error;
 		}
 	}
@@ -196,6 +253,150 @@ export class PlaybackController {
 	}
 
 	/**
+	 * Seek to a specific position in the current track (in seconds)
+	 * This restarts playback from the specified position
+	 */
+	async seek(positionSeconds: number): Promise<void> {
+		if (!this.currentTrack) {
+			throw new Error("No track is currently playing");
+		}
+
+		// Clamp position to valid range
+		const clampedPosition = Math.max(
+			0,
+			Math.min(positionSeconds, this.currentTrack.duration),
+		);
+
+		try {
+			// Clean up existing processes
+			this.killActiveProcesses();
+
+			const videoUrl = `https://www.youtube.com/watch?v=${this.currentTrack.id}`;
+
+			// Use yt-dlp with ffmpeg seeking
+			// Note: -ss before -i is faster (input seeking) but less accurate
+			// -ss after -i is slower but more accurate
+			const ytdlpProcess = spawn("yt-dlp", ["-f", "bestaudio", "-o", "-", videoUrl]);
+
+			// Use ffmpeg with -ss to seek to position and convert to Opus
+			const ffmpegProcess = spawn("ffmpeg", [
+				"-ss",
+				clampedPosition.toString(), // Seek to this position
+				"-i",
+				"pipe:0",
+				"-loglevel",
+				"error",
+				"-af",
+				"aresample=async=1:min_hard_comp=0.100000:first_pts=0",
+				"-ar",
+				"48000",
+				"-ac",
+				"2",
+				"-f",
+				"opus",
+				"-b:a",
+				"128k",
+				"-vbr",
+				"off",
+				"-compression_level",
+				"10",
+				"-frame_duration",
+				"20",
+				"-application",
+				"audio",
+				"-packet_loss",
+				"3",
+				"-bufsize",
+				"512k",
+				"pipe:1",
+			]);
+
+			// Store active processes
+			this.activeProcesses.ytdlp = ytdlpProcess;
+			this.activeProcesses.ffmpeg = ffmpegProcess;
+
+			// Unified cleanup
+			const cleanup = (reason?: string) => {
+				if (reason) {
+					console.error(`[PlaybackController] Cleaning up seek processes: ${reason}`);
+				}
+				this.killActiveProcesses();
+			};
+
+			// Set timeout
+			this.activeProcesses.timeout = setTimeout(() => {
+				cleanup("30-second timeout exceeded during seek");
+				this.player.stop();
+			}, 30000);
+
+			// Pipe streams
+			ytdlpProcess.stdout?.pipe(ffmpegProcess.stdin!);
+			ytdlpProcess.stderr?.on("data", () => {});
+
+			// Error handlers
+			ytdlpProcess.on("error", (error) => {
+				console.error("[PlaybackController] yt-dlp seek error:", error);
+				cleanup("yt-dlp error");
+				this.player.stop();
+			});
+
+			ffmpegProcess.on("error", (error) => {
+				console.error("[PlaybackController] ffmpeg seek error:", error);
+				cleanup("ffmpeg error");
+				this.player.stop();
+			});
+
+			ytdlpProcess.on("exit", (code) => {
+				if (code !== 0 && code !== null) {
+					console.error(`[PlaybackController] yt-dlp exited with code ${code}`);
+					cleanup("yt-dlp unexpected exit");
+					this.player.stop();
+				}
+			});
+
+			ffmpegProcess.on("exit", (code) => {
+				if (code !== 0 && code !== null && this.state === PlaybackState.PLAYING) {
+					console.error(`[PlaybackController] ffmpeg exited with code ${code}`);
+					cleanup("ffmpeg unexpected exit");
+					this.player.stop();
+				}
+			});
+
+			ffmpegProcess.stderr?.on("data", () => {});
+
+			if (!ffmpegProcess.stdout) {
+				throw new Error("Failed to get ffmpeg stdout");
+			}
+
+			// Create audio resource from PCM stream
+			const resource = createAudioResource(ffmpegProcess.stdout, {
+				inputType: StreamType.Raw,
+				inlineVolume: true,
+			});
+
+			resource.volume?.setVolume(this.volume / 100);
+
+			// Normal cleanup
+			ffmpegProcess.on("close", () => {
+				cleanup();
+			});
+
+			// Update position and play
+			this.position = clampedPosition;
+			this.player.play(resource);
+			this.state = PlaybackState.PLAYING;
+
+			console.log(
+				`[PlaybackController] Seeked to ${clampedPosition}s in: ${this.currentTrack.title}`,
+			);
+		} catch (error) {
+			console.error("[PlaybackController] Seek error:", error);
+			this.killActiveProcesses();
+			throw error;
+		}
+	}
+
+	/**
 	 * Get playback state
 	 */
 	getState(): PlaybackState {
@@ -239,9 +440,41 @@ export class PlaybackController {
 	}
 
 	/**
+	 * Kill all active processes (yt-dlp, ffmpeg, timeout)
+	 */
+	private killActiveProcesses(): void {
+		// Clear timeout
+		if (this.activeProcesses.timeout) {
+			clearTimeout(this.activeProcesses.timeout);
+			this.activeProcesses.timeout = undefined;
+		}
+
+		// Kill yt-dlp process
+		if (this.activeProcesses.ytdlp) {
+			try {
+				this.activeProcesses.ytdlp.kill("SIGKILL");
+			} catch (error) {
+				// Process might already be dead
+			}
+			this.activeProcesses.ytdlp = undefined;
+		}
+
+		// Kill ffmpeg process
+		if (this.activeProcesses.ffmpeg) {
+			try {
+				this.activeProcesses.ffmpeg.kill("SIGKILL");
+			} catch (error) {
+				// Process might already be dead
+			}
+			this.activeProcesses.ffmpeg = undefined;
+		}
+	}
+
+	/**
 	 * Cleanup
 	 */
 	cleanup(): void {
+		this.killActiveProcesses();
 		this.stopPositionTracking();
 		this.stop();
 	}

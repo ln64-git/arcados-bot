@@ -124,6 +124,12 @@ export class VoiceConnectionManager {
   // Cleanup callbacks for when connection is destroyed
   private cleanupCallbacks: Map<Snowflake, () => void> = new Map();
 
+  // Audio receive callbacks by guild ID (to allow stopping/replacing)
+  private audioReceiveCallbacks: Map<
+    Snowflake,
+    (userId: string, audioData: Buffer) => void
+  > = new Map();
+
   private logger: VoiceLogger;
 
   private constructor() {
@@ -151,12 +157,12 @@ export class VoiceConnectionManager {
     // Check if already connected
     const existingSession = this.sessions.get(guild.id);
     if (existingSession) {
-      // If connected to the same channel, return existing session
-      if (existingSession.channelId === channelId) {
-        return existingSession;
-      }
-
-      // Otherwise, disconnect from current channel first
+      // ALWAYS disconnect and reconnect to ensure clean receiver state
+      // The receiver buffers audio at the connection level, so we need to destroy it
+      // and create a fresh connection to clear all buffered audio
+      this.logger.info(
+        `Already connected to a channel in guild ${guild.id}, disconnecting and reconnecting...`
+      );
       await this.leaveChannel(guild.id);
     }
 
@@ -177,6 +183,31 @@ export class VoiceConnectionManager {
         CONNECTION_CONSTANTS.CONNECTION_READY_TIMEOUT_MS
       );
 
+      this.logger.info(
+        `[VOICE_CONNECTION] Connection ready for guild ${guild.id}, ` +
+          `receiver available: ${connection.receiver ? "yes" : "no"}`
+      );
+
+      // CRITICAL: Immediately clear any buffered audio from the receiver
+      // The receiver starts capturing audio as soon as the connection is ready,
+      // even before we set up our listeners. We need to destroy all existing
+      // subscriptions to prevent old audio from being processed.
+      if (connection.receiver && connection.receiver.subscriptions) {
+        this.logger.debug(`Clearing ${connection.receiver.subscriptions.size} existing receiver subscriptions`);
+        for (const [userId] of connection.receiver.subscriptions) {
+          try {
+            connection.receiver.subscriptions.delete(userId);
+          } catch (error) {
+            this.logger.debug(`Error clearing initial subscription for user ${userId}:`, error);
+          }
+        }
+      }
+
+      // Also remove any speaking listeners that might have been set up automatically
+      if (connection.receiver) {
+        connection.receiver.speaking.removeAllListeners();
+      }
+
       // Create audio player
       const player = createAudioPlayer();
       connection.subscribe(player);
@@ -193,8 +224,9 @@ export class VoiceConnectionManager {
       }
 
       // Create voice session
+      const now = Date.now();
       const session: VoiceSession = {
-        sessionId: `${guild.id}-${Date.now()}`,
+        sessionId: `${guild.id}-${now}`,
         guildId: guild.id,
         channelId: channel.id,
         channel,
@@ -207,6 +239,7 @@ export class VoiceConnectionManager {
         transcriptions: [],
         mode: VoiceMode.COMMAND,
         conversationHistory: [],
+        sessionStartTime: now, // Set immediately to ignore any old audio
       };
 
       // Set up connection event handlers
@@ -530,6 +563,39 @@ export class VoiceConnectionManager {
   }
 
   /**
+   * Stop receiving audio (remove listeners)
+   *
+   * @param guildId Guild ID
+   */
+  public stopReceiving(guildId: Snowflake): void {
+    const session = this.sessions.get(guildId);
+    if (!session) {
+      return;
+    }
+
+    // Remove the callback
+    this.audioReceiveCallbacks.delete(guildId);
+
+    // Remove all listeners from the receiver
+    const { connection } = session;
+    if (connection.receiver) {
+      // Remove ALL speaking event listeners (both 'start' and 'end')
+      connection.receiver.speaking.removeAllListeners();
+
+      // Also clear all active subscriptions to destroy buffered streams
+      if (connection.receiver.subscriptions) {
+        for (const [userId] of connection.receiver.subscriptions) {
+          try {
+            connection.receiver.subscriptions.delete(userId);
+          } catch (error) {
+            // Ignore errors during cleanup
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Start receiving audio from the voice channel
    * Sets up audio receive stream for transcription
    *
@@ -546,14 +612,17 @@ export class VoiceConnectionManager {
       throw new Error(`No active voice session for guild ${guildId}`);
     }
 
+    // Stop any existing receiving first to prevent duplicate listeners
+    // This also clears all subscriptions and their buffered audio
+    this.stopReceiving(guildId);
+
     const { connection } = session;
 
-    this.logger.debug(`Setting up audio receiver for guild ${guildId}`);
+    // Store the callback
+    this.audioReceiveCallbacks.set(guildId, onAudioReceived);
 
     // Set up receiver for each user
     connection.receiver.speaking.on("start", (userId) => {
-      this.logger.debug(`User ${userId} started speaking`);
-
       // Create opus stream for this user
       const opusStream = connection.receiver.subscribe(userId, {
         end: {
@@ -562,16 +631,12 @@ export class VoiceConnectionManager {
         },
       });
 
-      this.logger.debug(`Created opus stream for user ${userId}`);
-
       // Decode Opus to PCM
       const decoder = new prism.opus.Decoder({
         frameSize: 960,
         channels: 2, // Stereo
         rate: 48000, // 48kHz
       });
-
-      this.logger.debug(`Created Opus decoder for user ${userId}`);
 
       // Collect decoded PCM audio data
       const audioChunks: Buffer[] = [];
@@ -585,7 +650,6 @@ export class VoiceConnectionManager {
         } catch (error) {
           // Skip invalid opus packets silently
           // These can happen due to network issues or codec problems
-          this.logger.debug(`Skipping invalid opus packet for user ${userId}`);
         }
       });
 
@@ -599,16 +663,13 @@ export class VoiceConnectionManager {
       });
 
       decoder.on("end", () => {
-        this.logger.debug(
-          `Decoder ended for user ${userId}, collected ${audioChunks.length} PCM chunks`
-        );
-
         if (audioChunks.length > 0) {
           const combinedAudio = Buffer.concat(audioChunks);
-          this.logger.debug(
-            `Sending combined PCM audio to callback: ${combinedAudio.length} bytes`
-          );
-          onAudioReceived(userId, combinedAudio);
+          // Use the current callback (in case it was changed)
+          const currentCallback = this.audioReceiveCallbacks.get(guildId);
+          if (currentCallback) {
+            currentCallback(userId, combinedAudio);
+          }
         } else if (hasReceivedData) {
           this.logger.warn(
             `No PCM audio chunks collected for user ${userId} despite receiving data`
@@ -618,9 +679,7 @@ export class VoiceConnectionManager {
 
       decoder.on("error", (error) => {
         // Log but don't crash - invalid packets are common
-        this.logger.debug(
-          `Decoder error for user ${userId} (skipping): ${error.message}`
-        );
+        this.logger.debug(`Decoder error for user ${userId}: ${error.message}`);
       });
 
       opusStream.on("error", (error) => {
@@ -629,10 +688,6 @@ export class VoiceConnectionManager {
         decoder.destroy();
       });
     });
-
-    this.logger.debug(
-      "Audio receiver setup complete, waiting for users to speak..."
-    );
   }
 
   /**

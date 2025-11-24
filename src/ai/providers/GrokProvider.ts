@@ -119,6 +119,7 @@ export class GrokProvider extends BaseAIProvider {
         }
       );
 
+      console.log("[GrokProvider] Raw response data:", JSON.stringify(response.data, null, 2).substring(0, 2000));
       return this.parseResponsePayload(response.data);
     } catch (error: any) {
       console.error("🔸 GrokProvider: chat completion failed:", error);
@@ -217,12 +218,18 @@ export class GrokProvider extends BaseAIProvider {
       data.output || data.response?.output || data.response?.output_text || [];
     const outputArray = Array.isArray(rawOutput) ? rawOutput : [rawOutput];
 
+    // Debug logging
+    console.log("[GrokProvider] parseResponsePayload - outputArray length:", outputArray.length);
+    if (outputArray.length > 1) {
+      console.log("[GrokProvider] WARNING: Multiple outputs detected:", outputArray.length);
+    }
+
     const toolCalls: ToolCall[] = [];
-    let finalText = "";
+    const textOutputs: string[] = []; // Collect all text outputs separately
 
     const appendText = (text?: string) => {
       if (text && text.trim()) {
-        finalText += (finalText ? "\n" : "") + text.trim();
+        textOutputs.push(text.trim());
       }
     };
 
@@ -295,15 +302,15 @@ export class GrokProvider extends BaseAIProvider {
     }
 
     // Check for text in the response object itself
-    if (!finalText.trim() && data.text) {
+    if (textOutputs.length === 0 && data.text) {
       if (typeof data.text === "string") {
-        finalText = data.text;
+        textOutputs.push(data.text);
       } else if (data.text.content) {
-        finalText = data.text.content;
+        textOutputs.push(data.text.content);
       }
     }
 
-    if (!finalText.trim()) {
+    if (textOutputs.length === 0) {
       const fallbackText =
         data?.output_text ||
         data?.response?.output_text ||
@@ -312,7 +319,7 @@ export class GrokProvider extends BaseAIProvider {
           ? data.response.output_text.join("\n")
           : "");
       if (fallbackText) {
-        finalText = fallbackText;
+        textOutputs.push(fallbackText);
       } else if (toolCalls.length === 0) {
         // Only warn if we have no text AND no tool calls (unexpected state)
         // If we have tool calls, empty text is expected - we'll get text after submitting tool outputs
@@ -321,6 +328,16 @@ export class GrokProvider extends BaseAIProvider {
           `Response ID: ${data?.id || "unknown"}`
         );
       }
+    }
+
+    // Use only the LAST text output to avoid multiple responses
+    // Grok sometimes returns multiple output blocks, but we only want the final one
+    const finalText = textOutputs.length > 0 ? (textOutputs[textOutputs.length - 1] || "") : "";
+
+    if (textOutputs.length > 1) {
+      console.log("[GrokProvider] Multiple text outputs found:", textOutputs.length);
+      console.log("[GrokProvider] Using last output. Discarded outputs:", textOutputs.slice(0, -1).map(t => t.substring(0, 100)));
+      console.log("[GrokProvider] Final output:", finalText.substring(0, 200));
     }
 
     return {

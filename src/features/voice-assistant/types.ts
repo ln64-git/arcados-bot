@@ -49,6 +49,9 @@ export interface VoiceSession {
 
 	/** Conversation history for maintaining context */
 	conversationHistory?: Array<{ role: string; content: string }>;
+
+	/** Timestamp when this session started (used to ignore old audio) */
+	sessionStartTime?: number;
 }
 
 /**

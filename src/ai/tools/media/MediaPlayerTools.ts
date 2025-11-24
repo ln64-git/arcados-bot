@@ -1,4 +1,4 @@
-import type { DatabaseTool, ToolContext } from "../registry/DatabaseTools.js";
+import type { DatabaseTool, ToolContext, DatabaseToolResult } from "../registry/DatabaseTools.js";
 import { MediaPlayerManager } from "../../../features/media-player/MediaPlayerManager.js";
 import { VoiceAssistantManager } from "../../../features/voice-assistant/VoiceAssistantManager.js";
 import { VoiceConnectionManager } from "../../../features/voice-assistant/services/VoiceConnectionManager.js";
@@ -52,10 +52,45 @@ async function findTextChannel(
 	return textChannel;
 }
 
+/**
+ * Generate a haiku about experiencing the music query
+ * Format: 5-7-5 syllables
+ */
+function generateMusicHaiku(query: string): string {
+	const queryLower = query.toLowerCase();
+	
+	// Extract artist/song if in "song by artist" or "artist - song" format
+	const byMatch = queryLower.match(/(.+?)\s+by\s+(.+)/);
+	const dashMatch = queryLower.match(/(.+?)\s+-\s+(.+)/);
+	
+	let songPart = queryLower;
+	let artistPart = "";
+	
+	if (byMatch) {
+		songPart = byMatch[1].trim();
+		artistPart = byMatch[2].trim();
+	} else if (dashMatch) {
+		artistPart = dashMatch[1].trim();
+		songPart = dashMatch[2].trim();
+	}
+	
+	// Simple haiku templates focused on the experience
+	const haikus = [
+		`Waves of sound now flow\nThrough speakers, filling the space\nMusic starts to play`,
+		`Melody begins\nRhythm finds its way to ears\nSoundscape unfolds now`,
+		`Notes begin to rise\nHarmony fills the silence\nMusic takes its place`,
+		`Audio streams forth\nBeats and melodies combine\nSoundscape comes alive`,
+		`Tune begins to play\nFilling empty air with sound\nMusic finds its way`,
+	];
+	
+	// Return a random haiku
+	return haikus[Math.floor(Math.random() * haikus.length)];
+}
+
 export const playMediaTool: DatabaseTool = {
 	name: "playMedia",
 	description:
-		"Play a song or search query using the built-in media player. Use this when the user asks to play music (e.g., 'play billy joel', 'play stairway to heaven').",
+		"Play a song or search query using the built-in media player. Use this when the user asks to play music (e.g., 'play billy joel', 'play stairway to heaven'). The tool returns a haiku about experiencing the music - respond with ONLY that haiku, nothing else.",
 	parameters: {
 		type: "object",
 		properties: {
@@ -72,10 +107,10 @@ export const playMediaTool: DatabaseTool = {
 		const { query } = params;
 
 		if (!query || typeof query !== "string") {
-			return JSON.stringify({
+			return {
 				success: false,
 				error: "Query is required",
-			});
+			} as DatabaseToolResult;
 		}
 
 		try {
@@ -91,26 +126,26 @@ export const playMediaTool: DatabaseTool = {
 				// Bot is not in a voice channel, try to join user's channel
 				const client = mediaPlayer.getClient();
 				if (!client) {
-					return JSON.stringify({
+					return {
 						success: false,
 						error: "Bot client not available",
-					});
+					} as DatabaseToolResult;
 				}
 
 				const guild = await client.guilds.fetch(guildId);
 				if (!guild) {
-					return JSON.stringify({
+					return {
 						success: false,
 						error: "Guild not found",
-					});
+					} as DatabaseToolResult;
 				}
 
 				const member = await guild.members.fetch(userId);
 				if (!member?.voice?.channel) {
-					return JSON.stringify({
+					return {
 						success: false,
 						error: "You need to be in a voice channel first!",
-					});
+					} as DatabaseToolResult;
 				}
 
 				voiceChannel = member.voice.channel as VoiceChannel;
@@ -121,10 +156,10 @@ export const playMediaTool: DatabaseTool = {
 				// Get the session after joining
 				session = voiceAssistant.getSession(guildId);
 				if (!session) {
-					return JSON.stringify({
+					return {
 						success: false,
 						error: "Failed to join voice channel",
-					});
+					} as DatabaseToolResult;
 				}
 			} else {
 				voiceChannel = session.channel;
@@ -133,10 +168,10 @@ export const playMediaTool: DatabaseTool = {
 			// Find text channel
 			const textChannel = await findTextChannel(context, session);
 			if (!textChannel) {
-				return JSON.stringify({
+				return {
 					success: false,
 					error: "Could not find a text channel",
-				});
+				} as DatabaseToolResult;
 			}
 
 			// Get user object
@@ -152,28 +187,33 @@ export const playMediaTool: DatabaseTool = {
 			);
 
 			if (!track) {
-				return JSON.stringify({
+				return {
 					success: false,
 					error: `Could not find any results for "${query}"`,
-				});
+				} as DatabaseToolResult;
 			}
 
-			return JSON.stringify({
+			// Generate haiku about experiencing the music
+			const haiku = generateMusicHaiku(query);
+
+			return {
 				success: true,
-				message: `Playing: ${track.title}`,
-				track: {
-					title: track.title,
-					channel: track.channel,
-					duration: track.durationFormatted,
+				formatted: haiku,
+				data: {
+					track: {
+						title: track.title,
+						channel: track.channel,
+						duration: track.durationFormatted,
+					},
 				},
-			});
+			} as DatabaseToolResult;
 		} catch (error) {
 			console.error("[MediaPlayerTools] Error playing media:", error);
-			return JSON.stringify({
+			return {
 				success: false,
 				error:
 					error instanceof Error ? error.message : "Failed to play media",
-			});
+			} as DatabaseToolResult;
 		}
 	},
 };
@@ -574,9 +614,17 @@ Do not include any explanations, descriptions, or additional text. Only return t
 			// Get user object
 			const user = await session.channel.client.users.fetch(userId);
 
-			// Add songs to queue
+			// Add songs to queue with 15-minute duration cap
 			const addedTracks: string[] = [];
+			const maxDurationSeconds = 15 * 60; // 15 minutes
+			let totalDuration = 0;
+			
 			for (const song of songs) {
+				// Check if we've reached the duration limit
+				if (totalDuration >= maxDurationSeconds) {
+					break;
+				}
+				
 				const track = await mediaPlayer.play(
 					guildId,
 					song,
@@ -586,12 +634,18 @@ Do not include any explanations, descriptions, or additional text. Only return t
 				);
 				if (track) {
 					addedTracks.push(track.title);
+					totalDuration += track.duration || 0;
+					
+					// Stop if adding this track exceeded the limit
+					if (totalDuration >= maxDurationSeconds) {
+						break;
+					}
 				}
 			}
 
 			return JSON.stringify({
 				success: true,
-				message: `Generated and queued ${addedTracks.length} songs`,
+				message: `Generated and queued ${addedTracks.length} songs (${Math.floor(totalDuration / 60)}:${String(Math.floor(totalDuration % 60)).padStart(2, '0')})`,
 				songCount: addedTracks.length,
 				songs: addedTracks,
 			});

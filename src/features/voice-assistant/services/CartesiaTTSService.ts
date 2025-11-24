@@ -203,10 +203,19 @@ export class CartesiaTTSService {
    */
   private resetWebSocket(): void {
     if (this.websocket) {
-      // Don't await close - just mark for reset
-      this.websocket.close().catch(() => {
+      // Safely close the websocket if it has a close method
+      try {
+        if (typeof this.websocket.close === 'function') {
+          this.websocket.close().catch(() => {
+            // Ignore errors during close
+          });
+        } else if (typeof this.websocket.destroy === 'function') {
+          // Some websocket implementations use destroy instead
+          this.websocket.destroy();
+        }
+      } catch (error) {
         // Ignore errors during close
-      });
+      }
     }
     this.websocket = null;
     this.wsConnectPromise = null;
