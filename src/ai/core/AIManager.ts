@@ -303,13 +303,7 @@ Be friendly, engaging, and responsive. Your first paragraph should immediately a
 
       // Call provider's streaming method
       if (provider instanceof GrokProvider) {
-        console.log("[AIManager] Calling GrokProvider.streamTextAPI");
-        console.log("[AIManager] System prompt length:", systemPrompt.length);
-        console.log("[AIManager] User prompt:", fullPrompt.substring(0, 200));
-        const stream = await provider.streamTextAPI(systemPrompt, fullPrompt);
-        console.log("[AIManager] Received stream from GrokProvider, type:", typeof stream);
-        console.log("[AIManager] Stream has asyncIterator:", Symbol.asyncIterator in Object(stream));
-        return stream;
+        return await provider.streamTextAPI(systemPrompt, fullPrompt);
       }
 
       // Fallback to non-streaming for other providers

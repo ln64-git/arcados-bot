@@ -292,12 +292,6 @@ export class StreamingTTSQueue {
 		// Combine batched paragraphs with space separator
 		const text = batchedParagraphs.join(" ");
 
-		// Log batching info
-		if (batchedParagraphs.length > 1) {
-			console.log(
-				`[StreamingTTSQueue] Batched ${batchedParagraphs.length} paragraphs (${text.length} chars, est. ${estimatedBatchTime}ms synthesis)`,
-			);
-		}
 
 		this.queueChunkForSynthesis(text, false);
 	}
@@ -343,9 +337,8 @@ export class StreamingTTSQueue {
 							this.synthesisTimeSamples.length;
 					}
 
-					// Move to playback queue
-					console.log(`[StreamingTTSQueue] Chunk ready for playback: "${chunk.text.substring(0, 50)}..." (${chunk.audio.length} bytes)`);
-					this.playbackQueue.push(chunk);
+				// Move to playback queue
+				this.playbackQueue.push(chunk);
 
 					// Remove from synthesis queue
 					const index = this.synthesisQueue.indexOf(chunk);
@@ -353,7 +346,6 @@ export class StreamingTTSQueue {
 						this.synthesisQueue.splice(index, 1);
 					}
 				} else {
-					console.error(`[StreamingTTSQueue] Synthesis returned null/empty for chunk: "${chunk.text.substring(0, 50)}..."`);
 					// Remove from synthesis queue even on failure
 					const index = this.synthesisQueue.indexOf(chunk);
 					if (index !== -1) {
@@ -362,9 +354,7 @@ export class StreamingTTSQueue {
 				}
 			})
 			.catch((error) => {
-				console.error(`[StreamingTTSQueue] Synthesis error for chunk: "${chunk.text.substring(0, 50)}..."`, error);
-				console.error(`[StreamingTTSQueue] Error details:`, error instanceof Error ? error.message : String(error));
-				console.error(`[StreamingTTSQueue] Error stack:`, error instanceof Error ? error.stack : "No stack");
+				console.error(`[StreamingTTSQueue] Synthesis error:`, error);
 				// Remove from synthesis queue on error
 				const index = this.synthesisQueue.indexOf(chunk);
 				if (index !== -1) {
@@ -378,20 +368,15 @@ export class StreamingTTSQueue {
 	 */
 	private async synthesizeChunk(chunk: QueuedChunk): Promise<TTSChunk | null> {
 		try {
-			console.log(`[StreamingTTSQueue] Synthesizing chunk: "${chunk.text.substring(0, 50)}..."`);
-			const startTime = Date.now();
-			
 			// Add timeout to prevent hanging (30 seconds max)
 			const synthesisPromise = this.ttsManager.synthesize(chunk.text);
 			const timeoutPromise = new Promise<never>((_, reject) => {
 				setTimeout(() => {
-					reject(new Error(`TTS synthesis timeout after 30 seconds for: "${chunk.text.substring(0, 50)}..."`));
+					reject(new Error(`TTS synthesis timeout after 30 seconds`));
 				}, 30000);
 			});
 			
 			const audio = await Promise.race([synthesisPromise, timeoutPromise]);
-			const duration = Date.now() - startTime;
-			console.log(`[StreamingTTSQueue] Synthesis complete in ${duration}ms, audio size: ${audio.length} bytes`);
 			
 			if (!audio || audio.length === 0) {
 				console.error(`[StreamingTTSQueue] Synthesis returned empty audio buffer`);
@@ -406,8 +391,6 @@ export class StreamingTTSQueue {
 			};
 		} catch (error) {
 			console.error("[StreamingTTSQueue] Error synthesizing chunk:", error);
-			console.error("[StreamingTTSQueue] Error details:", error instanceof Error ? error.message : String(error));
-			console.error("[StreamingTTSQueue] Error stack:", error instanceof Error ? error.stack : "No stack");
 			return null;
 		}
 	}

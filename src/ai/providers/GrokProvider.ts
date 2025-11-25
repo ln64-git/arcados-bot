@@ -49,18 +49,8 @@ export class GrokProvider extends BaseAIProvider {
     systemPrompt: string,
     userPrompt: string
   ): Promise<AsyncIterable<string>> {
-    console.log("[GrokProvider] streamTextAPI called");
-    console.log("[GrokProvider] System prompt length:", systemPrompt.length);
-    console.log("[GrokProvider] User prompt:", userPrompt.substring(0, 200));
-    console.log("[GrokProvider] Model name:", this.modelName);
-
     try {
-      console.log(
-        "[GrokProvider] Creating OpenAI client with model:",
-        this.modelName
-      );
       const model = this.xai(this.modelName);
-      console.log("[GrokProvider] Model object created:", typeof model);
 
       const result = await streamText({
         model: model,
@@ -69,112 +59,31 @@ export class GrokProvider extends BaseAIProvider {
         temperature: 0.7,
       });
 
-      console.log(
-        "[GrokProvider] streamText result received, type:",
-        typeof result
-      );
-      console.log("[GrokProvider] Result keys:", Object.keys(result));
-      console.log("[GrokProvider] Has textStream:", !!result.textStream);
-      console.log("[GrokProvider] textStream type:", typeof result.textStream);
-      console.log(
-        "[GrokProvider] textStream is async iterable:",
-        Symbol.asyncIterator in Object(result.textStream)
-      );
-
-      // Check for errors in the result
-      if ("error" in result) {
-        console.error("[GrokProvider] Error in result:", result.error);
-      }
-
-      // Check if there's a fullText property we should use instead
-      if ("fullStream" in result) {
-        console.log("[GrokProvider] Found fullStream property");
-      }
-      if ("text" in result) {
-        console.log("[GrokProvider] Found text property:", typeof result.text);
-      }
-
       // Return async iterable that yields text deltas
       return (async function* () {
-        let chunkCount = 0;
-        let totalLength = 0;
         try {
-          // Check if textStream exists
           if (!result.textStream) {
-            console.error("[GrokProvider] textStream is null or undefined!");
-            console.error(
-              "[GrokProvider] Available result properties:",
-              Object.keys(result)
-            );
-
             // Try alternative stream properties
             if ("fullStream" in result && result.fullStream) {
-              console.log(
-                "[GrokProvider] Attempting to use fullStream instead"
-              );
               for await (const chunk of result.fullStream) {
                 if (chunk.type === "text-delta" && chunk.textDelta) {
-                  chunkCount++;
-                  totalLength += chunk.textDelta.length;
-                  console.log(
-                    `[GrokProvider] Chunk ${chunkCount} from fullStream: "${chunk.textDelta}"`
-                  );
                   yield chunk.textDelta;
                 }
               }
-            } else {
-              console.error("[GrokProvider] No usable stream found in result");
-              yield "";
             }
             return;
           }
 
-          console.log("[GrokProvider] Starting to iterate over textStream");
           for await (const delta of result.textStream) {
-            chunkCount++;
-            totalLength += delta.length;
-            console.log(
-              `[GrokProvider] Chunk ${chunkCount}: "${delta}" (length: ${delta.length}, total: ${totalLength})`
-            );
             yield delta;
           }
-          console.log(
-            `[GrokProvider] Stream complete, total chunks: ${chunkCount}, total length: ${totalLength}`
-          );
-
-          if (chunkCount === 0) {
-            console.error(
-              "[GrokProvider] WARNING: Stream completed but no chunks were received!"
-            );
-          }
         } catch (streamError) {
-          console.error(
-            "[GrokProvider] Error iterating textStream:",
-            streamError
-          );
-          console.error(
-            "[GrokProvider] Stream error details:",
-            streamError instanceof Error
-              ? streamError.message
-              : String(streamError)
-          );
-          console.error(
-            "[GrokProvider] Stream error stack:",
-            streamError instanceof Error ? streamError.stack : "No stack"
-          );
+          console.error("[GrokProvider] Error iterating textStream:", streamError);
           throw streamError;
         }
       })();
     } catch (error) {
       console.error("[GrokProvider] Error in streamTextAPI:", error);
-      console.error(
-        "[GrokProvider] Error details:",
-        error instanceof Error ? error.message : String(error)
-      );
-      console.error(
-        "[GrokProvider] Error stack:",
-        error instanceof Error ? error.stack : "No stack"
-      );
       // Return empty stream on error
       return (async function* () {
         yield "";

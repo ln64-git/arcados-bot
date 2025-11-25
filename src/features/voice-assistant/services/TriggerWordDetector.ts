@@ -71,16 +71,11 @@ export class TriggerWordDetector {
 	 */
 	public detect(text: string): TriggerWordResult {
 		if (!text || text.trim().length === 0) {
-			console.log("[TriggerWordDetector] Empty text provided");
 			return {
 				detected: false,
 				confidence: 0,
 			};
 		}
-
-		console.log(`[TriggerWordDetector] Detecting trigger in text: "${text}"`);
-		console.log(`[TriggerWordDetector] Base trigger word: "${this.triggerWord}"`);
-		console.log(`[TriggerWordDetector] Variations:`, Array.from(this.variations));
 
 		const normalizedText = text.toLowerCase();
 
@@ -88,16 +83,12 @@ export class TriggerWordDetector {
 		for (const variation of this.variations) {
 			const pattern = this.variationPatterns.get(variation);
 			if (!pattern) {
-				console.log(`[TriggerWordDetector] No pattern found for variation: "${variation}"`);
 				continue;
 			}
 
-			console.log(`[TriggerWordDetector] Testing variation: "${variation}" with pattern: ${pattern}`);
 			const match = pattern.exec(text);
-			console.log(`[TriggerWordDetector] Pattern match result:`, match ? `Found at index ${match.index}` : "No match");
 
 			if (match) {
-				console.log(`[TriggerWordDetector] ✅ Trigger detected: "${variation}" at position ${match.index}`);
 				return {
 					detected: true,
 					confidence: 1.0,
@@ -107,15 +98,12 @@ export class TriggerWordDetector {
 			}
 		}
 
-		console.log(`[TriggerWordDetector] No exact match found, trying fuzzy match...`);
 		// Check for fuzzy matches (medium confidence)
 		const fuzzyResult = this.fuzzyMatch(normalizedText);
 		if (fuzzyResult.detected) {
-			console.log(`[TriggerWordDetector] ✅ Fuzzy match found: "${fuzzyResult.triggerWord}" with confidence ${fuzzyResult.confidence}`);
 			return fuzzyResult;
 		}
 
-		console.log(`[TriggerWordDetector] ❌ No trigger word detected in: "${text}"`);
 		// No match found
 		return {
 			detected: false,

@@ -34,6 +34,9 @@ export const TRANSCRIPTION_CONSTANTS = {
 
   // Polling interval for silence detection
   TRANSCRIPTION_CHECK_INTERVAL_MS: 500, // Check every 500ms
+
+  // Prevent duplicate utterances within a short time window
+  DUPLICATE_TEXT_WINDOW_MS: 4000, // Ignore exact duplicates within 4 seconds
 } as const;
 
 /**
