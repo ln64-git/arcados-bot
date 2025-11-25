@@ -29,14 +29,23 @@ export class TriggerWordDetector {
 
 		// Add common phonetic variations for "aria"
 		if (this.triggerWord === "aria") {
-			this.variations.add("arya");
-			this.variations.add("ariah");
-			this.variations.add("area"); // Common mishearing
-			this.variations.add("ariya");
-			this.variations.add("are you"); // Very common STT mishearing
-			this.variations.add("ari");
-			this.variations.add("airy");
-			this.variations.add("arianna");
+			const phoneticVariations = [
+				"arya",
+				"ariah",
+				"area", // Common mishearing
+				"ariya",
+				"are you", // Very common STT mishearing
+				"ari",
+				"airy",
+				"arianna",
+			];
+			
+			// Add all case variations for each phonetic variation
+			for (const variation of phoneticVariations) {
+				this.variations.add(variation.toLowerCase());
+				this.variations.add(variation.charAt(0).toUpperCase() + variation.slice(1));
+				this.variations.add(variation.toUpperCase());
+			}
 		}
 
 		// Pre-compile regex patterns for all variations
@@ -62,22 +71,33 @@ export class TriggerWordDetector {
 	 */
 	public detect(text: string): TriggerWordResult {
 		if (!text || text.trim().length === 0) {
+			console.log("[TriggerWordDetector] Empty text provided");
 			return {
 				detected: false,
 				confidence: 0,
 			};
 		}
 
+		console.log(`[TriggerWordDetector] Detecting trigger in text: "${text}"`);
+		console.log(`[TriggerWordDetector] Base trigger word: "${this.triggerWord}"`);
+		console.log(`[TriggerWordDetector] Variations:`, Array.from(this.variations));
+
 		const normalizedText = text.toLowerCase();
 
 		// Check for exact matches first (highest confidence) using cached patterns
 		for (const variation of this.variations) {
 			const pattern = this.variationPatterns.get(variation);
-			if (!pattern) continue;
+			if (!pattern) {
+				console.log(`[TriggerWordDetector] No pattern found for variation: "${variation}"`);
+				continue;
+			}
 
+			console.log(`[TriggerWordDetector] Testing variation: "${variation}" with pattern: ${pattern}`);
 			const match = pattern.exec(text);
+			console.log(`[TriggerWordDetector] Pattern match result:`, match ? `Found at index ${match.index}` : "No match");
 
 			if (match) {
+				console.log(`[TriggerWordDetector] ✅ Trigger detected: "${variation}" at position ${match.index}`);
 				return {
 					detected: true,
 					confidence: 1.0,
@@ -87,12 +107,15 @@ export class TriggerWordDetector {
 			}
 		}
 
+		console.log(`[TriggerWordDetector] No exact match found, trying fuzzy match...`);
 		// Check for fuzzy matches (medium confidence)
 		const fuzzyResult = this.fuzzyMatch(normalizedText);
 		if (fuzzyResult.detected) {
+			console.log(`[TriggerWordDetector] ✅ Fuzzy match found: "${fuzzyResult.triggerWord}" with confidence ${fuzzyResult.confidence}`);
 			return fuzzyResult;
 		}
 
+		console.log(`[TriggerWordDetector] ❌ No trigger word detected in: "${text}"`);
 		// No match found
 		return {
 			detected: false,

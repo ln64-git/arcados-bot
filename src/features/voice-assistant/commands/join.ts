@@ -20,22 +20,50 @@ const joinCommand: Command = {
 
   async execute(interaction: ChatInputCommandInteraction) {
     // Defer reply IMMEDIATELY to prevent timeout
-    await interaction
-      .deferReply({ flags: MessageFlags.Ephemeral })
-      .catch((error) => {
-        console.error("[JoinCommand] Failed to defer reply:", error);
-        return; // If defer fails, we can't do anything
-      });
+    let deferred = false;
+    try {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      deferred = true;
+    } catch (error) {
+      console.error("[JoinCommand] Failed to defer reply:", error);
+      // If defer fails, try to reply directly (may fail if interaction expired)
+      try {
+        await interaction.reply({
+          content: "Processing your request...",
+          flags: MessageFlags.Ephemeral,
+        });
+        deferred = true;
+      } catch (replyError) {
+        console.error("[JoinCommand] Failed to reply:", replyError);
+        // Interaction may have expired, can't do anything
+        return;
+      }
+    }
+
+    // Helper function to safely send messages
+    const sendMessage = async (content: string) => {
+      try {
+        if (deferred) {
+          await interaction.editReply({ content });
+        } else {
+          await interaction.followUp({
+            content,
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+      } catch (error) {
+        console.error("[JoinCommand] Failed to send message:", error);
+      }
+    };
 
     try {
       const voiceAssistant = VoiceAssistantManager.getInstance();
 
       // Check if voice assistant is enabled
       if (!voiceAssistant.isEnabled()) {
-        await interaction.editReply({
-          content:
-            "Voice assistant is not configured. Please contact the bot administrator.",
-        });
+        await sendMessage(
+          "Voice assistant is not configured. Please contact the bot administrator."
+        );
         return;
       }
 
@@ -43,9 +71,7 @@ const joinCommand: Command = {
       const member = interaction.guild?.members.cache.get(interaction.user.id);
 
       if (!member?.voice.channel) {
-        await interaction.editReply({
-          content: "You need to be in a voice channel first!",
-        });
+        await sendMessage("You need to be in a voice channel first!");
         return;
       }
 
@@ -53,9 +79,7 @@ const joinCommand: Command = {
 
       // Check if it's a voice channel (not stage)
       if (voiceChannel.type !== ChannelType.GuildVoice) {
-        await interaction.editReply({
-          content: "I can only join regular voice channels.",
-        });
+        await sendMessage("I can only join regular voice channels.");
         return;
       }
 
@@ -63,10 +87,9 @@ const joinCommand: Command = {
       const permissions = voiceChannel.permissionsFor(interaction.client.user);
 
       if (!permissions?.has("Connect") || !permissions?.has("Speak")) {
-        await interaction.editReply({
-          content:
-            "I don't have permission to join or speak in that voice channel!",
-        });
+        await sendMessage(
+          "I don't have permission to join or speak in that voice channel!"
+        );
         return;
       }
 
@@ -75,26 +98,23 @@ const joinCommand: Command = {
         interaction.user.id
       );
 
-      await interaction.editReply({
-        content: `Joined ${voiceChannel.name}! Say "Aria" followed by your question to talk to me.`,
-      });
+      await sendMessage(
+        `Joined ${voiceChannel.name}! Say "Aria" followed by your question to talk to me.`
+      );
     } catch (error) {
       console.error("[JoinCommand] Error:", error);
 
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error occurred";
 
-      // Try to send error message, but don't throw if interaction expired
-      try {
-        await interaction.editReply({
-          content: `Failed to join voice channel: ${errorMessage}`,
-        });
-      } catch (replyError) {
-        console.error(
-          "[JoinCommand] Failed to send error message:",
-          replyError
-        );
+      // Provide more helpful error messages for common issues
+      let userMessage = `Failed to join voice channel: ${errorMessage}`;
+      if (error instanceof Error && error.name === "AbortError") {
+        userMessage =
+          "Failed to join voice channel: The connection timed out or was cancelled. Please try again.";
       }
+
+      await sendMessage(userMessage);
     }
   },
 };

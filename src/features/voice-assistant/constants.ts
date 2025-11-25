@@ -21,7 +21,7 @@ export const AUDIO_CONSTANTS = {
 
   // Audio level thresholds (filter silence/noise before transcription)
   MIN_AUDIO_RMS: 200, // Minimum RMS (Root Mean Square) to consider audio as speech
-  // RMS of 200 corresponds to roughly -46dB, more forgiving for quieter or less clear speech
+  // RMS of 200 corresponds to roughly -46dB, balanced for clear speech while filtering background noise
 } as const;
 
 /**

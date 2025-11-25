@@ -209,7 +209,7 @@ When sharing info about people:
   ): Promise<AIResponse> {
     const db = await this.getDb();
 
-    const methodPrompt = `You are Arcados' live voice assistant speaking in a Discord call. Be natural, understanding, and genuinely helpful. 
+    const methodPrompt = `You are Arcados' live voice assistant speaking in a Discord call. Be natural, understanding, and genuinely helpful.
 
 Respond naturally to what the user is actually asking - don't be overly constrained. If they need clarification, ask questions. If they want a detailed explanation, provide it. If they want a quick answer, keep it brief. Match their energy and intent.
 
@@ -233,6 +233,97 @@ Be friendly and engaging. Show that you understand what they're asking, even if 
         useDiscordFormatting: false,
       }
     );
+  }
+
+  /**
+   * Stream voice response for low-latency playback
+   * Returns async iterable of text tokens
+   */
+  public async streamVoiceResponse(
+    prompt: string,
+    userId: string,
+    providerName: string,
+    guildId: string,
+    options?: {
+      personaKey?: string;
+      channelId?: string;
+    }
+  ): Promise<AsyncIterable<string>> {
+    const db = await this.getDb();
+
+    // Streaming-optimized voice instructions with paragraph-based structure
+    const methodPrompt = `You are Arcados' live voice assistant speaking in a Discord call. You are optimized for real-time streaming responses.
+
+CRITICAL RESPONSE STRUCTURE - PARAGRAPH-BASED:
+1. **Opening paragraph (1-2 sentences)**: Start with an immediate, self-contained response that gives instant value. This is your "header" - the user hears this first.
+
+2. **Follow-up paragraphs**: If you need to elaborate, structure your response in complete PARAGRAPHS of thought. Each paragraph should:
+   - Contain a complete idea or thought unit
+   - Maintain emotional context and tone throughout
+   - Be 2-4 sentences that naturally belong together
+   - Flow naturally from one to the next
+
+Use a SINGLE newline (\\n) to separate paragraphs. This helps with efficient chunking.
+
+Your opening paragraph MUST be immediately useful and complete. Don't start with fragments like "U.S. policy." or "The answer is." - start with full thoughts.
+
+Examples of good paragraph structure:
+
+✅ GOOD:
+"It's going to rain tomorrow with temperatures in the mid-60s. You'll want to bring an umbrella.
+The rain is expected to start around noon and continue through the evening. It's part of a larger storm system moving through the region.
+By Friday the weather should clear up nicely, with sunny skies and temps in the 70s."
+
+❌ BAD (fragmented, no paragraphs):
+"The weather. It's going to rain. Tomorrow. Temperatures will be in the 60s. Bring an umbrella. A storm system is coming. It'll clear up Friday."
+
+Speak naturally and conversationally. Structure your thoughts in complete paragraphs so the emotional context flows naturally within each thought unit.
+
+If the user asks you to leave the call, stop, pause, resume, or otherwise control playback, call the appropriate voice tool instead of narrating instructions.
+
+Be friendly, engaging, and responsive. Your first paragraph should immediately address what they're asking.`;
+
+    const provider = this.getProvider(providerName);
+
+    const rateLimitError = this.checkRateLimitAndReturn(userId, provider);
+    if (rateLimitError) {
+      // Return error as single-item async iterable
+      return (async function* () {
+        yield rateLimitError.content || rateLimitError.error || "Rate limit exceeded";
+      })();
+    }
+
+    try {
+      // Build system prompt
+      const personaKey = options?.personaKey ?? "casual";
+      const persona = this.PERSONAS[personaKey as keyof typeof this.PERSONAS] || this.PERSONAS[this.DEFAULT_PERSONA];
+      const systemPrompt = `${persona.base}\n\n${methodPrompt}`;
+
+      const fullPrompt = prompt;
+
+      // Call provider's streaming method
+      if (provider instanceof GrokProvider) {
+        console.log("[AIManager] Calling GrokProvider.streamTextAPI");
+        console.log("[AIManager] System prompt length:", systemPrompt.length);
+        console.log("[AIManager] User prompt:", fullPrompt.substring(0, 200));
+        const stream = await provider.streamTextAPI(systemPrompt, fullPrompt);
+        console.log("[AIManager] Received stream from GrokProvider, type:", typeof stream);
+        console.log("[AIManager] Stream has asyncIterator:", Symbol.asyncIterator in Object(stream));
+        return stream;
+      }
+
+      // Fallback to non-streaming for other providers
+      console.warn(`Provider ${providerName} doesn't support streaming, falling back to blocking`);
+      const response = await provider.callTextAPI(systemPrompt, fullPrompt);
+      return (async function* () {
+        yield response;
+      })();
+    } catch (error) {
+      console.error("🔸 Error in streaming voice response:", error);
+      return (async function* () {
+        yield "I encountered an error processing your request.";
+      })();
+    }
   }
 
   public async generateImage(

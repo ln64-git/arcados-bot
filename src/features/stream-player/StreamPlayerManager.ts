@@ -77,12 +77,12 @@ export class StreamPlayerManager {
         console.log(
           "\n🧪 [StreamPlayerManager] Running Discord streaming test..."
         );
-        this.testDiscordStreamingWorkflow().catch((error) => {
-          console.error(
-            "❌ [StreamPlayerManager] Discord streaming test failed:",
-            error
-          );
-        });
+        // this.testDiscordStreamingWorkflow().catch((error) => {
+        //   console.error(
+        //     "❌ [StreamPlayerManager] Discord streaming test failed:",
+        //     error
+        //   );
+        // });
       }
     } catch (error) {
       console.error("[StreamPlayerManager] Failed to initialize:", error);

@@ -177,11 +177,35 @@ export class VoiceConnectionManager {
       });
 
       // Wait for connection to be ready
-      await entersState(
-        connection,
-        VoiceConnectionStatus.Ready,
-        CONNECTION_CONSTANTS.CONNECTION_READY_TIMEOUT_MS
-      );
+      try {
+        await entersState(
+          connection,
+          VoiceConnectionStatus.Ready,
+          CONNECTION_CONSTANTS.CONNECTION_READY_TIMEOUT_MS
+        );
+      } catch (stateError) {
+        // Clean up the connection if it failed to become ready
+        try {
+          if (connection.state.status !== VoiceConnectionStatus.Destroyed) {
+            connection.destroy();
+          }
+        } catch (destroyError) {
+          // Connection might already be destroyed, ignore the error
+          if (destroyError instanceof Error && destroyError.message.includes("already been destroyed")) {
+            this.logger.debug("Connection already destroyed (ignoring)");
+          } else {
+            this.logger.debug("Error destroying failed connection:", destroyError);
+          }
+        }
+
+        // Provide more specific error messages
+        if (stateError && typeof stateError === "object" && "name" in stateError && stateError.name === "AbortError") {
+          throw new Error(
+            "Connection timed out or was cancelled. The voice channel may be unavailable or the bot may not have proper permissions."
+          );
+        }
+        throw stateError;
+      }
 
       this.logger.info(
         `[VOICE_CONNECTION] Connection ready for guild ${guild.id}, ` +
@@ -217,11 +241,18 @@ export class VoiceConnectionManager {
 
       // Get current participants
       const participants = new Set<string>();
-      for (const [userId] of channel.members) {
+      for (const [userId, member] of channel.members) {
         if (userId !== channel.client.user?.id) {
           participants.add(userId);
+          this.logger.info(
+            `👤 Participant detected: ${member.displayName} (${userId}) - Voice state: muted=${member.voice.mute}, deafened=${member.voice.deaf}, self-muted=${member.voice.selfMute}, self-deafened=${member.voice.selfDeaf}`
+          );
         }
       }
+
+      this.logger.info(
+        `Total participants in channel: ${participants.size}`
+      );
 
       // Create voice session
       const now = Date.now();
@@ -288,15 +319,30 @@ export class VoiceConnectionManager {
         this.cleanupCallbacks.delete(guildId);
       }
 
-      // Destroy the connection
-      session.connection.destroy();
-
-      // Remove session
+      // Remove session BEFORE destroying to prevent race conditions
       this.sessions.delete(guildId);
+
+      // Destroy the connection (check if already destroyed)
+      try {
+        if (session.connection.state.status !== VoiceConnectionStatus.Destroyed) {
+          session.connection.destroy();
+        } else {
+          this.logger.debug(`Connection already destroyed for guild ${guildId}`);
+        }
+      } catch (error) {
+        // Connection might already be destroyed, ignore the error
+        if (error instanceof Error && error.message.includes("already been destroyed")) {
+          this.logger.debug(`Connection already destroyed for guild ${guildId} (ignoring)`);
+        } else {
+          throw error;
+        }
+      }
 
       this.logger.info(`Left voice channel in guild ${guildId}`);
     } catch (error) {
       this.logger.error(`Error leaving voice channel:`, error);
+      // Make sure session is removed even if destroy fails
+      this.sessions.delete(guildId);
     }
   }
 
@@ -618,11 +664,28 @@ export class VoiceConnectionManager {
 
     const { connection } = session;
 
+    // Ensure receiver is enabled (should be enabled by default, but verify)
+    if (!connection.receiver) {
+      this.logger.error(`Receiver not available for guild ${guildId}`);
+      throw new Error(`Voice receiver not available for guild ${guildId}`);
+    }
+
+
+
     // Store the callback
     this.audioReceiveCallbacks.set(guildId, onAudioReceived);
 
+    // Also listen for "end" events to track when users stop speaking
+    connection.receiver.speaking.on("end", (userId) => {
+      this.logger.debug(`[AUDIO_RECEIVE] User ${userId} stopped speaking in guild ${guildId}`);
+    });
+
     // Set up receiver for each user
     connection.receiver.speaking.on("start", (userId) => {
+      this.logger.debug(
+        `[AUDIO_RECEIVE] 🎤 User ${userId} started speaking in guild ${guildId}`
+      );
+
       // Create opus stream for this user
       const opusStream = connection.receiver.subscribe(userId, {
         end: {
@@ -630,6 +693,10 @@ export class VoiceConnectionManager {
           duration: 1500, // End after 1.5 seconds of silence (more forgiving for natural pauses)
         },
       });
+
+      this.logger.debug(
+        `[AUDIO_RECEIVE] Subscribed to audio stream for user ${userId} in guild ${guildId}`
+      );
 
       // Decode Opus to PCM
       const decoder = new prism.opus.Decoder({
@@ -665,14 +732,25 @@ export class VoiceConnectionManager {
       decoder.on("end", () => {
         if (audioChunks.length > 0) {
           const combinedAudio = Buffer.concat(audioChunks);
+          this.logger.debug(
+            `[AUDIO_RECEIVE] Received ${audioChunks.length} chunks (${combinedAudio.length} bytes) from user ${userId} in guild ${guildId}`
+          );
           // Use the current callback (in case it was changed)
           const currentCallback = this.audioReceiveCallbacks.get(guildId);
           if (currentCallback) {
             currentCallback(userId, combinedAudio);
+          } else {
+            this.logger.warn(
+              `[AUDIO_RECEIVE] No callback registered for guild ${guildId} when audio received from user ${userId}`
+            );
           }
         } else if (hasReceivedData) {
           this.logger.warn(
-            `No PCM audio chunks collected for user ${userId} despite receiving data`
+            `[AUDIO_RECEIVE] No PCM audio chunks collected for user ${userId} despite receiving data in guild ${guildId}`
+          );
+        } else {
+          this.logger.debug(
+            `[AUDIO_RECEIVE] No audio data received for user ${userId} in guild ${guildId}`
           );
         }
       });
@@ -683,11 +761,18 @@ export class VoiceConnectionManager {
       });
 
       opusStream.on("error", (error) => {
-        this.logger.error(`Opus stream error for user ${userId}:`, error);
+        this.logger.error(`[AUDIO_RECEIVE] Opus stream error for user ${userId} in guild ${guildId}:`, error);
         // Clean up on stream error
         decoder.destroy();
       });
     });
+
+    // Log that receiver is set up
+    this.logger.info(
+      `[AUDIO_RECEIVE] Audio receiver listeners set up for guild ${guildId}. ` +
+      `Receiver available: ${connection.receiver ? "yes" : "no"}, ` +
+      `Connection status: ${connection.state.status}`
+    );
   }
 
   /**
@@ -774,9 +859,12 @@ export class VoiceConnectionManager {
       } catch {
         // Disconnect if reconnection fails
         this.logger.warn(`Failed to reconnect in guild ${session.guildId}`);
-        connection.destroy();
+        
+        // Remove session BEFORE destroying to prevent race conditions
+        this.sessions.delete(session.guildId);
+        this.audioPlayers.delete(session.guildId);
 
-        // Invoke cleanup callback before removing session
+        // Invoke cleanup callback
         const cleanup = this.cleanupCallbacks.get(session.guildId);
         if (cleanup) {
           this.logger.debug(
@@ -786,8 +874,21 @@ export class VoiceConnectionManager {
           this.cleanupCallbacks.delete(session.guildId);
         }
 
-        this.sessions.delete(session.guildId);
-        this.audioPlayers.delete(session.guildId);
+        // Destroy the connection (check if already destroyed)
+        try {
+          if (connection.state.status !== VoiceConnectionStatus.Destroyed) {
+            connection.destroy();
+          } else {
+            this.logger.debug(`Connection already destroyed for guild ${session.guildId}`);
+          }
+        } catch (error) {
+          // Connection might already be destroyed, ignore the error
+          if (error instanceof Error && error.message.includes("already been destroyed")) {
+            this.logger.debug(`Connection already destroyed for guild ${session.guildId} (ignoring)`);
+          } else {
+            this.logger.error(`Error destroying connection:`, error);
+          }
+        }
       }
     });
 

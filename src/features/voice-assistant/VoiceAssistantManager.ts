@@ -9,6 +9,7 @@ import { config } from "../../config/index.js";
 import { VoiceLogger } from "./utils/VoiceLogger.js";
 import { AudioToneGenerator } from "./utils/AudioToneGenerator.js";
 import { MediaPlayerManager } from "../media-player/MediaPlayerManager.js";
+import { StreamingTTSQueue } from "../tts/StreamingTTSQueue.js";
 import type { VoiceSession, TranscriptionEntry, TTSChunk } from "./types.js";
 import {
   VoiceAssistantEvent,
@@ -83,6 +84,9 @@ export class VoiceAssistantManager {
 
   // Track when sessions started to ignore audio for a brief period after joining
   private sessionStartTimes: Map<Snowflake, number> = new Map();
+
+  // Feature flag for streaming TTS (set to true for low-latency streaming)
+  private useStreamingTTS = true;
 
   private readonly controlKeywords: Record<VoiceControlCommand, string[]> = {
     [VoiceControlCommand.LEAVE]: [
@@ -313,14 +317,23 @@ export class VoiceAssistantManager {
    * @param session Voice session
    */
   private startReceivingAudio(session: VoiceSession): void {
+    this.logger.info(
+      `[AUDIO_RECEIVE] Setting up audio reception for guild ${session.guildId}, session ${session.sessionId}`
+    );
     this.connectionManager.startReceiving(
       session.guildId,
       async (userId, audioData) => {
+        this.logger.debug(
+          `[AUDIO_RECEIVE] 📥 Audio callback triggered for user ${userId} in guild ${session.guildId}, audio size: ${audioData.length} bytes`
+        );
         // Brief safety margin to catch any edge cases
         // VoiceConnectionManager clears receiver subscriptions at the source
         const sessionStartTime = session.sessionStartTime || this.sessionStartTimes.get(session.guildId);
         if (sessionStartTime && Date.now() - sessionStartTime < 100) {
           // Don't process audio in the first 100ms after starting
+          this.logger.debug(
+            `[AUDIO_RECEIVE] Ignoring audio from user ${userId} - too soon after session start`
+          );
           return;
         }
 
@@ -331,8 +344,16 @@ export class VoiceAssistantManager {
         );
 
         if (chunk) {
+          this.logger.debug(
+            `[AUDIO_RECEIVE] ✂️ Audio chunk ready for transcription from user ${userId} in guild ${session.guildId} (${chunk.data.length} bytes, ${chunk.duration}ms)`
+          );
           // Transcribe the chunk immediately
           await this.handleAudioChunk(session, chunk, userId);
+        } else {
+          const bufferStatus = this.audioProcessor.getBufferStatus(session.sessionId);
+          this.logger.debug(
+            `[AUDIO_RECEIVE] Audio buffered but chunk not ready yet from user ${userId} - buffer: ${bufferStatus.totalBytes} bytes, ${bufferStatus.durationMs.toFixed(0)}ms (need 2000ms)`
+          );
         }
         // Note: We also check for complete utterances after silence in processCompleteUtterance
       }
@@ -552,16 +573,25 @@ export class VoiceAssistantManager {
     try {
       // Check audio level before transcription to filter out silence/noise
       const audioRMS = this.calculateAudioRMS(chunk.data, chunk.channels);
-      
+
       // Use a slightly lower threshold for chunks that are long enough (more likely to be real speech)
       // But be stricter for very short chunks (more likely to be noise)
-      const effectiveMinRMS = chunk.duration >= 3000 
+      const effectiveMinRMS = chunk.duration >= 3000
         ? AUDIO_CONSTANTS.MIN_AUDIO_RMS * 0.8  // 80% of threshold for longer chunks
         : AUDIO_CONSTANTS.MIN_AUDIO_RMS;        // Full threshold for short chunks
-      
+
+      this.logger.debug(
+        `🔊 Audio RMS: ${audioRMS.toFixed(2)} (threshold: ${effectiveMinRMS}, duration: ${chunk.duration}ms, size: ${chunk.data.length} bytes)`
+      );
+
       if (audioRMS < effectiveMinRMS) {
+        this.logger.debug(
+          `⚠️ Audio RMS too low (${audioRMS.toFixed(2)} < ${effectiveMinRMS}), skipping transcription`
+        );
         return; // Skip transcription for silence/noise
       }
+
+      this.logger.debug(`✅ Audio passed RMS check, proceeding to transcription...`);
 
       // Convert stereo to mono for better Whisper transcription
       let audioChunkForTranscription = chunk;
@@ -576,9 +606,12 @@ export class VoiceAssistantManager {
       }
 
       // Transcribe the audio (using mono version if converted)
+      this.logger.debug(`🎙️ Sending ${chunk.data.length} bytes to Whisper for transcription...`);
       let transcription = await this.transcriber.transcribe(audioChunkForTranscription);
+      this.logger.debug(`📝 Whisper result: "${transcription}"`);
 
       if (!transcription || transcription.trim().length === 0) {
+        this.logger.debug(`⚠️ Empty transcription received, skipping`);
         return; // Ignore empty transcriptions
       }
 
@@ -889,6 +922,8 @@ export class VoiceAssistantManager {
     // Check if already processing for this guild
     const isLocked = this.processingLocks.get(session.guildId);
     if (isLocked) {
+      console.log(`[processTranscriptionBuffer] Skipping - already processing for guild ${session.guildId}`);
+      this.logger.debug(`[processTranscriptionBuffer] Skipping - already processing for guild ${session.guildId}`);
       return;
     }
 
@@ -948,7 +983,28 @@ export class VoiceAssistantManager {
     }
 
     // Check for trigger word
+    console.log(`[TRIGGER] Checking utterance: "${utterance}" in mode: ${currentMode}`);
     const triggerResult = this.triggerDetector.detect(utterance);
+
+    console.log(
+      `[TRIGGER] 🔍 Mode: ${currentMode}, Trigger detected: ${triggerResult.detected}, Utterance: "${utterance}"`
+    );
+    this.logger.debug(
+      `[TRIGGER] 🔍 Mode: ${currentMode}, Trigger detected: ${triggerResult.detected}, Utterance: "${utterance}"`
+    );
+
+    if (triggerResult.detected) {
+      console.log(
+        `[TRIGGER] ✨ Trigger word "${triggerResult.triggerWord}" found at position ${triggerResult.position}`
+      );
+      this.logger.info(
+        `[TRIGGER] ✨ Trigger word "${triggerResult.triggerWord}" found at position ${triggerResult.position}`
+      );
+    } else {
+      console.log(
+        `[TRIGGER] ❌ No trigger word detected in: "${utterance}"`
+      );
+    }
 
     // In conversation mode, check if this is the same user continuing the conversation
     let shouldProcess = false;
@@ -1013,28 +1069,56 @@ export class VoiceAssistantManager {
             triggerResult.triggerWord
           ) || utterance;
         shouldProcess = true;
+        this.logger.debug(
+          `[TRIGGER] Command mode: Trigger detected, will process query: "${query}"`
+        );
+      } else {
+        this.logger.debug(
+          `[TRIGGER] Command mode: No trigger word detected, ignoring utterance: "${utterance}"`
+        );
       }
     }
 
     if (shouldProcess) {
+      console.log(`[TRIGGER] Processing request: mode=${currentMode}, query="${query}", userId=${userId}`);
+      this.logger.info(
+        `[TRIGGER] Processing request: mode=${currentMode}, query="${query}", userId=${userId}`
+      );
+      
+      // Check if already processing
+      const isLocked = this.processingLocks.get(session.guildId);
+      if (isLocked) {
+        console.log(`[TRIGGER] Already processing for guild ${session.guildId}, skipping request`);
+        this.logger.warn(`[TRIGGER] Already processing for guild ${session.guildId}, skipping request`);
+        return;
+      }
+      
       // Play thinking sound when processing
+      console.log(`[TRIGGER] Playing thinking sound for guild ${session.guildId}`);
       await this.playThinkingSound(session.guildId);
 
       // Set processing lock
+      console.log(`[TRIGGER] Setting processing lock for guild ${session.guildId}`);
       this.processingLocks.set(session.guildId, true);
 
       try {
+        console.log(`[TRIGGER] Calling generateAndSpeakResponse for query: "${query || utterance}"`);
         // Generate and speak response
         await this.generateAndSpeakResponse(
           session,
           query || utterance,
           userId
         );
+        console.log(`[TRIGGER] generateAndSpeakResponse completed successfully`);
       } catch (error) {
+        console.error("[TRIGGER] Error during response generation:", error);
+        console.error("[TRIGGER] Error details:", error instanceof Error ? error.message : String(error));
+        console.error("[TRIGGER] Error stack:", error instanceof Error ? error.stack : "No stack");
         this.logger.error("Error during response generation:", error);
         throw error;
       } finally {
         // Release lock
+        console.log(`[TRIGGER] Releasing processing lock for guild ${session.guildId}`);
         this.processingLocks.delete(session.guildId);
       }
     }
@@ -1491,6 +1575,211 @@ export class VoiceAssistantManager {
    * @param userId User ID
    */
   private async generateAndSpeakResponse(
+    session: VoiceSession,
+    query: string,
+    userId: string
+  ): Promise<void> {
+    console.log(`[generateAndSpeakResponse] Called with query: "${query}", useStreamingTTS: ${this.useStreamingTTS}`);
+    // Use streaming if enabled, otherwise fallback to blocking
+    if (this.useStreamingTTS) {
+      console.log(`[generateAndSpeakResponse] Calling generateAndSpeakResponseStreaming`);
+      return this.generateAndSpeakResponseStreaming(session, query, userId);
+    } else {
+      console.log(`[generateAndSpeakResponse] Calling generateAndSpeakResponseBlocking`);
+      return this.generateAndSpeakResponseBlocking(session, query, userId);
+    }
+  }
+
+  /**
+   * Generate AI response and speak it (STREAMING VERSION - low latency)
+   */
+  private async generateAndSpeakResponseStreaming(
+    session: VoiceSession,
+    query: string,
+    userId: string
+  ): Promise<void> {
+    try {
+      console.log(`[STREAMING] generateAndSpeakResponseStreaming called for: "${query}"`);
+      this.logger.info(`[STREAMING] Generating response for: "${query}"`);
+
+      const controller = this.resetPlaybackController(session.guildId);
+
+      // Start streaming tokens from LLM
+      const tokenStream = await this.aiManager.runWithGuildContext(
+        session.guildId,
+        async () => {
+          return await this.aiManager.streamVoiceResponse(
+            query,
+            userId,
+            "grok",
+            session.guildId,
+            {
+              personaKey: AI_CONSTANTS.DEFAULT_PERSONA,
+              channelId: session.channelId,
+            }
+          );
+        }
+      );
+
+      // Create streaming TTS queue
+      const streamingQueue = new StreamingTTSQueue(this.tts);
+
+      // Process tokens and manage playback
+      let isFirstChunk = true;
+      let fullResponse = "";
+
+      // Start token processing loop
+      const tokenProcessor = (async () => {
+        try {
+          console.log("[STREAMING] Starting token processing");
+          console.log("[STREAMING] Stream type:", typeof tokenStream);
+          console.log("[STREAMING] Stream is async iterable:", Symbol.asyncIterator in Object(tokenStream));
+          this.logger.debug("[STREAMING] Starting token processing, stream type:", typeof tokenStream);
+          this.logger.debug("[STREAMING] Stream is async iterable:", Symbol.asyncIterator in Object(tokenStream));
+          let tokenCount = 0;
+          let hasReceivedAnyToken = false;
+
+          console.log("[STREAMING] About to start for-await loop");
+          for await (const token of tokenStream) {
+            if (controller.aborted) {
+              console.log("[STREAMING] Token stream aborted");
+              this.logger.debug("[STREAMING] Token stream aborted");
+              break;
+            }
+
+            hasReceivedAnyToken = true;
+            tokenCount++;
+            console.log(`[STREAMING] Token ${tokenCount}: "${token}" (length: ${token.length})`);
+            this.logger.debug(`[STREAMING] Token ${tokenCount}: "${token}" (length: ${token.length})`);
+
+            fullResponse += token;
+            streamingQueue.addToken(token);
+
+            // Log queue stats periodically
+            if (fullResponse.length % 100 === 0) {
+              console.log("[STREAMING] Queue stats:", streamingQueue.getStats());
+              this.logger.debug("[STREAMING] Queue stats:", streamingQueue.getStats());
+            }
+          }
+
+          console.log(`[STREAMING] For-await loop exited. Received tokens: ${tokenCount}, Has received any: ${hasReceivedAnyToken}, Response length: ${fullResponse.length}`);
+          
+          // Signal that streaming is complete
+          streamingQueue.finalize();
+          console.log(`[STREAMING] Token stream complete. Total tokens: ${tokenCount}, Response length: ${fullResponse.length}`);
+          this.logger.info(`[STREAMING] Token stream complete. Total tokens: ${tokenCount}, Response length: ${fullResponse.length}`);
+          
+          if (!hasReceivedAnyToken) {
+            console.error("[STREAMING] WARNING: No tokens received from stream!");
+            this.logger.error("[STREAMING] WARNING: No tokens received from stream!");
+          }
+        } catch (error) {
+          console.error("[STREAMING] Error in token stream:", error);
+          console.error("[STREAMING] Error details:", error instanceof Error ? error.message : String(error));
+          console.error("[STREAMING] Error stack:", error instanceof Error ? error.stack : "No stack");
+          this.logger.error("[STREAMING] Error in token stream:", error);
+        }
+      })();
+
+      // Start playback loop
+      let tokensComplete = false;
+      tokenProcessor.then(() => {
+        tokensComplete = true;
+      });
+
+      const playbackLoop = (async () => {
+        try {
+          console.log("[STREAMING] Starting playback loop");
+          while (!controller.aborted) {
+            // Check if we have audio ready
+            const hasReady = streamingQueue.hasReadyAudio();
+            const stats = streamingQueue.getStats();
+            console.log(`[STREAMING] Playback check - hasReady: ${hasReady}, stats:`, stats);
+            
+            if (hasReady) {
+              const audioChunk = streamingQueue.getNextChunk();
+
+              if (audioChunk) {
+                if (isFirstChunk) {
+                  const elapsed = Date.now() - Date.now(); // Will track from query start
+                  console.log(`[STREAMING] First audio playing (latency: ${elapsed}ms)`);
+                  this.logger.info(`[STREAMING] First audio playing (latency: ${elapsed}ms)`);
+                  isFirstChunk = false;
+                }
+
+                console.log(`[STREAMING] Playing audio chunk (${audioChunk.length} bytes)`);
+                this.logger.debug(
+                  `[STREAMING] Playing audio chunk (${audioChunk.length} bytes)`
+                );
+
+                // Wait for playback resume if paused
+                await this.waitForPlaybackResume(controller);
+
+                if (controller.aborted) {
+                  console.log("[STREAMING] Playback aborted");
+                  this.logger.debug("[STREAMING] Playback aborted");
+                  break;
+                }
+
+                // Play the chunk
+                console.log(`[STREAMING] Calling playAudio for guild ${session.guildId}`);
+                await this.connectionManager.playAudio(session.guildId, audioChunk);
+                console.log(`[STREAMING] Audio chunk playback complete`);
+                this.logger.debug(`[STREAMING] Audio chunk playback complete`);
+
+                // Notify queue that playback finished
+                streamingQueue.notifyPlaybackComplete();
+              } else {
+                console.warn(`[STREAMING] getNextChunk() returned null/undefined`);
+                this.logger.warn(`[STREAMING] getNextChunk() returned null/undefined`);
+              }
+            } else {
+              // No audio ready yet, wait a bit
+              await new Promise((resolve) => setTimeout(resolve, 50));
+
+              // Check if we're done (tokens complete AND queue is idle)
+              if (tokensComplete && streamingQueue.isIdle()) {
+                console.log("[STREAMING] All audio played, exiting playback loop");
+                this.logger.debug("[STREAMING] All audio played, exiting playback loop");
+                break;
+              }
+            }
+          }
+
+          console.log("[STREAMING] Playback loop exited");
+          this.logger.info("[STREAMING] Playback complete");
+        } catch (error) {
+          console.error("[STREAMING] Error in playback loop:", error);
+          console.error("[STREAMING] Playback error details:", error instanceof Error ? error.message : String(error));
+          this.logger.error("[STREAMING] Error in playback loop:", error);
+          throw error;
+        }
+      })();
+
+      // Wait for both to complete
+      await Promise.all([tokenProcessor, playbackLoop]);
+
+      this.logger.info(`[STREAMING] Full response: "${fullResponse}"`);
+    } catch (error) {
+      this.logger.error("[STREAMING] Error generating/speaking response:", error);
+
+      const errorType =
+        error instanceof Error && error.message.includes("timeout")
+          ? VoiceAssistantErrorType.AI_FAILED
+          : VoiceAssistantErrorType.UNKNOWN;
+
+      await this.handleErrorFeedback(
+        session,
+        errorType,
+        "I encountered an error processing your request. Please try again."
+      );
+    }
+  }
+
+  /**
+   * Generate AI response and speak it (BLOCKING VERSION - original behavior)
+   */
+  private async generateAndSpeakResponseBlocking(
     session: VoiceSession,
     query: string,
     userId: string
