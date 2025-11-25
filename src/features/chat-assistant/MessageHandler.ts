@@ -192,7 +192,7 @@ export class MessageHandler {
         message.author.id,
         this.provider,
         {
-          personaKey: "casual",
+          personaKey: "sophia",
           useDiscordFormatting: false,
           mode: "chat",
           channelId: message.channel.id,
@@ -340,7 +340,7 @@ export class MessageHandler {
         message.author.id,
         this.provider,
         {
-          personaKey: "casual",
+          personaKey: "sophia",
           history,
           useDiscordFormatting: false,
           mode: "chat",

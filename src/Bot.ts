@@ -96,9 +96,12 @@ export class Bot {
     });
 
     // Voice state updates - disconnect if everyone leaves
-    this.client.on("voiceStateUpdate", async (oldState: VoiceState, newState: VoiceState) => {
-      await this.handleVoiceStateUpdate(oldState, newState);
-    });
+    this.client.on(
+      "voiceStateUpdate",
+      async (oldState: VoiceState, newState: VoiceState) => {
+        await this.handleVoiceStateUpdate(oldState, newState);
+      }
+    );
   }
 
   /**
@@ -119,6 +122,23 @@ export class Bot {
     );
     await this.conversationWorkflow.start();
 
+    // Initialize message handler
+    // Handles AI assistant interactions
+    this.messageHandler = new MessageHandler(this.client, this.db);
+
+    // Initialize voice assistant
+    // Handles voice channel interactions and real-time voice conversation
+    this.voiceAssistant = VoiceAssistantManager.getInstance();
+    await this.voiceAssistant.initialize(this.client);
+
+    // Initialize media player
+    const mediaPlayer = MediaPlayerManager.getInstance();
+    mediaPlayer.initialize(this.client);
+
+    // Initialize stream player
+    const streamPlayer = StreamPlayerManager.getInstance();
+    // await streamPlayer.initialize(this.client);
+
     // Initialize state sync service
     // Handles real-time Discord state synchronization
     this.stateSyncService = new StateSyncService(
@@ -129,23 +149,6 @@ export class Bot {
       false // Set to true for verbose logging
     );
     await this.stateSyncService.start();
-
-    // Initialize message handler
-    // Handles AI assistant interactions
-    this.messageHandler = new MessageHandler(this.client, this.db);
-
-    // Initialize voice assistant
-    // Handles voice channel interactions and real-time voice conversation
-    this.voiceAssistant = VoiceAssistantManager.getInstance();
-    this.voiceAssistant.initialize(this.client);
-
-    // Initialize media player
-    const mediaPlayer = MediaPlayerManager.getInstance();
-    mediaPlayer.initialize(this.client);
-
-    // Initialize stream player
-    const streamPlayer = StreamPlayerManager.getInstance();
-    await streamPlayer.initialize(this.client);
 
     console.log("✅ All features initialized successfully");
   }
@@ -160,7 +163,7 @@ export class Bot {
 
     try {
       const mediaPlayer = MediaPlayerManager.getInstance();
-      
+
       // For queue button, we need to reply ephemerally, so don't defer
       if (interaction.customId === "media_queue") {
         await mediaPlayer.handleButtonInteraction(
@@ -268,7 +271,7 @@ export class Bot {
     // Check if bot is connected to this channel
     const connectionManager = VoiceConnectionManager.getInstance();
     const session = connectionManager.getSession(oldState.guild.id);
-    
+
     if (!session || session.channelId !== oldState.channelId) {
       return; // Bot is not connected to this channel
     }
@@ -296,10 +299,7 @@ export class Bot {
         try {
           await this.voiceAssistant.leaveVoiceChannel(oldState.guild.id);
         } catch (error) {
-          console.error(
-            `🔸 Error disconnecting voice assistant:`,
-            error
-          );
+          console.error(`🔸 Error disconnecting voice assistant:`, error);
         }
       }
 
@@ -336,6 +336,11 @@ export class Bot {
     // Shutdown stream player
     const streamPlayer = StreamPlayerManager.getInstance();
     await streamPlayer.shutdown();
+
+    // Cleanup voice assistant (stops Whisper server)
+    if (this.voiceAssistant) {
+      await this.voiceAssistant.cleanup();
+    }
 
     // Destroy Discord client
     this.client.destroy();

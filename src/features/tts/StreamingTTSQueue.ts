@@ -22,6 +22,7 @@ interface QueuedChunk {
 	audio?: Buffer;
 	synthesisStartTime?: number;
 	synthesisEndTime?: number;
+	sequenceNumber: number; // Track original order
 }
 
 export class StreamingTTSQueue {
@@ -45,6 +46,9 @@ export class StreamingTTSQueue {
 	// Statistics for adaptive optimization
 	private synthesisTimeSamples: number[] = [];
 	private avgSynthesisTimePerParagraph = 2500; // default 2.5s per paragraph
+
+	// Sequence tracking for maintaining order
+	private nextSequenceNumber = 0;
 
 	constructor(ttsManager: TTSManager, config?: Partial<StreamingQueueConfig>) {
 		this.ttsManager = ttsManager;
@@ -309,6 +313,7 @@ export class StreamingTTSQueue {
 			isParagraph,
 			estimatedDuration,
 			synthesisStartTime: Date.now(),
+			sequenceNumber: this.nextSequenceNumber++,
 		};
 
 		// Start synthesis immediately
@@ -337,8 +342,8 @@ export class StreamingTTSQueue {
 							this.synthesisTimeSamples.length;
 					}
 
-				// Move to playback queue
-				this.playbackQueue.push(chunk);
+					// Move to playback queue in correct order
+					this.insertChunkInOrder(chunk);
 
 					// Remove from synthesis queue
 					const index = this.synthesisQueue.indexOf(chunk);
@@ -361,6 +366,26 @@ export class StreamingTTSQueue {
 					this.synthesisQueue.splice(index, 1);
 				}
 			});
+	}
+
+	/**
+	 * Insert a completed chunk into the playback queue in correct sequence order
+	 * This ensures chunks play in the order they were queued, even if synthesis completes out of order
+	 */
+	private insertChunkInOrder(chunk: QueuedChunk): void {
+		// Find the correct position based on sequence number
+		let insertIndex = this.playbackQueue.length;
+
+		for (let i = 0; i < this.playbackQueue.length; i++) {
+			const existingChunk = this.playbackQueue[i];
+			if (existingChunk && existingChunk.sequenceNumber > chunk.sequenceNumber) {
+				insertIndex = i;
+				break;
+			}
+		}
+
+		// Insert at the correct position
+		this.playbackQueue.splice(insertIndex, 0, chunk);
 	}
 
 	/**

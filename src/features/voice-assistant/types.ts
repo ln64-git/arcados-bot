@@ -89,6 +89,12 @@ export interface AudioChunk {
 
 	/** Number of channels (1 = mono, 2 = stereo) */
 	channels: number;
+
+	/** Indicates this chunk came from a forced buffer flush */
+	forced?: boolean;
+
+	/** Reason the flush occurred (duration, size, etc.) */
+	flushReason?: string;
 }
 
 /**

@@ -13,15 +13,15 @@ export const AUDIO_CONSTANTS = {
 
   // Chunk configuration
   CHUNK_DURATION_MS: 2000, // 2 second chunks for transcription (allows more context for natural speech)
-  SILENCE_DURATION_MS: 1200, // 1.2 seconds of silence = end of utterance (more forgiving for natural pauses)
+  SILENCE_DURATION_MS: 100, // 0.1 seconds of silence = end of utterance for snappier detection
 
   // Buffer limits (prevent memory leaks)
   MAX_BUFFER_DURATION_MS: 30000, // 30 seconds max buffer
   MAX_BUFFER_SIZE_BYTES: 5_760_000, // ~30s at 48kHz stereo 16-bit (5.76MB)
 
   // Audio level thresholds (filter silence/noise before transcription)
-  MIN_AUDIO_RMS: 200, // Minimum RMS (Root Mean Square) to consider audio as speech
-  // RMS of 200 corresponds to roughly -46dB, balanced for clear speech while filtering background noise
+  MIN_AUDIO_RMS: 500, // Minimum RMS (Root Mean Square) to consider audio as speech
+  // RMS of 500 corresponds to roughly -40dB, filters out echo/quiet hallucinations while accepting clear speech
 } as const;
 
 /**
@@ -29,14 +29,14 @@ export const AUDIO_CONSTANTS = {
  */
 export const TRANSCRIPTION_CONSTANTS = {
   // Whisper configuration
-  WHISPER_TEMPERATURE: 0.0,
+  WHISPER_TEMPERATURE: 0.3, // Increased from 0.0 to reduce hallucination repetition
   WHISPER_TEMPERATURE_INCREMENT: 0.2,
 
   // Polling interval for silence detection
   TRANSCRIPTION_CHECK_INTERVAL_MS: 500, // Check every 500ms
 
   // Prevent duplicate utterances within a short time window
-  DUPLICATE_TEXT_WINDOW_MS: 4000, // Ignore exact duplicates within 4 seconds
+  DUPLICATE_TEXT_WINDOW_MS: 10000, // Ignore exact duplicates within ~10 seconds (prevents echo/hallucination re-processing)
 } as const;
 
 /**
@@ -56,7 +56,7 @@ export const TTS_CONSTANTS = {
   // Gemini TTS configuration
   GEMINI_MODEL: "gemini-2.5-pro-tts",
   GEMINI_PITCH: 0,
-  GEMINI_SPEAKING_RATE: 1,
+  GEMINI_SPEAKING_RATE: 0.9, // Slightly slower than normal (1.0) for more natural pacing
   GEMINI_PROMPT: "Read aloud in a warm, welcoming tone.",
 } as const;
 
@@ -109,7 +109,7 @@ export const AI_CONSTANTS = {
   RESPONSE_TIMEOUT_MS: 45000, // 45 second timeout for AI response generation
 
   // Personas
-  DEFAULT_PERSONA: "casual" as const,
+  DEFAULT_PERSONA: "sophia" as const,
 } as const;
 
 /**

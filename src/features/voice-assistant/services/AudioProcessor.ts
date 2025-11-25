@@ -5,8 +5,18 @@ import { AUDIO_CONSTANTS } from "../constants.js";
  * Processes raw Discord audio streams into chunks for transcription
  * Handles buffering, silence detection, and chunk assembly
  */
+interface BufferState {
+	chunks: Buffer[];
+	totalBytes: number;
+	softThrottleActive?: boolean;
+	lastSoftWarning?: number;
+	throttledUntil?: number;
+	flushTimestamps: number[];
+}
+
 export class AudioProcessor {
 	private static instance: AudioProcessor;
+	private readonly logger = console;
 
 	// Audio configuration (from centralized constants)
 	private readonly SAMPLE_RATE = AUDIO_CONSTANTS.SAMPLE_RATE;
@@ -17,7 +27,7 @@ export class AudioProcessor {
 	private readonly MAX_BUFFER_SIZE_BYTES = AUDIO_CONSTANTS.MAX_BUFFER_SIZE_BYTES;
 
 	// Buffers per session
-	private buffers: Map<string, Buffer[]> = new Map();
+	private bufferStates: Map<string, BufferState> = new Map();
 	private lastAudioTime: Map<string, number> = new Map();
 
 	private constructor() {}
@@ -37,49 +47,46 @@ export class AudioProcessor {
 	 * @returns Audio chunk if ready for transcription, null otherwise
 	 */
 	public processAudio(sessionId: string, audioData: Buffer): AudioChunk | null {
-		// Initialize buffer for this session if needed
-		if (!this.buffers.has(sessionId)) {
-			this.buffers.set(sessionId, []);
+		const state = this.getOrCreateState(sessionId);
+		const now = Date.now();
+
+		// Respect temporary throttling if we hit repeated flushes
+		if (state.throttledUntil && now < state.throttledUntil) {
+			return null;
 		}
 
-		const buffer = this.buffers.get(sessionId)!;
-
-		// Calculate total buffer size before adding new data
-		const totalBytes = buffer.reduce((sum, buf) => sum + buf.length, 0);
-
-		// Check buffer limits to prevent memory leaks
-		if (totalBytes + audioData.length > this.MAX_BUFFER_SIZE_BYTES) {
-			console.warn(
-				`[AudioProcessor] Buffer size limit reached for session ${sessionId}. ` +
-					`Current: ${totalBytes} bytes, Max: ${this.MAX_BUFFER_SIZE_BYTES} bytes. ` +
-					`Flushing buffer to prevent memory leak.`
-			);
-			// Force flush to prevent unbounded growth
-			return this.flushBuffer(sessionId);
-		}
-
-		buffer.push(audioData);
+		state.chunks.push(audioData);
+		state.totalBytes += audioData.length;
 
 		// Update last audio time
-		this.lastAudioTime.set(sessionId, Date.now());
+		this.lastAudioTime.set(sessionId, now);
+
+		// Apply soft backpressure before we hit the hard limits
+		this.applySoftBackpressure(sessionId, state);
 
 		// Calculate total buffered duration
-		const totalSamples = (totalBytes + audioData.length) / 2; // 16-bit samples
-		const durationMs = (totalSamples / this.SAMPLE_RATE) * 1000;
+		const durationMs = this.bytesToDuration(state.totalBytes);
 
 		// Check duration limit
 		if (durationMs >= this.MAX_BUFFER_DURATION_MS) {
-			console.warn(
-				`[AudioProcessor] Buffer duration limit reached for session ${sessionId}. ` +
-					`Duration: ${Math.round(durationMs)}ms, Max: ${this.MAX_BUFFER_DURATION_MS}ms. ` +
-					`Flushing buffer.`
-			);
-			return this.flushBuffer(sessionId);
+			return this.forceFlush(sessionId, state, "duration");
 		}
 
+		// Check buffer size limit
+		if (state.totalBytes >= this.MAX_BUFFER_SIZE_BYTES) {
+			return this.forceFlush(sessionId, state, "size");
+		}
+
+		const effectiveChunkDuration = this.getEffectiveChunkDuration(durationMs);
+
 		// Check if we have enough audio for a chunk
-		if (durationMs >= this.CHUNK_DURATION_MS) {
-			return this.createChunk(sessionId);
+		if (durationMs >= effectiveChunkDuration) {
+			this.logger?.debug?.(
+				`[AudioProcessor] Creating chunk for session ${sessionId} (duration ${durationMs.toFixed(
+					0
+				)}ms, bytes ${state.totalBytes})`
+			);
+			return this.sliceChunk(sessionId, state, effectiveChunkDuration);
 		}
 
 		return null;
@@ -93,13 +100,17 @@ export class AudioProcessor {
 	 */
 	public isSilenceDetected(sessionId: string): boolean {
 		const lastTime = this.lastAudioTime.get(sessionId);
-
 		if (!lastTime) {
 			return false;
 		}
 
+		const state = this.bufferStates.get(sessionId);
 		const silenceDuration = Date.now() - lastTime;
-		return silenceDuration >= this.SILENCE_DURATION_MS;
+		const silenceThreshold = state?.softThrottleActive
+			? Math.max(500, this.SILENCE_DURATION_MS * 0.5)
+			: this.SILENCE_DURATION_MS;
+
+		return silenceDuration >= silenceThreshold;
 	}
 
 	/**
@@ -110,16 +121,13 @@ export class AudioProcessor {
 	 * @returns Audio chunk with all buffered data, or null if buffer is empty
 	 */
 	public flushBuffer(sessionId: string): AudioChunk | null {
-		const buffer = this.buffers.get(sessionId);
-
-		if (!buffer || buffer.length === 0) {
+		const state = this.bufferStates.get(sessionId);
+		if (!state || state.totalBytes === 0) {
 			return null;
 		}
 
-		const chunk = this.createChunk(sessionId);
-
-		// Clear the buffer
-		this.buffers.delete(sessionId);
+		const chunk = this.takeBytes(sessionId, state, state.totalBytes);
+		this.bufferStates.delete(sessionId);
 		this.lastAudioTime.delete(sessionId);
 
 		return chunk;
@@ -131,30 +139,21 @@ export class AudioProcessor {
 	 * @param sessionId Voice session ID
 	 * @returns Audio chunk ready for transcription
 	 */
-	private createChunk(sessionId: string): AudioChunk | null {
-		const buffer = this.buffers.get(sessionId);
+	private sliceChunk(
+		sessionId: string,
+		state: BufferState,
+		targetDurationMs: number
+	): AudioChunk | null {
+		const bytesNeeded = Math.min(
+			this.msToBytes(targetDurationMs),
+			state.totalBytes
+		);
 
-		if (!buffer || buffer.length === 0) {
+		if (bytesNeeded <= 0) {
 			return null;
 		}
 
-		// Combine all buffered audio
-		const combinedBuffer = Buffer.concat(buffer);
-
-		// Clear the buffer for next chunk
-		this.buffers.set(sessionId, []);
-
-		// Calculate duration
-		const samples = combinedBuffer.length / 2; // 16-bit samples
-		const durationMs = (samples / this.SAMPLE_RATE) * 1000;
-
-		return {
-			data: combinedBuffer,
-			timestamp: new Date(),
-			duration: durationMs,
-			sampleRate: this.SAMPLE_RATE,
-			channels: this.CHANNELS,
-		};
+		return this.takeBytes(sessionId, state, bytesNeeded);
 	}
 
 	/**
@@ -231,7 +230,7 @@ export class AudioProcessor {
 	 * @param sessionId Voice session ID
 	 */
 	public cleanup(sessionId: string): void {
-		this.buffers.delete(sessionId);
+		this.bufferStates.delete(sessionId);
 		this.lastAudioTime.delete(sessionId);
 	}
 
@@ -246,20 +245,197 @@ export class AudioProcessor {
 		totalBytes: number;
 		durationMs: number;
 	} {
-		const buffer = this.buffers.get(sessionId);
+		const state = this.bufferStates.get(sessionId);
 
-		if (!buffer) {
+		if (!state) {
 			return { bufferCount: 0, totalBytes: 0, durationMs: 0 };
 		}
 
-		const totalBytes = buffer.reduce((sum, buf) => sum + buf.length, 0);
-		const samples = totalBytes / 2;
-		const durationMs = (samples / this.SAMPLE_RATE) * 1000;
+		return {
+			bufferCount: state.chunks.length,
+			totalBytes: state.totalBytes,
+			durationMs: this.bytesToDuration(state.totalBytes),
+		};
+	}
+
+	private getOrCreateState(sessionId: string): BufferState {
+		let state = this.bufferStates.get(sessionId);
+		if (!state) {
+			state = {
+				chunks: [],
+				totalBytes: 0,
+				flushTimestamps: [],
+			};
+			this.bufferStates.set(sessionId, state);
+		}
+		return state;
+	}
+
+	private applySoftBackpressure(sessionId: string, state: BufferState): void {
+		const now = Date.now();
+		const durationMs = this.bytesToDuration(state.totalBytes);
+		const softDuration = this.MAX_BUFFER_DURATION_MS * 0.7;
+		const softBytes = this.MAX_BUFFER_SIZE_BYTES * 0.7;
+
+		if (
+			state.totalBytes >= softBytes ||
+			durationMs >= softDuration
+		) {
+			if (!state.softThrottleActive) {
+				state.softThrottleActive = true;
+				state.lastSoftWarning = now;
+				this.logBufferStats(
+					sessionId,
+					state,
+					"Soft backpressure engaged"
+				);
+			} else if (
+				state.lastSoftWarning &&
+				now - state.lastSoftWarning > 2000
+			) {
+				state.lastSoftWarning = now;
+				this.logBufferStats(
+					sessionId,
+					state,
+					"Soft backpressure still active"
+				);
+			}
+
+			// Drop oldest chunks until we're back to ~60% capacity
+			const targetBytes = this.MAX_BUFFER_SIZE_BYTES * 0.6;
+			while (state.totalBytes > targetBytes && state.chunks.length > 1) {
+				const removed = state.chunks.shift();
+				if (!removed) {
+					break;
+				}
+				state.totalBytes -= removed.length;
+			}
+		} else if (state.softThrottleActive && durationMs < softDuration * 0.5) {
+			state.softThrottleActive = false;
+			this.logBufferStats(
+				sessionId,
+				state,
+				"Soft backpressure released"
+			);
+		}
+	}
+
+	private forceFlush(
+		sessionId: string,
+		state: BufferState,
+		reason: "duration" | "size"
+	): AudioChunk | null {
+		this.logBufferStats(
+			sessionId,
+			state,
+			reason === "duration"
+				? "Duration limit reached — forcing flush"
+				: "Size limit reached — forcing flush"
+		);
+
+		const chunk = this.takeBytes(sessionId, state, state.totalBytes);
+		if (!chunk) {
+			return null;
+		}
+
+		chunk.forced = true;
+		chunk.flushReason = reason;
+
+		state.flushTimestamps.push(Date.now());
+		state.flushTimestamps = state.flushTimestamps.filter(
+			(ts) => Date.now() - ts <= 10000
+		);
+
+		if (state.flushTimestamps.length >= 3) {
+			state.throttledUntil = Date.now() + 1000;
+			this.logBufferStats(
+				sessionId,
+				state,
+				"Multiple flushes detected — temporarily throttling intake"
+			);
+		}
+
+		return chunk;
+	}
+
+	private takeBytes(
+		sessionId: string,
+		state: BufferState,
+		bytesNeeded: number
+	): AudioChunk | null {
+		if (bytesNeeded <= 0 || state.totalBytes === 0) {
+			return null;
+		}
+
+		const chunkParts: Buffer[] = [];
+		let remaining = Math.min(bytesNeeded, state.totalBytes);
+
+		while (remaining > 0 && state.chunks.length > 0) {
+			const current = state.chunks[0];
+			if (current.length <= remaining) {
+				chunkParts.push(current);
+				state.chunks.shift();
+				state.totalBytes -= current.length;
+				remaining -= current.length;
+			} else {
+				chunkParts.push(current.subarray(0, remaining));
+				state.chunks[0] = current.subarray(remaining);
+				state.totalBytes -= remaining;
+				remaining = 0;
+			}
+		}
+
+		const combinedBuffer = Buffer.concat(chunkParts);
+		const durationMs = this.bytesToDuration(combinedBuffer.length);
 
 		return {
-			bufferCount: buffer.length,
-			totalBytes,
-			durationMs,
+			data: combinedBuffer,
+			timestamp: new Date(),
+			duration: durationMs,
+			sampleRate: this.SAMPLE_RATE,
+			channels: this.CHANNELS,
 		};
+	}
+
+	private bytesToDuration(bytes: number): number {
+		if (bytes <= 0) {
+			return 0;
+		}
+
+		const frames = bytes / (this.CHANNELS * 2);
+		return (frames / this.SAMPLE_RATE) * 1000;
+	}
+
+	private msToBytes(durationMs: number): number {
+		if (durationMs <= 0) {
+			return 0;
+		}
+
+		const frames = (durationMs / 1000) * this.SAMPLE_RATE;
+		return Math.floor(frames * this.CHANNELS * 2);
+	}
+
+	private getEffectiveChunkDuration(bufferDuration: number): number {
+		if (bufferDuration >= this.MAX_BUFFER_DURATION_MS * 0.5) {
+			return Math.max(500, Math.floor(this.CHUNK_DURATION_MS / 2));
+		}
+		return this.CHUNK_DURATION_MS;
+	}
+
+	private logBufferStats(
+		sessionId: string,
+		state: BufferState,
+		message: string
+	): void {
+		const duration = this.bytesToDuration(state.totalBytes);
+		const percent =
+			((state.totalBytes / this.MAX_BUFFER_SIZE_BYTES) * 100).toFixed(1);
+
+		console.warn(
+			`[AudioProcessor] ${message} — session: ${sessionId}, ` +
+				`chunks: ${state.chunks.length}, bytes: ${
+					state.totalBytes
+				} (${percent}%), duration: ${duration.toFixed(0)}ms`
+		);
 	}
 }

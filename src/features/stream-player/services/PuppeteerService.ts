@@ -166,6 +166,128 @@ export class PuppeteerService {
   }
 
   /**
+   * Close Chrome browser if it's already running
+   */
+  private async closeRunningChrome(userDataDir: string): Promise<void> {
+    try {
+      // Check for Chrome processes
+      const chromeProcesses = [
+        "chrome",
+        "chromium",
+        "google-chrome",
+        "google-chrome-stable",
+      ];
+
+      let foundProcesses = false;
+
+      for (const processName of chromeProcesses) {
+        try {
+          // Use pgrep to find processes (works on Linux)
+          const { stdout } = await execAsync(
+            `pgrep -f "${processName}" || true`
+          );
+          const pids = stdout.trim().split("\n").filter((pid) => pid.length > 0);
+
+          if (pids.length > 0) {
+            foundProcesses = true;
+            console.log(
+              `[PuppeteerService] Found ${processName} processes: ${pids.join(", ")}`
+            );
+            // Kill the processes
+            for (const pid of pids) {
+              try {
+                await execAsync(`kill -TERM ${pid} 2>/dev/null || true`);
+              } catch (error) {
+                // Process might already be dead, try SIGKILL
+                try {
+                  await execAsync(`kill -KILL ${pid} 2>/dev/null || true`);
+                } catch {
+                  // Ignore errors if process is already gone
+                }
+              }
+            }
+          }
+        } catch (error) {
+          // pgrep might not be available or no processes found, continue
+        }
+      }
+
+      // Also check for the lockfile that Puppeteer checks
+      const lockfilePath = path.join(userDataDir, "lockfile");
+      if (fs.existsSync(lockfilePath)) {
+        console.log(
+          `[PuppeteerService] Found Chrome lockfile at ${lockfilePath}`
+        );
+        foundProcesses = true;
+
+        // Try to remove the lockfile (it should be removed when Chrome closes)
+        // But first, try to kill any process that might be holding it
+        try {
+          // Use lsof to find process holding the lockfile
+          const { stdout } = await execAsync(
+            `lsof "${lockfilePath}" 2>/dev/null | awk 'NR>1 {print $2}' || true`
+          );
+          const holdingPids = stdout
+            .trim()
+            .split("\n")
+            .filter((pid) => pid.length > 0);
+
+          for (const pid of holdingPids) {
+            try {
+              await execAsync(`kill -TERM ${pid} 2>/dev/null || true`);
+            } catch {
+              try {
+                await execAsync(`kill -KILL ${pid} 2>/dev/null || true`);
+              } catch {
+                // Ignore
+              }
+            }
+          }
+        } catch {
+          // lsof might not be available, that's okay
+        }
+      }
+
+      if (foundProcesses) {
+        console.log(
+          `[PuppeteerService] Waiting for Chrome processes to close...`
+        );
+        // Wait for processes to close and lockfile to be released
+        let attempts = 0;
+        const maxAttempts = 10;
+        while (attempts < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+
+          // Check if lockfile still exists
+          if (!fs.existsSync(lockfilePath)) {
+            console.log(
+              `[PuppeteerService] ✓ Chrome lockfile removed after ${attempts + 1} attempts`
+            );
+            break;
+          }
+
+          attempts++;
+        }
+
+        if (fs.existsSync(lockfilePath)) {
+          console.warn(
+            `[PuppeteerService] ⚠ Chrome lockfile still exists after ${maxAttempts} attempts, but proceeding anyway`
+          );
+        } else {
+          console.log(`[PuppeteerService] ✓ Chrome closed successfully`);
+        }
+      } else {
+        console.log(`[PuppeteerService] No running Chrome instances found`);
+      }
+    } catch (error) {
+      console.warn(
+        `[PuppeteerService] Error checking/closing Chrome: ${error}`
+      );
+      // Don't throw - we'll let Puppeteer handle the error if Chrome is still running
+    }
+  }
+
+  /**
    * Initialize the browser instance
    */
   async initialize(): Promise<void> {
@@ -203,9 +325,9 @@ export class PuppeteerService {
       const userDataDir = "/home/ln64/.config/google-chrome";
 
       console.log(`[PuppeteerService] Using Chrome profile: ${userDataDir}`);
-      console.log(
-        `[PuppeteerService] IMPORTANT: Make sure Chrome is completely closed before starting the bot.`
-      );
+
+      // Close Chrome if it's already running
+      await this.closeRunningChrome(userDataDir);
 
       // Force X11 by unsetting Wayland environment variables
       // On Wayland systems (like Hyprland), Chrome will try to use Wayland by default

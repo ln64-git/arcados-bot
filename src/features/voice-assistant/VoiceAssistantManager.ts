@@ -2,6 +2,7 @@ import type { VoiceChannel, Snowflake, Client } from "discord.js";
 import { VoiceConnectionManager } from "./services/VoiceConnectionManager.js";
 import { AudioProcessor } from "./services/AudioProcessor.js";
 import { WhisperTranscriber } from "./services/WhisperTranscriber.js";
+import { WhisperServerManager } from "./services/WhisperServerManager.js";
 import { TTSManager } from "./services/TTSManager.js";
 import { TriggerWordDetector } from "./services/TriggerWordDetector.js";
 import { AIManager } from "../../ai/core/AIManager.js";
@@ -57,6 +58,7 @@ export class VoiceAssistantManager {
   private connectionManager: VoiceConnectionManager;
   private audioProcessor: AudioProcessor;
   private transcriber: WhisperTranscriber;
+  private whisperServer: WhisperServerManager;
   private tts: TTSManager;
   private triggerDetector: TriggerWordDetector;
   private aiManager: AIManager;
@@ -75,7 +77,13 @@ export class VoiceAssistantManager {
     new Map();
   private recentNoiseSamples: Map<
     string,
-    { normalized: string; timestamp: number; rms: number; duration: number }
+    {
+      normalized: string;
+      timestamp: number;
+      rms: number;
+      duration: number;
+      repeatCount: number;
+    }
   > = new Map();
 
   // Mode state tracking
@@ -161,6 +169,7 @@ export class VoiceAssistantManager {
     this.connectionManager = VoiceConnectionManager.getInstance();
     this.audioProcessor = AudioProcessor.getInstance();
     this.transcriber = WhisperTranscriber.getInstance();
+    this.whisperServer = WhisperServerManager.getInstance();
     this.tts = TTSManager.getInstance();
     this.triggerDetector = TriggerWordDetector.getInstance();
     this.aiManager = AIManager.getInstance();
@@ -180,13 +189,24 @@ export class VoiceAssistantManager {
    *
    * @param client Discord client
    */
-  public initialize(client: Client): void {
+  public async initialize(client: Client): Promise<void> {
     this.client = client;
 
     // Check configuration
     if (!config.voiceAssistantEnabled) {
       this.logger.warn("Voice assistant is disabled in config");
       return;
+    }
+
+    // Start Whisper server if configured for local transcription
+    if (config.whisperUrl) {
+      this.logger.info("Starting local Whisper server...");
+      const started = await this.whisperServer.start();
+      if (!started) {
+        this.logger.warn(
+          "Failed to start Whisper server. Transcription may not work properly."
+        );
+      }
     }
 
     if (!this.tts.isConfigured()) {
@@ -334,6 +354,7 @@ export class VoiceAssistantManager {
         this.logger.debug(
           `[AUDIO_RECEIVE] 📥 Audio callback triggered for user ${userId} in guild ${session.guildId}, audio size: ${audioData.length} bytes`
         );
+
         // Brief safety margin to catch any edge cases
         // VoiceConnectionManager clears receiver subscriptions at the source
         const sessionStartTime =
@@ -589,15 +610,29 @@ export class VoiceAssistantManager {
     userId: string
   ): Promise<void> {
     try {
+      if (chunk.forced) {
+        this.logger.warn(
+          `[AUDIO] Forced buffer flush (${
+            chunk.flushReason ?? "unknown"
+          }) detected for guild ${
+            session.guildId
+          }. Resetting transcription state.`
+        );
+        this.resetTranscriptionState(
+          session,
+          chunk.flushReason ?? "forced-buffer"
+        );
+      }
+
       // Check audio level before transcription to filter out silence/noise
       const audioRMS = this.calculateAudioRMS(chunk.data, chunk.channels);
 
       // Use a slightly lower threshold for chunks that are long enough (more likely to be real speech)
       // But be stricter for very short chunks (more likely to be noise)
       const effectiveMinRMS =
-        chunk.duration >= 3000
-          ? AUDIO_CONSTANTS.MIN_AUDIO_RMS * 0.8 // 80% of threshold for longer chunks
-          : AUDIO_CONSTANTS.MIN_AUDIO_RMS; // Full threshold for short chunks
+        chunk.duration >= 1500
+          ? AUDIO_CONSTANTS.MIN_AUDIO_RMS * 0.5 // allow much quieter speech on longer chunks
+          : AUDIO_CONSTANTS.MIN_AUDIO_RMS * 0.7; // still keep mild protection on short blips
 
       this.logger.debug(
         `🔊 Audio RMS: ${audioRMS.toFixed(
@@ -617,7 +652,7 @@ export class VoiceAssistantManager {
       }
 
       this.logger.debug(
-        `✅ Audio passed RMS check, proceeding to transcription...`
+        `✅ Audio chunk accepted for transcription (guild ${session.guildId}, speaker ${userId})`
       );
 
       // Convert stereo to mono for better Whisper transcription
@@ -633,13 +668,13 @@ export class VoiceAssistantManager {
       }
 
       // Transcribe the audio (using mono version if converted)
-      this.logger.debug(
-        `🎙️ Sending ${chunk.data.length} bytes to Whisper for transcription...`
+      this.logger.info(
+        `🎙️ Sending ${chunk.data.length} bytes (${chunk.duration}ms, RMS: ${audioRMS.toFixed(2)}) to Whisper for transcription...`
       );
       let transcription = await this.transcriber.transcribe(
         audioChunkForTranscription
       );
-      this.logger.debug(`📝 Whisper result: "${transcription}"`);
+      this.logger.info(`📝 Whisper result: "${transcription}"`);
 
       if (!transcription || transcription.trim().length === 0) {
         this.logger.debug(`⚠️ Empty transcription received, skipping`);
@@ -742,7 +777,9 @@ export class VoiceAssistantManager {
         return ageMs <= duplicateWindow;
       });
 
-      if (isRecentDuplicate) {
+      const wordCount = normalizedIncoming.split(/\s+/).length;
+
+      if (isRecentDuplicate && wordCount <= 3) {
         return;
       }
 
@@ -1026,7 +1063,7 @@ export class VoiceAssistantManager {
     // Prevent duplicate utterances within a short window
     const normalizedUtterance = utterance.toLowerCase().trim();
     const duplicateWindow =
-      TRANSCRIPTION_CONSTANTS.DUPLICATE_TEXT_WINDOW_MS ?? 4000;
+      TRANSCRIPTION_CONSTANTS.DUPLICATE_TEXT_WINDOW_MS ?? 3000;
     const lastUtterance = this.recentUtterances.get(session.guildId);
 
     if (
@@ -2097,19 +2134,26 @@ export class VoiceAssistantManager {
       TRANSCRIPTION_CONSTANTS.DUPLICATE_TEXT_WINDOW_MS ?? 4000;
     const last = this.recentNoiseSamples.get(cacheKey);
 
-    const isRepeat =
+    const isSamePhrase =
       last &&
       last.normalized === normalizedText &&
-      now - last.timestamp <= duplicateWindow &&
-      duration <= AUDIO_CONSTANTS.CHUNK_DURATION_MS * 2 &&
-      rms < AUDIO_CONSTANTS.MIN_AUDIO_RMS * 1.4 &&
-      Math.abs(rms - last.rms) <= AUDIO_CONSTANTS.MIN_AUDIO_RMS * 0.3;
+      now - last.timestamp <= duplicateWindow;
+
+    const repeatCount = isSamePhrase ? last.repeatCount + 1 : 1;
+
+    const isRepeat =
+      repeatCount >= 6 &&
+      duration <= AUDIO_CONSTANTS.CHUNK_DURATION_MS * 1.5 &&
+      rms < AUDIO_CONSTANTS.MIN_AUDIO_RMS * 0.9 &&
+      (!last ||
+        Math.abs(rms - last.rms) <= AUDIO_CONSTANTS.MIN_AUDIO_RMS * 0.2);
 
     this.recentNoiseSamples.set(cacheKey, {
       normalized: normalizedText,
       timestamp: now,
       rms,
       duration,
+      repeatCount,
     });
 
     if (this.recentNoiseSamples.size > 200) {
@@ -2168,12 +2212,32 @@ export class VoiceAssistantManager {
   /**
    * Clean up all voice connections
    */
-  public cleanup(): void {
+  public async cleanup(): Promise<void> {
     for (const session of this.getAllSessions()) {
       this.stopTranscriptionInterval(session.guildId);
       this.audioProcessor.cleanup(session.sessionId);
     }
 
     this.connectionManager.cleanup();
+
+    // Stop Whisper server if it's running
+    if (this.whisperServer.isRunning()) {
+      this.logger.info("Stopping Whisper server...");
+      await this.whisperServer.stop();
+    }
+  }
+
+  private resetTranscriptionState(
+    session: VoiceSession,
+    reason?: string
+  ): void {
+    session.transcriptionBuffer = "";
+    session.transcriptions = [];
+    session.lastActivity = new Date();
+    this.logger.info(
+      `[AUDIO] Cleared transcription buffers for guild ${session.guildId} (${
+        reason ?? "reset"
+      })`
+    );
   }
 }

@@ -30,15 +30,16 @@ export class TriggerWordDetector {
 		// Add common phonetic variations for "aria"
 		if (this.triggerWord === "aria") {
 			const phoneticVariations = [
-				"arya",
-				"ariah",
-				"area", // Common mishearing
-				"ariya",
-				"are you", // Very common STT mishearing
-				"ari",
-				"airy",
-				"arianna",
-			];
+        "arya",
+        "ariah",
+        "area", // Common mishearing
+        "ariya",
+        "are you", // Very common STT mishearing
+        "ari",
+        "airy",
+        "arianna",
+        "ariel",
+      ];
 			
 			// Add all case variations for each phonetic variation
 			for (const variation of phoneticVariations) {

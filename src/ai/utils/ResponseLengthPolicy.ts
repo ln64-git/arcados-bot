@@ -22,24 +22,25 @@ const CATEGORY_CONFIG: Record<
   { guidance: string; maxTokens: number; temperatureNudge?: number }
 > = {
   brief: {
-    guidance:
-      "Keep it tight—one short sentence unless essential context is missing.",
-    maxTokens: 120,
+    guidance: "One sentence, ~10-20 words. Offer specific follow-up if relevant.",
+    maxTokens: 60,
     temperatureNudge: -0.05,
   },
   medium: {
-    guidance: "Aim for 2–4 sentences that directly answer.",
-    maxTokens: 280,
+    guidance:
+      "1-2 sentences, ~30-40 words. End with follow-up question if helpful.",
+    maxTokens: 100,
     temperatureNudge: 0,
   },
   long: {
-    guidance: "One short paragraph; add a concrete example if it helps.",
-    maxTokens: 600,
+    guidance:
+      "2-3 sentences with key details. Offer 2-3 specific follow-up options.",
+    maxTokens: 200,
     temperatureNudge: 0.05,
   },
   extended: {
-    guidance: "A few short paragraphs if it adds value—avoid padding.",
-    maxTokens: 1200,
+    guidance: "Short paragraph (4-6 sentences). Include follow-up choices.",
+    maxTokens: 350,
     temperatureNudge: 0.1,
   },
 };
@@ -47,14 +48,14 @@ const CATEGORY_CONFIG: Record<
 export function computeResponsePolicy(input: PolicyInput): PolicyOutput {
   const mode = input.mode || "structured";
 
-  // For chat mode: allow flexible, natural responses
+  // For chat mode: brief, conversational responses
   if (mode === "chat") {
     return {
-      category: "medium",
+      category: "brief",
       guidance:
-        "Respond naturally - be as brief or detailed as needed to fully understand and help. Match the user's intent.",
-      maxTokens: 600, // Allow more room for natural, understanding responses
-      temperatureNudge: 0.05, // Slightly more creative/adaptive
+        "One sentence (~10-20 words) unless context demands more. Offer follow-up: 'I can tell you about X or Y.'",
+      maxTokens: 60,
+      temperatureNudge: 0,
       applyGuidance: true,
     };
   }
