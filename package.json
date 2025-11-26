@@ -7,7 +7,7 @@
   "scripts": {
     "start": "bun run src/main.ts",
     "start:node": "tsx src/main.ts",
-    "test:ai": "npx tsx src/features/chat-assistant/scripts/test-ai-assistant.ts",
+    "test:ai": "npx tsx src/utils/discord-handlers/chat/scripts/test-ai-assistant.ts",
     "test:discord-stream": "bun run src/features/stream-player/tests/test-discord-stream.ts",
     "view-conversations": "bun run src/scripts/view-conversations.ts",
     "regenerate:conversations": "bun run src/scripts/regenerate-conversations.ts",
@@ -20,7 +20,8 @@
     "keywords:extract-all": "bun run src/scripts/extract-keywords.ts",
     "diagnose-keywords": "bun run src/scripts/diagnose-keywords.ts",
     "check-message": "bun run src/scripts/check-message.ts",
-    "repair-sync": "bun run src/scripts/repair-sync.ts"
+    "repair-sync": "bun run src/scripts/repair-sync.ts",
+    "view-costs": "bun run src/utils/view-costs.ts"
   },
   "keywords": [
     "discord",

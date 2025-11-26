@@ -6,7 +6,7 @@ import {
   type ConversationSplit,
   type Message as DriftMessage,
 } from "../semantic-analysis/TopicDriftDetector";
-import type { AIManager } from "../../../ai/core/AIManager";
+import type { AIEngine } from "../../../ai/core/AIEngine";
 import { EmbeddingService } from "../semantic-analysis/EmbeddingService";
 import { KNOWN_BOT_USER_IDS } from "./constants";
 import { parseEmbedding as parseEmbeddingValue } from "./messageUtils";
@@ -124,8 +124,8 @@ export class ConversationDetector {
    * Set AI Manager for topic drift detection
    * Call this after construction to enable topic drift detection
    */
-  setAIManager(aiManager: AIManager): void {
-    this.topicDriftDetector.setAIManager(aiManager);
+  setAIEngine(aiEngine: AIEngine): void {
+    this.topicDriftDetector.setAIEngine(aiEngine);
   }
 
   /**

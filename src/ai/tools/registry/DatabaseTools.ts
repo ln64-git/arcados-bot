@@ -4,6 +4,7 @@ import {
   type RelationshipEntry,
 } from "../../../database/PostgreSQLManager";
 import type { ConversationEntry } from "../../../features/social-intelligence/types";
+import type { AIEngine } from "../../core/AIEngine";
 
 /**
  * Context passed to tool execution functions
@@ -12,6 +13,7 @@ export interface ToolContext {
   userId: string; // Requesting user ID
   guildId: string; // Current guild ID
   db: PostgreSQLManager; // Database connection
+  aiEngine?: AIEngine; // AI engine (for tools that need to make AI calls)
   channelId?: string; // Current channel ID (for live conversation access)
   messageId?: string; // Message that triggered the bot (for thread detection)
 }

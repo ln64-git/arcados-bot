@@ -1,4 +1,14 @@
-// Core exports
+// Core exports - NEW ARCHITECTURE
+export { AIEngine, type AIRequestConfig } from "./core/AIEngine";
+export { AIRequestBuilder } from "./core/AIRequestBuilder";
+export { AIContext, AIContextBuilder, type AIContext as AIContextType } from "./core/AIContext";
+export { AIFactory } from "./core/AIFactory";
+
+// Core exports - LEGACY (for backward compatibility)
+/**
+ * @deprecated Use AIEngine + AIRequestBuilder instead.
+ * See AIManager class documentation for migration guide.
+ */
 export { AIManager } from "./core/AIManager";
 export * from "./core/ChatSessionManager";
 
@@ -12,6 +22,7 @@ export { OllamaProvider } from "./providers/OllamaProvider";
 
 // Tool exports
 export { DatabaseTools, type ToolContext } from "./tools/registry/DatabaseTools";
+export { DynamicToolRegistry, type ToolCategory } from "./tools/registry/DynamicToolRegistry";
 export * from "./tools";
 
 // Utility exports

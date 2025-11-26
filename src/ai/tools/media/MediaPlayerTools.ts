@@ -1,7 +1,9 @@
 import type { DatabaseTool, ToolContext, DatabaseToolResult } from "../registry/DatabaseTools.js";
 import { MediaPlayerManager } from "../../../features/media-player/MediaPlayerManager.js";
-import { VoiceAssistantManager } from "../../../features/voice-assistant/VoiceAssistantManager.js";
-import { VoiceConnectionManager } from "../../../features/voice-assistant/services/VoiceConnectionManager.js";
+import { VoiceAssistantManager } from "../../../utils/discord-handlers/voice/VoiceAssistantManager.js";
+import { VoiceConnectionManager } from "../../../utils/discord-handlers/voice/tts/services/VoiceConnectionManager.js";
+import { AIRequestBuilder } from "../../core/AIRequestBuilder.js";
+import type { AIResponse } from "../../providers/base/AIProvider.js";
 import type { TextChannel, VoiceChannel } from "discord.js";
 import { ChannelType } from "discord.js";
 
@@ -45,10 +47,10 @@ async function findTextChannel(
 	// Discord voice channels have built-in text chat - use the voice channel directly!
 	// Discord's API allows sending messages to voice channel IDs - they appear in the voice channel's text chat
 	const voiceChannel = session.channel;
-	
+
 	// Use the voice channel directly as the text channel
 	const textChannel = voiceChannel as any as TextChannel;
-	
+
 	return textChannel;
 }
 
@@ -58,14 +60,14 @@ async function findTextChannel(
  */
 function generateMusicHaiku(query: string): string {
 	const queryLower = query.toLowerCase();
-	
+
 	// Extract artist/song if in "song by artist" or "artist - song" format
 	const byMatch = queryLower.match(/(.+?)\s+by\s+(.+)/);
 	const dashMatch = queryLower.match(/(.+?)\s+-\s+(.+)/);
-	
+
 	let songPart = queryLower;
 	let artistPart = "";
-	
+
 	if (byMatch) {
 		songPart = byMatch[1].trim();
 		artistPart = byMatch[2].trim();
@@ -73,7 +75,7 @@ function generateMusicHaiku(query: string): string {
 		artistPart = dashMatch[1].trim();
 		songPart = dashMatch[2].trim();
 	}
-	
+
 	// Simple haiku templates focused on the experience
 	const haikus = [
 		`Waves of sound now flow\nThrough speakers, filling the space\nMusic starts to play`,
@@ -82,7 +84,7 @@ function generateMusicHaiku(query: string): string {
 		`Audio streams forth\nBeats and melodies combine\nSoundscape comes alive`,
 		`Tune begins to play\nFilling empty air with sound\nMusic finds its way`,
 	];
-	
+
 	// Return a random haiku
 	return haikus[Math.floor(Math.random() * haikus.length)];
 }
@@ -149,10 +151,10 @@ export const playMediaTool: DatabaseTool = {
 				}
 
 				voiceChannel = member.voice.channel as VoiceChannel;
-				
+
 				// Join the user's voice channel
 				await connectionManager.joinChannel(voiceChannel);
-				
+
 				// Get the session after joining
 				session = voiceAssistant.getSession(guildId);
 				if (!session) {
@@ -442,7 +444,6 @@ export const generatePlaylistTool: DatabaseTool = {
 			const voiceAssistant = VoiceAssistantManager.getInstance();
 			const mediaPlayer = MediaPlayerManager.getInstance();
 			const connectionManager = VoiceConnectionManager.getInstance();
-			const { AIManager } = await import("../../core/AIManager.js");
 
 			// Get user's voice channel and join if not already in one
 			let session = voiceAssistant.getSession(guildId);
@@ -475,10 +476,10 @@ export const generatePlaylistTool: DatabaseTool = {
 				}
 
 				voiceChannel = member.voice.channel as VoiceChannel;
-				
+
 				// Join the user's voice channel
 				await connectionManager.joinChannel(voiceChannel);
-				
+
 				// Get the session after joining
 				session = voiceAssistant.getSession(guildId);
 				if (!session) {
@@ -528,7 +529,13 @@ export const generatePlaylistTool: DatabaseTool = {
 			}
 
 			// Generate playlist using AI
-			const aiManager = AIManager.getInstance();
+			if (!context.aiEngine) {
+				return JSON.stringify({
+					success: false,
+					error: "AI engine not available in tool context",
+				});
+			}
+
 			const playlistPrompt = `Generate a playlist of exactly ${songCount} songs based on this request: "${query}"
 
 Return ONLY a JSON array of song titles, one per line, in this exact format:
@@ -536,23 +543,18 @@ Return ONLY a JSON array of song titles, one per line, in this exact format:
 
 Do not include any explanations, descriptions, or additional text. Only return the JSON array.`;
 
-			const db = await aiManager.getDb();
-			const playlistResponse = await aiManager.runWithGuildContext(
-				guildId,
-				async () => {
-					return await aiManager.generateText(
-						playlistPrompt,
-						userId,
-						"grok",
-						{
-							useDiscordFormatting: false,
-							mode: "structured",
-						}
-					);
-				}
-			);
+			const builder = new AIRequestBuilder(context.aiEngine);
+			const result = await builder
+				.chat()
+				.blocking()
+				.provider("grok")
+				.persona("casual")
+				.withoutTools() // Don't need database tools for playlist generation
+				.generate(playlistPrompt);
 
-			if (!playlistResponse.success) {
+			const playlistResponse = result as AIResponse;
+
+			if (!playlistResponse.success || !playlistResponse.content) {
 				return JSON.stringify({
 					success: false,
 					error: "Failed to generate playlist",
@@ -618,13 +620,13 @@ Do not include any explanations, descriptions, or additional text. Only return t
 			const addedTracks: string[] = [];
 			const maxDurationSeconds = 15 * 60; // 15 minutes
 			let totalDuration = 0;
-			
+
 			for (const song of songs) {
 				// Check if we've reached the duration limit
 				if (totalDuration >= maxDurationSeconds) {
 					break;
 				}
-				
+
 				const track = await mediaPlayer.play(
 					guildId,
 					song,
@@ -635,7 +637,7 @@ Do not include any explanations, descriptions, or additional text. Only return t
 				if (track) {
 					addedTracks.push(track.title);
 					totalDuration += track.duration || 0;
-					
+
 					// Stop if adding this track exceeded the limit
 					if (totalDuration >= maxDurationSeconds) {
 						break;

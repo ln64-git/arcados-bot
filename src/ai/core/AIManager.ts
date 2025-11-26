@@ -38,6 +38,26 @@ import { selectFormattingStyle } from "../utils/FormattingSelector";
 import { ConversationDetector } from "../../features/social-intelligence/conversation-detection/ConversationDetector";
 import { PostgreSQLManager } from "../../database/PostgreSQLManager";
 
+/**
+ * @deprecated AIManager is being phased out in favor of AIEngine + AIRequestBuilder.
+ *
+ * Migration guide:
+ * - Use `AIFactory.create()` to get an AIEngine instance
+ * - Use `new AIRequestBuilder(engine)` for fluent API
+ * - Example:
+ *   ```typescript
+ *   const { engine } = AIFactory.create();
+ *   const response = await new AIRequestBuilder(engine)
+ *     .chat()
+ *     .blocking()
+ *     .provider("grok")
+ *     .persona("casual")
+ *     .generate(prompt);
+ *   ```
+ *
+ * Note: AIManager will remain available for tools that make AI calls internally
+ * (MusicTools, MediaPlayerTools) until ToolContext is extended with AIEngine support.
+ */
 export class AIManager {
   private static instance: AIManager | null = null;
   private providers: Map<string, AIProvider> = new Map();
@@ -1166,6 +1186,11 @@ Temperature: You can be creative and natural - just keep it brief.`;
   public static getInstance(): AIManager {
     if (!AIManager.instance) {
       AIManager.instance = new AIManager();
+      console.warn(
+        "⚠️  AIManager.getInstance() is deprecated. " +
+        "Use AIFactory.create() and AIRequestBuilder instead. " +
+        "See AIManager JSDoc for migration guide."
+      );
     }
     return AIManager.instance;
   }

@@ -10,7 +10,10 @@
  */
 
 import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { AIManager } from "../ai/core/AIManager";
+import { AIFactory } from "../ai/core/AIFactory";
+import type { AIEngine } from "../ai/core/AIEngine";
+import { AIRequestBuilder } from "../ai/core/AIRequestBuilder";
+import type { AIResponse } from "../ai/providers/base/AIProvider";
 import { SocialIntelligence } from "../features/social-intelligence/index.js";
 import { EnhancementOrchestrator } from "../features/social-intelligence/enrichment-pipeline/EnhancementOrchestrator";
 import { config } from "../config/index.js";
@@ -139,8 +142,8 @@ async function main() {
 	}
 
 	// Initialize AI
-	const aiManager = AIManager.getInstance();
-	console.log("\n🔧 Initializing AI manager...");
+	const { engine } = await AIFactory.create();
+	console.log("\n🔧 Initializing AI engine...");
 
 	// Fetch all messages and conversations
 	console.log("\n📥 Loading data from database...");
@@ -181,7 +184,7 @@ async function main() {
 		);
 
 		// Analyze this group with AI
-		const action = await analyzeGroup(group, aiManager, guildId);
+		const action = await analyzeGroup(group, engine, guildId);
 
 		if (action.type !== "no_action") {
 			console.log(`\n   🎯 Action: ${action.type.toUpperCase()}`);
@@ -325,7 +328,7 @@ async function main() {
 				console.log(
 					`\n   📄 ${summaryAction} summaries for ${summaryTargetCount} conversations...`
 				);
-				const orchestrator = new EnhancementOrchestrator(db, aiManager, {
+				const orchestrator = new EnhancementOrchestrator(db, engine, {
 					lookbackHours: hoursBack,
 					enableSummaries: true,
 					enableOrphans: false,
@@ -573,7 +576,7 @@ function createGroup(
 
 async function analyzeGroup(
 	group: AnalysisGroup,
-	aiManager: AIManager,
+	aiEngine: AIEngine,
 	guildId: string
 ): Promise<EnrichmentAction> {
 	// Build context for AI
@@ -619,19 +622,20 @@ Only return the JSON, nothing else.`;
 		// Use Grok (no quota issues), fall back to others
 		const provider = process.env.GROK_API_KEY ? "grok" :
 		                 process.env.OPENAI_API_KEY ? "openai" :
-		                 process.env.GEMINI_API_KEY ? "gemini" : "ollama";
+		                 process.env.GEMINI_API_KEY ? "gemini-flash" : "ollama";
 
-		const response = await aiManager.generateText(prompt, guildId, provider, {
-			persona: "casual",
-		});
+		const builder = new AIRequestBuilder(aiEngine);
+		const result = await builder
+			.chat()
+			.blocking()
+			.provider(provider as "grok" | "openai" | "gemini-flash")
+			.persona("casual")
+			.withoutTools() // Don't need database tools for this analysis
+			.generate(prompt);
 
-		// Handle AIManager response format (can be string or {success, content} object)
-		let responseText: string;
-		if (typeof response === "string") {
-			responseText = response;
-		} else if (response && typeof response === "object" && "content" in response) {
-			responseText = (response as { content: string }).content;
-		} else {
+		const response = result as AIResponse;
+
+		if (!response.success || !response.content) {
 			console.error(`   ⚠️  Invalid AI response:`, response);
 			return {
 				type: "no_action",
@@ -639,6 +643,8 @@ Only return the JSON, nothing else.`;
 				reason: "Invalid AI response format",
 			};
 		}
+
+		const responseText = response.content;
 
 		// Parse JSON response
 		const jsonMatch = responseText.match(/\{[\s\S]*\}/);

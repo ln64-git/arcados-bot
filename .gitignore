@@ -4,6 +4,7 @@ ln64-synapse-bot-7b618e20f7b1.json
 
 
 .env
+.claude/
 output/
 
 # Logs
@@ -182,3 +183,6 @@ dist
 
 # Puppeteer user data directory (contains browser extensions)
 .puppeteer-user-data
+
+# API cost tracking data
+api-costs/

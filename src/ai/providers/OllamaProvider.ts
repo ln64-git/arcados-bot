@@ -1,6 +1,7 @@
 import axios from "axios";
 import { config } from "../../config";
 import { BaseAIProvider } from "./base/BaseAIProvider";
+import { APICostTracker } from "../../utils/APICostTracker";
 
 export class OllamaProvider extends BaseAIProvider {
 	private readonly baseURL: string;
@@ -22,6 +23,9 @@ export class OllamaProvider extends BaseAIProvider {
 
 	// Only handle the actual API call - no AI logic here
 	async callTextAPI(systemPrompt: string, userPrompt: string): Promise<string> {
+		const startTime = Date.now();
+		const tracker = APICostTracker.getInstance();
+
 		try {
 			const response = await axios.post(`${this.baseURL}/api/generate`, {
 				model: this.modelName,
@@ -34,8 +38,37 @@ export class OllamaProvider extends BaseAIProvider {
 				},
 			});
 
+			const latency = Date.now() - startTime;
+
+			// Ollama may return token counts in response
+			const inputTokens = response.data.prompt_eval_count || 0;
+			const outputTokens = response.data.eval_count || 0;
+
+			tracker.trackRequest("ollama", {
+				endpoint: "callTextAPI",
+				success: true,
+				inputTokens: inputTokens || undefined,
+				outputTokens: outputTokens || undefined,
+				latency,
+				additionalMetadata: {
+					model: this.modelName,
+					baseURL: this.baseURL,
+				},
+			});
+
 			return response.data.response || "";
 		} catch (error) {
+			const latency = Date.now() - startTime;
+			tracker.trackRequest("ollama", {
+				endpoint: "callTextAPI",
+				success: false,
+				error: error instanceof Error ? error.message : "Unknown error",
+				latency,
+				additionalMetadata: {
+					model: this.modelName,
+					baseURL: this.baseURL,
+				},
+			});
 			console.error("🔸 Error calling Ollama API:", error);
 			if (error instanceof Error) {
 				throw new Error(`Failed to call Ollama API: ${error.message}`);

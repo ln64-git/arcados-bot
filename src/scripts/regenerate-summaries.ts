@@ -6,7 +6,7 @@
  */
 
 import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { AIManager } from "../ai/core/AIManager";
+import { AIFactory } from "../ai/core/AIFactory";
 import { EnhancementOrchestrator } from "../features/social-intelligence/enrichment-pipeline/EnhancementOrchestrator";
 import { config } from "../config/index.js";
 
@@ -28,11 +28,11 @@ async function main() {
     process.exit(1);
   }
 
-  // Get AI manager instance
-  const aiManager = AIManager.getInstance();
+  // Get AI engine instance
+  const { engine } = await AIFactory.create();
 
   // Create orchestrator with regenerate flag
-  const orchestrator = new EnhancementOrchestrator(db, aiManager, {
+  const orchestrator = new EnhancementOrchestrator(db, engine, {
     lookbackHours: 24,
     batchSize: 5, // Smaller batches to avoid rate limits
     sleepBetweenBatches: 5000, // 5 seconds between batches

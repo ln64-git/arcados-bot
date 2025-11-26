@@ -44,7 +44,12 @@ export interface AIProvider {
 		userPrompt: string,
 		tools: Array<{ name: string; description: string; parameters: any }>,
 		toolResults?: ToolCallResponse[],
-		runtimeConfig?: { maxTokens?: number; temperature?: number }
+		runtimeConfig?: {
+			maxTokens?: number;
+			temperature?: number;
+			enableWebSearch?: boolean; // Per-request web search control
+			enableXSearch?: boolean; // Per-request X/Twitter search control
+		}
 	): Promise<{ content: string; toolCalls?: ToolCall[] }>;
 
 	// Provider identification

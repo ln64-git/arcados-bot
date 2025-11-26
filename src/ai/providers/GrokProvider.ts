@@ -4,6 +4,7 @@ import axios from "axios";
 import { config } from "../../config";
 import { BaseAIProvider } from "./base/BaseAIProvider";
 import type { ToolCall, ToolCallResponse } from "./base/AIProvider";
+import { APICostTracker } from "../../utils/APICostTracker";
 
 export class GrokProvider extends BaseAIProvider {
   private xai: ReturnType<typeof createOpenAI>;
@@ -34,14 +35,50 @@ export class GrokProvider extends BaseAIProvider {
 
   // Basic text generation without tools
   async callTextAPI(systemPrompt: string, userPrompt: string): Promise<string> {
-    const result = await generateText({
-      model: this.xai(this.modelName),
-      system: systemPrompt,
-      prompt: userPrompt,
-      temperature: 0.7,
-    });
+    const startTime = Date.now();
+    const tracker = APICostTracker.getInstance();
 
-    return result.text;
+    try {
+      const result = await generateText({
+        model: this.xai(this.modelName),
+        system: systemPrompt,
+        prompt: userPrompt,
+        temperature: 0.7,
+      });
+
+      const latency = Date.now() - startTime;
+
+      // Extract token counts from result (Vercel AI SDK format)
+      // Usage object has promptTokens and completionTokens properties
+      const usage = result.usage;
+      const inputTokens = usage ? (usage as any).promptTokens || 0 : 0;
+      const outputTokens = usage ? (usage as any).completionTokens || 0 : 0;
+
+      tracker.trackRequest("grok", {
+        endpoint: "callTextAPI",
+        success: true,
+        inputTokens,
+        outputTokens,
+        latency,
+        additionalMetadata: {
+          model: this.modelName,
+        },
+      });
+
+      return result.text;
+    } catch (error: any) {
+      const latency = Date.now() - startTime;
+      tracker.trackRequest("grok", {
+        endpoint: "callTextAPI",
+        success: false,
+        error: error?.message || "Unknown error",
+        latency,
+        additionalMetadata: {
+          model: this.modelName,
+        },
+      });
+      throw error;
+    }
   }
 
   // Streaming text generation for voice assistant
@@ -49,6 +86,9 @@ export class GrokProvider extends BaseAIProvider {
     systemPrompt: string,
     userPrompt: string
   ): Promise<AsyncIterable<string>> {
+    const startTime = Date.now();
+    const tracker = APICostTracker.getInstance();
+
     try {
       const model = this.xai(this.modelName);
 
@@ -59,6 +99,12 @@ export class GrokProvider extends BaseAIProvider {
         temperature: 0.7,
       });
 
+      // Track streaming request (we'll update with final usage when stream completes)
+      let inputTokens = 0;
+      let outputTokens = 0;
+      let streamError: Error | null = null;
+      const modelName = this.modelName; // Capture for use in generator
+
       // Return async iterable that yields text deltas
       return (async function* () {
         try {
@@ -66,8 +112,8 @@ export class GrokProvider extends BaseAIProvider {
             // Try alternative stream properties
             if ("fullStream" in result && result.fullStream) {
               for await (const chunk of result.fullStream) {
-                if (chunk.type === "text-delta" && chunk.textDelta) {
-                  yield chunk.textDelta;
+                if (chunk.type === "text-delta" && (chunk as any).text) {
+                  yield (chunk as any).text;
                 }
               }
             }
@@ -77,12 +123,48 @@ export class GrokProvider extends BaseAIProvider {
           for await (const delta of result.textStream) {
             yield delta;
           }
-        } catch (streamError) {
+
+          // Extract final usage from result (usage is a promise in streaming)
+          try {
+            const usage = await result.usage;
+            if (usage) {
+              inputTokens = (usage as any).promptTokens || 0;
+              outputTokens = (usage as any).completionTokens || 0;
+            }
+          } catch {
+            // Usage not available, keep defaults
+          }
+        } catch (streamError_) {
+          streamError = streamError_ as Error;
           console.error("[GrokProvider] Error iterating textStream:", streamError);
           throw streamError;
+        } finally {
+          // Track the request after stream completes
+          const latency = Date.now() - startTime;
+          tracker.trackRequest("grok", {
+            endpoint: "streamTextAPI",
+            success: !streamError,
+            error: streamError?.message,
+            inputTokens,
+            outputTokens,
+            latency,
+            additionalMetadata: {
+              model: modelName,
+            },
+          });
         }
       })();
-    } catch (error) {
+    } catch (error: any) {
+      const latency = Date.now() - startTime;
+      tracker.trackRequest("grok", {
+        endpoint: "streamTextAPI",
+        success: false,
+        error: error?.message || "Unknown error",
+        latency,
+        additionalMetadata: {
+          model: this.modelName,
+        },
+      });
       console.error("[GrokProvider] Error in streamTextAPI:", error);
       // Return empty stream on error
       return (async function* () {
@@ -97,14 +179,21 @@ export class GrokProvider extends BaseAIProvider {
     userPrompt: string,
     tools: Array<{ name: string; description: string; parameters: any }>,
     toolResults?: ToolCallResponse[],
-    runtimeConfig?: { maxTokens?: number; temperature?: number }
+    runtimeConfig?: {
+      maxTokens?: number;
+      temperature?: number;
+      enableWebSearch?: boolean;
+      enableXSearch?: boolean;
+    }
   ): Promise<{ content: string; toolCalls?: ToolCall[] }> {
+    const startTime = Date.now();
     try {
       if (toolResults && toolResults.length > 0) {
         return await this.submitToolOutputs(
           toolResults,
           systemPrompt,
-          userPrompt
+          userPrompt,
+          startTime
         );
       }
 
@@ -124,11 +213,22 @@ export class GrokProvider extends BaseAIProvider {
         | { type: "x_search"; filters?: Record<string, unknown> }
       > = [];
 
-      if (config.grokEnableWebSearch) {
+      // Per-request control: runtimeConfig overrides global config
+      const enableWebSearch =
+        runtimeConfig?.enableWebSearch !== undefined
+          ? runtimeConfig.enableWebSearch
+          : config.grokEnableWebSearch;
+
+      const enableXSearch =
+        runtimeConfig?.enableXSearch !== undefined
+          ? runtimeConfig.enableXSearch
+          : config.grokEnableXSearch;
+
+      if (enableWebSearch) {
         serverSideTools.push({ type: "web_search" });
       }
 
-      if (config.grokEnableXSearch) {
+      if (enableXSearch) {
         serverSideTools.push({ type: "x_search" });
       }
 
@@ -146,6 +246,8 @@ export class GrokProvider extends BaseAIProvider {
         serverSideTools.length > 0 || functionTools.length > 0
           ? [...serverSideTools, ...functionTools]
           : undefined;
+
+      const tracker = APICostTracker.getInstance();
 
       const response = await axios.post(
         "https://api.x.ai/v1/responses",
@@ -166,12 +268,46 @@ export class GrokProvider extends BaseAIProvider {
         }
       );
 
+      const latency = Date.now() - startTime;
+
+      // Extract token counts from Grok response
+      const usage = response.data?.usage;
+      const inputTokens = usage?.input_tokens || usage?.inputTokens || 0;
+      const outputTokens = usage?.output_tokens || usage?.outputTokens || 0;
+
       console.log(
         "[GrokProvider] Raw response data:",
         JSON.stringify(response.data, null, 2).substring(0, 2000)
       );
+
+      // Track successful request
+      tracker.trackRequest("grok", {
+        endpoint: "callTextAPIWithTools",
+        success: true,
+        inputTokens,
+        outputTokens,
+        latency,
+        additionalMetadata: {
+          model: this.modelName,
+          hasTools: tools.length > 0,
+          webSearchEnabled: enableWebSearch,
+          xSearchEnabled: enableXSearch,
+        },
+      });
+
       return this.parseResponsePayload(response.data);
     } catch (error: any) {
+      const tracker = APICostTracker.getInstance();
+      const latency = Date.now() - startTime;
+      tracker.trackRequest("grok", {
+        endpoint: "callTextAPIWithTools",
+        success: false,
+        error: error?.message || "Unknown error",
+        latency,
+        additionalMetadata: {
+          model: this.modelName,
+        },
+      });
       console.error("🔸 GrokProvider: chat completion failed:", error);
       throw error;
     }
@@ -180,8 +316,11 @@ export class GrokProvider extends BaseAIProvider {
   private async submitToolOutputs(
     toolResults: ToolCallResponse[],
     systemPrompt: string,
-    userPrompt: string
+    userPrompt: string,
+    startTime?: number
   ): Promise<{ content: string; toolCalls?: ToolCall[] }> {
+    const submitStartTime = startTime || Date.now();
+    const tracker = APICostTracker.getInstance();
     const grouped = new Map<
       string,
       Array<{ tool_call_id: string; output: string }>
@@ -249,8 +388,34 @@ export class GrokProvider extends BaseAIProvider {
     }
 
     if (!latestResponse) {
+      const latency = Date.now() - submitStartTime;
+      tracker.trackRequest("grok", {
+        endpoint: "submitToolOutputs",
+        success: false,
+        error: "No response received",
+        latency,
+        additionalMetadata: {
+          model: this.modelName,
+        },
+      });
       return { content: "" };
     }
+
+    const latency = Date.now() - submitStartTime;
+    const usage = latestResponse?.usage;
+    const inputTokens = usage?.input_tokens || usage?.inputTokens || 0;
+    const outputTokens = usage?.output_tokens || usage?.outputTokens || 0;
+
+    tracker.trackRequest("grok", {
+      endpoint: "submitToolOutputs",
+      success: true,
+      inputTokens,
+      outputTokens,
+      latency,
+      additionalMetadata: {
+        model: this.modelName,
+      },
+    });
 
     return this.parseResponsePayload(latestResponse);
   }
@@ -411,30 +576,61 @@ export class GrokProvider extends BaseAIProvider {
 
   // Only handle the actual API call - no AI logic here
   async callImageAPI(prompt: string): Promise<{ url: string; buffer: Buffer }> {
-    const response = await axios.post(
-      "https://api.x.ai/v1/images/generations",
-      {
-        model: "grok-2-image",
-        prompt: prompt,
-        n: 1,
-        response_format: "url",
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${config.grokApiKey}`,
-          "Content-Type": "application/json",
+    const startTime = Date.now();
+    const tracker = APICostTracker.getInstance();
+
+    try {
+      const response = await axios.post(
+        "https://api.x.ai/v1/images/generations",
+        {
+          model: "grok-2-image",
+          prompt: prompt,
+          n: 1,
+          response_format: "url",
         },
-      }
-    );
+        {
+          headers: {
+            Authorization: `Bearer ${config.grokApiKey}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
 
-    const imageUrl = response.data.data[0].url;
+      const imageUrl = response.data.data[0].url;
 
-    // Download the image so we can attach it directly to Discord (avoids URL expiry)
-    const imageDownload = await axios.get(imageUrl, {
-      responseType: "arraybuffer",
-    });
-    const imageBuffer = Buffer.from(imageDownload.data);
+      // Download the image so we can attach it directly to Discord (avoids URL expiry)
+      const imageDownload = await axios.get(imageUrl, {
+        responseType: "arraybuffer",
+      });
+      const imageBuffer = Buffer.from(imageDownload.data);
 
-    return { url: imageUrl, buffer: imageBuffer };
+      const latency = Date.now() - startTime;
+
+      // Image generation typically has fixed cost per image
+      // Track with estimated tokens or fixed cost
+      tracker.trackRequest("grok", {
+        endpoint: "callImageAPI",
+        success: true,
+        latency,
+        additionalMetadata: {
+          model: "grok-2-image",
+          // Image generation cost is typically fixed per image
+        },
+      });
+
+      return { url: imageUrl, buffer: imageBuffer };
+    } catch (error: any) {
+      const latency = Date.now() - startTime;
+      tracker.trackRequest("grok", {
+        endpoint: "callImageAPI",
+        success: false,
+        error: error?.message || "Unknown error",
+        latency,
+        additionalMetadata: {
+          model: "grok-2-image",
+        },
+      });
+      throw error;
+    }
   }
 }

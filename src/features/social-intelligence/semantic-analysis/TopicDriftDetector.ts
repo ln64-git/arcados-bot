@@ -1,4 +1,6 @@
-import type { AIManager } from "../../../ai/core/AIManager";
+import type { AIEngine } from "../../../ai/core/AIEngine";
+import type { AIResponse } from "../../../ai/providers/base/AIProvider";
+import { AIRequestBuilder } from "../../../ai/core/AIRequestBuilder";
 import type { PostgreSQLManager } from "../../../database/PostgreSQLManager";
 import { EmbeddingService } from "./EmbeddingService";
 import { TFIDFExtractor } from "./TFIDFExtractor";
@@ -36,7 +38,7 @@ export interface ConversationSplit {
 }
 
 export interface TopicDriftDetectorOptions {
-  aiManager?: AIManager;
+  aiEngine?: AIEngine;
   aiFailureCooldownMs?: number;
 }
 
@@ -44,7 +46,7 @@ export interface TopicDriftDetectorOptions {
  * Service for detecting topic drift in conversations using embeddings and AI
  */
 export class TopicDriftDetector {
-  private aiManager: AIManager | null;
+  private aiEngine: AIEngine | null;
   private embeddingService: EmbeddingService;
   private db: PostgreSQLManager;
   private tfidfExtractor: TFIDFExtractor;
@@ -75,7 +77,7 @@ export class TopicDriftDetector {
     db: PostgreSQLManager,
     options: TopicDriftDetectorOptions = {}
   ) {
-    this.aiManager = options.aiManager ?? null;
+    this.aiEngine = options.aiEngine ?? null;
     this.embeddingService = EmbeddingService.getInstance();
     this.db = db;
     this.tfidfExtractor = new TFIDFExtractor();
@@ -83,15 +85,15 @@ export class TopicDriftDetector {
     this.aiFailureCooldownMs = options.aiFailureCooldownMs ?? 30 * 60 * 1000;
   }
 
-  setAIManager(aiManager: AIManager | null): void {
-    this.aiManager = aiManager ?? null;
-    if (!aiManager) {
+  setAIEngine(aiEngine: AIEngine | null): void {
+    this.aiEngine = aiEngine ?? null;
+    if (!aiEngine) {
       this.aiCooldownUntil = null;
     }
   }
 
   private canUseAI(): boolean {
-    if (!this.aiManager) {
+    if (!this.aiEngine) {
       return false;
     }
 
@@ -186,15 +188,15 @@ Respond with ONLY the topic label, nothing else. Examples: "planning dinner", "g
     if (this.canUseAI()) {
       try {
         this.recordAIUsage();
-        const response = await this.aiManager!.generateText(
-          prompt,
-          userId,
-          "gemini-flash",
-          {
-            persona: "casual",
-            useDiscordFormatting: false,
-          }
-        );
+        const builder = new AIRequestBuilder(this.aiEngine!);
+        const result = await builder
+          .chat()
+          .blocking()
+          .provider("gemini-flash")
+          .persona("casual")
+          .withoutTools()
+          .generate(prompt);
+        const response = result as AIResponse;
 
         if (response.success && response.content) {
           const label = response.content.trim().toLowerCase();
@@ -620,15 +622,15 @@ Response format: Either "continue" OR "split: [2-5 word topic label]"`;
     if (this.canUseAI()) {
       try {
         this.recordAIUsage();
-        const response = await this.aiManager!.generateText(
-          prompt,
-          userId,
-          "gemini-flash",
-          {
-            persona: "casual",
-            useDiscordFormatting: false,
-          }
-        );
+        const builder = new AIRequestBuilder(this.aiEngine!);
+        const result = await builder
+          .chat()
+          .blocking()
+          .provider("gemini-flash")
+          .persona("casual")
+          .withoutTools()
+          .generate(prompt);
+        const response = result as AIResponse;
 
         if (response.success && response.content) {
           const rawContent = response.content.trim();
@@ -728,15 +730,15 @@ Be balanced - group related subtopics together, but split clearly different disc
     if (this.canUseAI()) {
       try {
         this.recordAIUsage();
-        const response = await this.aiManager!.generateText(
-          prompt,
-          userId,
-          "gemini-flash",
-          {
-            persona: "casual",
-            useDiscordFormatting: false,
-          }
-        );
+        const builder = new AIRequestBuilder(this.aiEngine!);
+        const result = await builder
+          .chat()
+          .blocking()
+          .provider("gemini-flash")
+          .persona("casual")
+          .withoutTools()
+          .generate(prompt);
+        const response = result as AIResponse;
 
         if (response.success && response.content) {
           const content = response.content.trim().toLowerCase();

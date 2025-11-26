@@ -2,7 +2,7 @@ import type { DatabaseTool, ToolContext } from "../registry/DatabaseTools.js";
 import {
 	VoiceAssistantManager,
 	VoiceControlCommand,
-} from "../../../features/voice-assistant/VoiceAssistantManager.js";
+} from "../../../utils/discord-handlers/voice/VoiceAssistantManager.js";
 
 /**
  * Voice control tools for AI assistant

@@ -1,6 +1,7 @@
 import type { DatabaseTool, ToolContext } from "../registry/DatabaseTools.js";
-import { VoiceAssistantManager } from "../../../features/voice-assistant/VoiceAssistantManager.js";
-import { AIManager } from "../../core/AIManager.js";
+import { VoiceAssistantManager } from "../../../utils/discord-handlers/voice/VoiceAssistantManager.js";
+import { AIRequestBuilder } from "../../core/AIRequestBuilder.js";
+import type { AIResponse } from "../../providers/base/AIProvider.js";
 import type { TextChannel, Webhook } from "discord.js";
 
 /**
@@ -303,7 +304,13 @@ export const generatePlaylistTool: DatabaseTool = {
 			}
 
 			// Generate playlist using AI
-			const aiManager = AIManager.getInstance();
+			if (!context.aiEngine) {
+				return JSON.stringify({
+					success: false,
+					error: "AI engine not available in tool context",
+				});
+			}
+
 			const playlistPrompt = `Generate a playlist of exactly ${songCount} songs based on this request: "${query}"
 
 Return ONLY a JSON array of song titles, one per line, in this exact format:
@@ -311,23 +318,18 @@ Return ONLY a JSON array of song titles, one per line, in this exact format:
 
 Do not include any explanations, descriptions, or additional text. Only return the JSON array.`;
 
-			const db = await aiManager.getDb();
-			const playlistResponse = await aiManager.runWithGuildContext(
-				guildId,
-				async () => {
-					return await aiManager.generateText(
-						playlistPrompt,
-						userId,
-						"grok",
-						{
-							useDiscordFormatting: false,
-							mode: "structured",
-						}
-					);
-				}
-			);
+			const builder = new AIRequestBuilder(context.aiEngine);
+			const result = await builder
+				.chat()
+				.blocking()
+				.provider("grok")
+				.persona("casual")
+				.withoutTools() // Don't need database tools for playlist generation
+				.generate(playlistPrompt);
 
-			if (!playlistResponse.success) {
+			const playlistResponse = result as AIResponse;
+
+			if (!playlistResponse.success || !playlistResponse.content) {
 				return JSON.stringify({
 					success: false,
 					error: "Failed to generate playlist",

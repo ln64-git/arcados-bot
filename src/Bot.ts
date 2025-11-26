@@ -12,11 +12,12 @@ import { config } from "./config";
 import type { Command } from "./types";
 import { CommandDeployer } from "./utils/CommandDeployer";
 import { ConversationWorkflowManager } from "./features/social-intelligence";
-import { MessageHandler } from "./features/chat-assistant";
-import { VoiceAssistantManager } from "./features/voice-assistant/VoiceAssistantManager";
+import { MessageHandler } from "./utils/discord-handlers/chat";
+import { VoiceAssistantManager } from "./utils/discord-handlers/voice/VoiceAssistantManager";
 import { MediaPlayerManager } from "./features/media-player/MediaPlayerManager";
-import { VoiceConnectionManager } from "./features/voice-assistant/services/VoiceConnectionManager";
-import { StreamPlayerManager } from "./features/stream-player/StreamPlayerManager";
+import { VoiceConnectionManager } from "./utils/discord-handlers/voice/tts/services/VoiceConnectionManager";
+import { StreamPlayerManager } from "./features/stream-chrome/StreamPlayerManager";
+import { APICostTracker } from "./utils/APICostTracker";
 
 export class Bot {
   public client: Client;
@@ -47,6 +48,10 @@ export class Bot {
    * Initialize the bot and all features
    */
   async init(): Promise<void> {
+    // Initialize API cost tracker (must be done early)
+    const costTracker = APICostTracker.getInstance();
+    console.log("🔹 API cost tracking initialized");
+
     // Connect to database
     const dbConnected = await this.db.connect();
     if (dbConnected) {
@@ -313,6 +318,15 @@ export class Bot {
    */
   async shutdown(): Promise<void> {
     console.log("🔹 Shutting down bot...");
+
+    // Flush API cost tracking data
+    try {
+      const costTracker = APICostTracker.getInstance();
+      await costTracker.shutdown();
+      console.log("🔹 API cost tracking data flushed");
+    } catch (error) {
+      console.error("🔸 Error flushing cost tracking:", error);
+    }
 
     // Stop conversation workflow (handles conversation finalization + cleanup)
     if (this.conversationWorkflow) {

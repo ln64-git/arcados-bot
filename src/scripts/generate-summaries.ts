@@ -7,7 +7,7 @@
  */
 
 import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { AIManager } from "../ai/core/AIManager";
+import { AIFactory } from "../ai/core/AIFactory";
 import { EnhancementOrchestrator } from "../features/social-intelligence/enrichment-pipeline/EnhancementOrchestrator";
 import { config } from "../config/index.js";
 
@@ -45,11 +45,11 @@ async function main() {
   }
 
   // Initialize AI
-  const aiManager = AIManager.getInstance();
-  console.log("\n🔧 Initializing AI manager...");
+  const { engine } = await AIFactory.create();
+  console.log("\n🔧 Initializing AI engine...");
 
   // Initialize enhancement orchestrator
-  const orchestrator = new EnhancementOrchestrator(db, aiManager, {
+  const orchestrator = new EnhancementOrchestrator(db, engine, {
     lookbackHours: hoursBack,
     enableSummaries: true,
     enableOrphans: false,

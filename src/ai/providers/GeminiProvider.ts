@@ -2,6 +2,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { config } from "../../config/index.js";
 import { BaseAIProvider } from "./base/BaseAIProvider.js";
 import type { ToolCall, ToolCallResponse } from "./base/AIProvider.js";
+import { APICostTracker } from "../../utils/APICostTracker.js";
 
 export class GeminiProvider extends BaseAIProvider {
 	private genAI: GoogleGenerativeAI;
@@ -28,6 +29,9 @@ export class GeminiProvider extends BaseAIProvider {
 
 	// Handle text API call
 	async callTextAPI(systemPrompt: string, userPrompt: string): Promise<string> {
+		const startTime = Date.now();
+		const tracker = APICostTracker.getInstance();
+
 		try {
 			// Combine system and user prompts (Gemini doesn't have separate system role in basic API)
 			const combinedPrompt = `${systemPrompt}\n\n${userPrompt}`;
@@ -36,8 +40,36 @@ export class GeminiProvider extends BaseAIProvider {
 			const response = await result.response;
 			const text = response.text();
 
+			const latency = Date.now() - startTime;
+
+			// Extract token counts from Gemini response
+			const usageMetadata = result.response.usageMetadata;
+			const inputTokens = usageMetadata?.promptTokenCount || 0;
+			const outputTokens = usageMetadata?.candidatesTokenCount || 0;
+
+			tracker.trackRequest("gemini", {
+				endpoint: "callTextAPI",
+				success: true,
+				inputTokens,
+				outputTokens,
+				latency,
+				additionalMetadata: {
+					model: "gemini-2.0-flash-exp",
+				},
+			});
+
 			return text;
 		} catch (error) {
+			const latency = Date.now() - startTime;
+			tracker.trackRequest("gemini", {
+				endpoint: "callTextAPI",
+				success: false,
+				error: error instanceof Error ? error.message : String(error),
+				latency,
+				additionalMetadata: {
+					model: "gemini-2.0-flash-exp",
+				},
+			});
 			throw new Error(
 				`Gemini API error: ${error instanceof Error ? error.message : String(error)}`
 			);
@@ -51,6 +83,9 @@ export class GeminiProvider extends BaseAIProvider {
 		tools: Array<{ name: string; description: string; parameters: any }>,
 		toolResults?: ToolCallResponse[]
 	): Promise<{ content: string; toolCalls?: ToolCall[] }> {
+		const startTime = Date.now();
+		const tracker = APICostTracker.getInstance();
+
 		try {
 			// Convert tools to Gemini function declarations
 			const functionDeclarations = tools.map((tool) => ({
@@ -134,10 +169,41 @@ export class GeminiProvider extends BaseAIProvider {
 
 			// Return text response
 			const text = response.text();
+
+			const latency = Date.now() - startTime;
+
+			// Extract token counts from Gemini response
+			const usageMetadata = result.response.usageMetadata;
+			const inputTokens = usageMetadata?.promptTokenCount || 0;
+			const outputTokens = usageMetadata?.candidatesTokenCount || 0;
+
+			tracker.trackRequest("gemini", {
+				endpoint: "callTextAPIWithTools",
+				success: true,
+				inputTokens,
+				outputTokens,
+				latency,
+				additionalMetadata: {
+					model: "gemini-2.0-flash-exp",
+					hasTools: tools.length > 0,
+					hasToolCalls: functionCalls && functionCalls.length > 0,
+				},
+			});
+
 			return {
 				content: text,
 			};
 		} catch (error) {
+			const latency = Date.now() - startTime;
+			tracker.trackRequest("gemini", {
+				endpoint: "callTextAPIWithTools",
+				success: false,
+				error: error instanceof Error ? error.message : String(error),
+				latency,
+				additionalMetadata: {
+					model: "gemini-2.0-flash-exp",
+				},
+			});
 			throw new Error(
 				`Gemini API error with tools: ${error instanceof Error ? error.message : String(error)}`
 			);

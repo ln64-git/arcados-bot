@@ -13,7 +13,7 @@
 
 import type { Message } from "discord.js";
 import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
-import type { AIManager } from "../../ai/core/AIManager";
+import type { AIEngine } from "../../ai/core/AIEngine";
 import type {
 	StreamingConversation,
 	FinalizedConversation,
@@ -50,7 +50,7 @@ export class SocialIntelligence {
 	private keywordExtractor: KeywordExtractor;
 	private embeddingService: EmbeddingService;
 	private enhancementOrchestrator?: EnhancementOrchestrator;
-	private aiManager?: AIManager; // AIManager instance (optional, for enrichment)
+	private aiEngine?: AIEngine; // AIEngine instance (optional, for enrichment)
 
 	// Relationship rollup queue (shared with LiveEventSync logic)
 	private rollupQueue: Map<string, number> = new Map(); // userId:guildId -> interaction count
@@ -59,9 +59,9 @@ export class SocialIntelligence {
 	private readonly ROLLUP_TIME_THRESHOLD = 30 * 1000; // 30 seconds
 	private lastRollupTime = Date.now();
 
-	constructor(db: PostgreSQLManager, aiManager?: AIManager) {
+	constructor(db: PostgreSQLManager, aiEngine?: AIEngine) {
 		this.db = db;
-		this.aiManager = aiManager;
+		this.aiEngine = aiEngine;
 
 		// Initialize components
 		this.conversationDetector = new ConversationDetector(db);
@@ -69,10 +69,10 @@ export class SocialIntelligence {
 		this.keywordExtractor = new KeywordExtractor(db);
 		this.embeddingService = EmbeddingService.getInstance();
 
-		// Initialize enhancement orchestrator (requires AIManager for enrichment)
-		if (aiManager) {
-			this.conversationDetector.setAIManager(aiManager);
-			this.enhancementOrchestrator = new EnhancementOrchestrator(db, aiManager);
+		// Initialize enhancement orchestrator (requires AIEngine for enrichment)
+		if (aiEngine) {
+			this.conversationDetector.setAIEngine(aiEngine);
+			this.enhancementOrchestrator = new EnhancementOrchestrator(db, aiEngine);
 		}
 
 		this.startRollupTimer();

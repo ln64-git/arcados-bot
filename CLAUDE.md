@@ -76,7 +76,15 @@ Transforms raw Discord interactions into structured relationship and conversatio
 
 #### AI Module (`src/ai/`)
 Centralized AI infrastructure with multi-provider support:
-- **Core** (`core/`): AIManager (singleton) and ChatSessionManager for multi-turn conversations
+- **Core** (`core/`):
+  - **NEW ARCHITECTURE** (preferred):
+    - AIEngine: Core execution interface for AI requests
+    - AIFactory: Creates engine and context instances
+    - AIRequestBuilder: Fluent API for building AI requests (`.chat().blocking().provider().generate()`)
+    - AIContext: Request context (persona, tools, guild)
+  - **LEGACY** (deprecated, see migration guide in AIManager JSDoc):
+    - AIManager: Singleton orchestrator (use AIEngine + AIRequestBuilder instead)
+    - ChatSessionManager: Multi-turn conversation state
 - **Providers** (`providers/`):
   - GrokProvider: Uses Vercel AI SDK with Grok 4.1 Fast (non-reasoning) for AI assistant
   - GeminiProvider: Native SDK with Gemini 2.0 Flash for social intelligence
@@ -85,10 +93,18 @@ Centralized AI infrastructure with multi-provider support:
 - **Personas** (`personas/`): "sophia" (philosophical) and "casual" (friendly) persona definitions
 - **Utils** (`utils/`): MentionResolver and ResponseLengthPolicy utilities
 
-#### AI Assistant Feature (`src/features/ai-assistant/`)
-Discord-specific message handling:
-- **MessageHandler**: Handles bot mentions and replies, integrates with AIManager from `src/ai/`
-- Re-exports AIManager and ChatSessionManager for backward compatibility
+#### Discord Handlers (`src/features/discord-handlers/`)
+Discord-specific message and voice handling:
+- **Chat** (`chat/`):
+  - MessageHandler: Handles bot mentions and replies
+  - ChatAIManager: Domain adapter for chat interactions (wraps AIEngine)
+- **Voice** (`voice/`):
+  - VoiceAssistantManager: Voice channel orchestration
+  - VoiceAIManager: Domain adapter for voice interactions (wraps AIEngine)
+  - TTS services: Text-to-speech integrations (Cartesia, Google)
+  - Commands: Join/leave voice commands
+
+Note: `src/features/chat-assistant/` and `src/features/voice-assistant/` now re-export from discord-handlers for backward compatibility.
 
 #### Message Handling in Bot.ts
 **Bot mentions** (lines 169-315):
@@ -175,27 +191,55 @@ Commands automatically receive guild context and can access AI tools, database m
 
 ## Key Files to Know
 
+### Core System
 - [Bot.ts](src/Bot.ts) - Main event orchestrator and command dispatcher
 - [PostgreSQLManager.ts](src/database/PostgreSQLManager.ts) - Database interface
+
+### Discord Sync
 - [StateSyncService.ts](src/features/discord-sync/StateSyncService.ts) - Discord sync coordinator
 - [LiveEventSync.ts](src/features/discord-sync/LiveEventSync.ts) - Real-time Discord event sync
 - [ReconciliationSync.ts](src/features/discord-sync/ReconciliationSync.ts) - Background healing
+
+### Social Intelligence
 - [RelationshipMapper.ts](src/features/social-intelligence/relationship-mapping/RelationshipMapper.ts) - Affinity/relationship logic
 - [ConversationDetector.ts](src/features/social-intelligence/conversation-detection/ConversationDetector.ts) - Conversation detection and grouping
-- [AIManager.ts](src/ai/core/AIManager.ts) - Multi-provider LLM orchestration using Vercel AI SDK (Grok 4.1 Fast) and native SDKs (Gemini)
-- [DatabaseTools.ts](src/ai/tools/registry/DatabaseTools.ts) - Tool registry for AI
-- [GrokProvider.ts](src/ai/providers/GrokProvider.ts) - Grok 4.1 Fast (non-reasoning) provider using Vercel AI SDK
+- [EnhancementOrchestrator.ts](src/features/social-intelligence/enrichment-pipeline/EnhancementOrchestrator.ts) - AI-powered conversation enrichment
+
+### AI Infrastructure (NEW)
+- [AIEngine.ts](src/ai/core/AIEngine.ts) - Core AI execution interface
+- [AIFactory.ts](src/ai/core/AIFactory.ts) - Engine and context factory
+- [AIRequestBuilder.ts](src/ai/core/AIRequestBuilder.ts) - Fluent API for AI requests
+- [GrokProvider.ts](src/ai/providers/GrokProvider.ts) - Grok 4.1 Fast provider using Vercel AI SDK
 - [GeminiProvider.ts](src/ai/providers/GeminiProvider.ts) - Gemini Flash provider for social intelligence
+- [DatabaseTools.ts](src/ai/tools/registry/DatabaseTools.ts) - Tool registry for AI
+
+### AI Infrastructure (LEGACY - deprecated)
+- [AIManager.ts](src/ai/core/AIManager.ts) - Legacy singleton orchestrator (use AIEngine instead)
+
+### Discord Handlers
+- [MessageHandler.ts](src/features/discord-handlers/chat/MessageHandler.ts) - Chat message handling
+- [ChatAIManager.ts](src/features/discord-handlers/chat/ChatAIManager.ts) - Chat AI adapter
+- [VoiceAssistantManager.ts](src/features/discord-handlers/voice/VoiceAssistantManager.ts) - Voice orchestration
+- [VoiceAIManager.ts](src/features/discord-handlers/voice/VoiceAIManager.ts) - Voice AI adapter
 
 ## Common Tasks
 
-**Modify AI behavior**: Personas are defined in [personas/definitions.ts](src/ai/personas/definitions.ts); persona selection in generateText calls specifies which to use. AI providers are in [src/ai/providers/](src/ai/providers/).
+**Modify AI behavior**:
+- Personas are defined in [personas/definitions.ts](src/ai/personas/definitions.ts)
+- Use AIRequestBuilder's `.persona()` method to select persona
+- Example: `new AIRequestBuilder(engine).chat().blocking().provider("grok").persona("casual").generate(prompt)`
+- AI providers are in [src/ai/providers/](src/ai/providers/)
 
 **Add a database schema**: PostgreSQLManager has schema creation methods; update via migration pattern in `recreate:schema` script.
 
 **Track new interaction types**: ConversationDetector uses multi-strategy grouping; add new strategies in `conversation-detection/strategies/` directory.
 
-**Integrate new LLM provider**: Create provider class extending [BaseAIProvider](src/ai/providers/base/BaseAIProvider.ts) in [src/ai/providers/](src/ai/providers/), register in AIManager.initializeProviders(), add API key to config. Use Vercel AI SDK for OpenAI-compatible APIs, or native SDKs for platform-specific features.
+**Integrate new LLM provider**:
+1. Create provider class extending [BaseAIProvider](src/ai/providers/base/BaseAIProvider.ts) in [src/ai/providers/](src/ai/providers/)
+2. Register in [AIFactory.ts](src/ai/core/AIFactory.ts) provider map
+3. Add API key to [config/index.ts](src/config/index.ts)
+4. Use Vercel AI SDK for OpenAI-compatible APIs, or native SDKs for platform-specific features
+5. Provider will be automatically available via AIRequestBuilder's `.provider()` method
 
 **Debug conversation detection**: ConversationDetector buffers messages per channel with 10-min inactivity timeouts; check `streaming_conversations` table or add logging.
 

@@ -3,8 +3,8 @@ import type {
   ToolContext,
   DatabaseToolResult,
 } from "../registry/DatabaseTools.js";
-import { StreamPlayerManager } from "../../../features/stream-player/StreamPlayerManager.js";
-import type { SearchResult } from "../../../features/stream-player/types.js";
+import { StreamPlayerManager } from "../../../features/stream-chrome/StreamPlayerManager.js";
+import type { SearchResult } from "../../../features/stream-chrome/types.js";
 import type { VoiceChannel } from "discord.js";
 import { ChannelType } from "discord.js";
 
@@ -405,8 +405,7 @@ export const searchYouTubeTool: DatabaseTool = {
         const optionsText = searchResults
           .map(
             (r, i) =>
-              `${i + 1}. ${r.title}${
-                r.description ? ` - ${r.description}` : ""
+              `${i + 1}. ${r.title}${r.description ? ` - ${r.description}` : ""
               }`
           )
           .join("\n");
@@ -520,8 +519,7 @@ export const searchYouTubeTool: DatabaseTool = {
             const optionsText = result.searchResults
               .map(
                 (r, i) =>
-                  `${i + 1}. ${r.title}${
-                    r.description ? ` - ${r.description}` : ""
+                  `${i + 1}. ${r.title}${r.description ? ` - ${r.description}` : ""
                   }`
               )
               .join("\n");
@@ -665,8 +663,7 @@ export const searchJellyfinTool: DatabaseTool = {
           const optionsText = result.searchResults
             .map(
               (r, i) =>
-                `${i + 1}. ${r.title}${r.year ? ` (${r.year})` : ""}${
-                  r.description ? ` - ${r.description}` : ""
+                `${i + 1}. ${r.title}${r.year ? ` (${r.year})` : ""}${r.description ? ` - ${r.description}` : ""
                 }`
             )
             .join("\n");

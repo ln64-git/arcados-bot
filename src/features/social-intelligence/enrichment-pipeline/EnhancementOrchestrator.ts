@@ -1,5 +1,8 @@
 import { pgvector, PostgreSQLManager } from "../../../database/PostgreSQLManager.js";
-import type { AIManager } from "../../../ai/core/AIManager";
+import type { AIEngine } from "../../../ai/core/AIEngine";
+import type { AIResponse } from "../../../ai/providers/base/AIProvider";
+import { AIRequestBuilder } from "../../../ai/core/AIRequestBuilder";
+import { AIFactory } from "../../../ai/core/AIFactory";
 import { EmbeddingService } from "../semantic-analysis/EmbeddingService.js";
 
 const SUMMARY_STOP_WORDS = new Set([
@@ -85,7 +88,8 @@ export interface EnhancementStats {
  */
 export class EnhancementOrchestrator {
   private db: PostgreSQLManager;
-  private aiManager: AIManager;
+  private aiEngine: AIEngine | null = null;
+  private aiEnginePromise: Promise<AIEngine> | null = null;
   private config: Required<EnhancementConfig>;
   private stats: EnhancementStats;
   private apiCallTimestamps: number[] = [];
@@ -96,11 +100,16 @@ export class EnhancementOrchestrator {
 
   constructor(
     db: PostgreSQLManager,
-    aiManager: AIManager,
+    aiEngine?: AIEngine,
     config: EnhancementConfig = {}
   ) {
     this.db = db;
-    this.aiManager = aiManager;
+    if (aiEngine) {
+      this.aiEngine = aiEngine;
+    } else {
+      // Lazy initialization: engine will be created on first use
+      this.aiEnginePromise = AIFactory.create().then(({ engine }) => engine);
+    }
     this.config = {
       lookbackHours: config.lookbackHours ?? 24,
       minMessagesForSplit: config.minMessagesForSplit ?? 20,
@@ -123,6 +132,17 @@ export class EnhancementOrchestrator {
       apiCallsMade: 0,
       startTime: new Date(),
     };
+  }
+
+  private async getAIEngine(): Promise<AIEngine> {
+    if (this.aiEngine) {
+      return this.aiEngine;
+    }
+    if (!this.aiEnginePromise) {
+      this.aiEnginePromise = AIFactory.create().then(({ engine }) => engine);
+    }
+    this.aiEngine = await this.aiEnginePromise;
+    return this.aiEngine;
   }
 
   /**
@@ -410,21 +430,23 @@ Summary:`;
           }
 
           // Retry logic for rate limits
-          let response;
+          let response: AIResponse | undefined;
           let retries = 3;
           let lastError: Error | null = null;
 
           while (retries > 0) {
             try {
-              response = await this.aiManager.generateText(
-                prompt,
-                guildId,
-                provider,
-                {
-                  persona: "casual",
-                  useDiscordFormatting: false,
-                }
-              );
+              const engine = await this.getAIEngine();
+              const builder = new AIRequestBuilder(engine);
+              const result = await builder
+                .chat()
+                .blocking()
+                .provider(provider as "gemini-flash" | "grok" | "openai")
+                .persona("casual")
+                .withoutTools() // Summaries don't need database tools
+                .generate(prompt);
+              // Blocking mode returns AIResponse
+              response = result as AIResponse;
               break; // Success, exit retry loop
             } catch (error) {
               lastError =
