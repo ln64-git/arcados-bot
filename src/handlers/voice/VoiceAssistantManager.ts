@@ -7,6 +7,7 @@ import { TTSManager } from "./tts/services/TTSManager.js";
 import { TriggerWordDetector } from "./tts/services/TriggerWordDetector.js";
 import { VoiceAIManager } from "./VoiceAIManager.js";
 import { AIContextBuilder } from "../../ai/core/AIContext.js";
+import { enrichAIContext } from "../../ai/core/ContextEnricher.js";
 import { AIFactory } from "../../ai/core/AIFactory.js";
 import type { AIEngine } from "../../ai/core/AIEngine.js";
 import type { AIResponse } from "../../ai/providers/base/AIProvider.js";
@@ -1826,7 +1827,7 @@ export class VoiceAssistantManager {
       const controller = this.resetPlaybackController(session.guildId);
 
       // Build AIContext for voice streaming
-      const context = new AIContextBuilder()
+      const baseContext = new AIContextBuilder()
         .guild(session.guildId)
         .user(userId)
         .channel(session.channelId)
@@ -1834,6 +1835,8 @@ export class VoiceAssistantManager {
         .streaming(true)
         .withHistory(session.conversationHistory || [])
         .build();
+
+      const context = await enrichAIContext(baseContext, {}, { query });
 
       // Start streaming tokens from LLM
       const voiceAI = await this.getVoiceAI();
@@ -2025,9 +2028,11 @@ export class VoiceAssistantManager {
         }
 
         // Build context with history (excluding current user message)
-        const context = contextBuilder
+        const baseContext = contextBuilder
           .withHistory(session.conversationHistory.slice(0, -1))
           .build();
+
+        const context = await enrichAIContext(baseContext, {}, { query });
 
         this.logger.debug("Calling generateConversationResponse...");
         const voiceAI = await this.getVoiceAI();
@@ -2037,7 +2042,8 @@ export class VoiceAssistantManager {
         );
       } else {
         // Command mode - use generateCommandResponse
-        const context = contextBuilder.build();
+        const baseContext = contextBuilder.build();
+        const context = await enrichAIContext(baseContext, {}, { query });
         this.logger.debug("Calling generateCommandResponse...");
         const voiceAI = await this.getVoiceAI();
         responsePromise = voiceAI.generateCommandResponse(query, context);

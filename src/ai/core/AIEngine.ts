@@ -29,6 +29,9 @@ export interface AIRequestConfig {
 	mode?: ConversationMode; // 'chat' or 'structured'
 	streaming?: boolean;
 
+	// Tool / iteration configuration
+	maxToolIterations?: number;
+
 	// Domain-specific method prompts
 	methodPrompt?: string;
 
@@ -41,6 +44,10 @@ export interface AIRequestConfig {
 	// Web search configuration
 	enableWebSearch?: boolean; // Default: true, set to false to disable web search
 	enableXSearch?: boolean; // Default: true, set to false to disable X/Twitter search
+
+	// Tool / context budgeting
+	maxToolContextBytes?: number;
+	maxHistoryMessages?: number;
 
 	// Response configuration
 	useDiscordFormatting?: boolean;
@@ -226,7 +233,54 @@ Temperature: You can be creative and natural - just keep it brief.`;
 		try {
 			let finalContent = "";
 			const toolResults: ToolCallResponse[] = [];
-			const maxIterations = mode === "chat" ? 3 : 7;
+			const maxIterations =
+				typeof config.maxToolIterations === "number" && config.maxToolIterations > 0
+					? config.maxToolIterations
+					: mode === "chat"
+						? 3
+						: 7;
+
+			// Build a compact environment context block (server/channel/user/recent convo)
+			let environmentBlock = "";
+			if ((context.summaries && context.summaries.length > 0) || (context.semanticContext && context.semanticContext.length > 0)) {
+				const lines: string[] = [];
+
+				if (context.summaries && context.summaries.length > 0) {
+					const sortedSummaries = [...context.summaries].sort(
+						(a, b) => (b.createdAt || 0) - (a.createdAt || 0)
+					);
+					const topSummaries = sortedSummaries.slice(0, 3);
+
+					lines.push("Environment context (recent Discord activity):");
+					for (const s of topSummaries) {
+						const text = s.text.length > 220 ? `${s.text.slice(0, 217)}...` : s.text;
+						lines.push(`- ${text}`);
+					}
+				}
+
+				if (context.semanticContext && context.semanticContext.length > 0) {
+					const topSemantic = context.semanticContext.slice(0, 2);
+					if (topSemantic.length > 0) {
+						if (lines.length === 0) {
+							lines.push("Environment context (relevant past conversations):");
+						} else {
+							lines.push("");
+							lines.push("Additional relevant conversations:");
+						}
+						for (const item of topSemantic) {
+							const base = item.text || "";
+							const text =
+								base.length > 220 ? `${base.slice(0, 217)}...` : base;
+							lines.push(`- ${text}`);
+						}
+					}
+				}
+
+				environmentBlock = lines.join("\n");
+				if (environmentBlock.length > 900) {
+					environmentBlock = environmentBlock.slice(0, 897) + "...";
+				}
+			}
 
 			// Tool execution loop
 			for (let iteration = 0; iteration < maxIterations; iteration++) {
@@ -235,7 +289,13 @@ Temperature: You can be creative and natural - just keep it brief.`;
 
 				// Add history on first iteration
 				if (context.history && context.history.length > 0 && iteration === 0) {
-					const historyLimit = mode === "chat" ? 12 : 6;
+					const historyLimit =
+						typeof config.maxHistoryMessages === "number" &&
+							config.maxHistoryMessages > 0
+							? config.maxHistoryMessages
+							: mode === "chat"
+								? 10
+								: 6;
 					const historyText = context.history
 						.slice(-historyLimit)
 						.map((msg) => `${msg.role === "user" ? "User" : "Assistant"}: ${msg.content}`)
@@ -245,9 +305,63 @@ Temperature: You can be creative and natural - just keep it brief.`;
 
 				// Add tool results if we have them
 				if (toolResults.length > 0) {
-					const toolResultsText = toolResults
-						.map((tr) => `${tr.name}: ${tr.content}`)
-						.join("\n\n");
+					const maxToolContextBytes =
+						typeof config.maxToolContextBytes === "number" &&
+							config.maxToolContextBytes > 0
+							? config.maxToolContextBytes
+							: 4000;
+
+					const entries: string[] = [];
+					let remainingBudget = maxToolContextBytes;
+
+					// Walk from newest to oldest so we prefer recent tool calls
+					for (let i = toolResults.length - 1; i >= 0; i--) {
+						const toolResult = toolResults[i];
+						if (!toolResult) continue;
+
+						const entry = `${toolResult.name}: ${toolResult.content}`;
+						const entrySize = entry.length;
+
+						if (entrySize > maxToolContextBytes) {
+							// Single entry larger than budget - include the tail portion
+							entries.push(entry.slice(entrySize - maxToolContextBytes));
+							remainingBudget = 0;
+							break;
+						}
+
+						// Account for the "\n\n" separator between entries
+						const costWithSeparator = entrySize + (entries.length > 0 ? 2 : 0);
+
+						if (costWithSeparator > remainingBudget) {
+							break;
+						}
+
+						entries.push(entry);
+						remainingBudget -= costWithSeparator;
+					}
+
+					entries.reverse();
+
+					let toolResultsText = entries.join("\n\n");
+
+					if (toolResults.length > entries.length) {
+						const summaryLine = `Summary of ${toolResults.length} tool calls (showing most recent ${entries.length}).`;
+						const summaryCost = summaryLine.length + 2; // +2 for "\n\n"
+
+						if (summaryCost + toolResultsText.length > maxToolContextBytes) {
+							const availableForDetails = Math.max(
+								0,
+								maxToolContextBytes - summaryCost
+							);
+							if (availableForDetails < toolResultsText.length) {
+								toolResultsText = toolResultsText.slice(
+									toolResultsText.length - availableForDetails
+								);
+							}
+						}
+
+						toolResultsText = `${summaryLine}\n\n${toolResultsText}`;
+					}
 
 					// Update response policy based on tool context
 					const updatedPolicy = computeResponsePolicy({
@@ -258,7 +372,7 @@ Temperature: You can be creative and natural - just keep it brief.`;
 					});
 
 					const iterationGuidance = updatedPolicy.applyGuidance
-						? `\n\nGuidance: ${updatedPolicy.guidance}`
+						? `\n\nGuidance: ${updatedPolicy.guidance.trim()}`
 						: "";
 
 					// Different composition for hidden behavior
@@ -267,6 +381,11 @@ Temperature: You can be creative and natural - just keep it brief.`;
 					} else {
 						composedUser = `Tool Results:\n\n${toolResultsText}${iterationGuidance}\n\nNow answer the user's question using the tool results above. ${cleanedPrompt}`;
 					}
+				}
+
+				// Prepend environment context if available
+				if (environmentBlock) {
+					composedUser = `${environmentBlock}\n\n${composedUser}`;
 				}
 
 				// Call provider with tools
@@ -293,18 +412,23 @@ Temperature: You can be creative and natural - just keep it brief.`;
 					break;
 				}
 
-				// Execute tool calls
-				for (const toolCall of response.toolCalls) {
-					const toolResult = await this.executeTool(
-						toolCall,
-						context
-					);
+				// Execute tool calls concurrently while preserving order
+				const executedTools = await Promise.all(
+					response.toolCalls.map(async (toolCall) => {
+						const toolResult = await this.executeTool(toolCall, context);
+						return { toolCall, toolResult };
+					})
+				);
 
+				for (const { toolCall, toolResult } of executedTools) {
 					toolResults.push({
 						toolCallId: toolCall.id,
 						role: "tool",
 						name: toolCall.name,
-						content: typeof toolResult === "string" ? toolResult : toolResult.summary || "OK",
+						content:
+							typeof toolResult === "string"
+								? toolResult
+								: toolResult.summary || "OK",
 					});
 				}
 			}
@@ -446,11 +570,11 @@ ${formatting}${methodPrompt}`;
 	): Promise<string | any> {
 		const tool = this.databaseTools.getTool(toolCall.name);
 		if (!tool) {
-			return `Tool ${toolCall.name} not found`;
+			return `[tool error] Tool ${toolCall.name} not found.`;
 		}
 
 		if (!context.db) {
-			return "Database not available";
+			return "[tool error] Database not available for tool execution.";
 		}
 
 		const toolContext: ToolContext = {
@@ -467,7 +591,8 @@ ${formatting}${methodPrompt}`;
 			return result;
 		} catch (error) {
 			console.error(`Error executing tool ${toolCall.name}:`, error);
-			return `Error executing ${toolCall.name}`;
+			const message = error instanceof Error ? error.message : String(error);
+			return `[tool error] Failed to execute ${toolCall.name}: ${message}`;
 		}
 	}
 
@@ -513,7 +638,7 @@ ${formatting}${methodPrompt}`;
 	 */
 	private shouldEnableWebSearch(prompt: string): boolean {
 		const promptLower = prompt.toLowerCase();
-		
+
 		// Keywords that explicitly request web search
 		const searchKeywords = [
 			"search for",

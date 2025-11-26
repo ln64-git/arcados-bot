@@ -1,6 +1,7 @@
 import type { AIEngine } from "../../ai/core/AIEngine";
 import { AIRequestBuilder } from "../../ai/core/AIRequestBuilder";
 import type { AIContext } from "../../ai/core/AIContext";
+import { enrichAIContext } from "../../ai/core/ContextEnricher";
 import type { AIResponse } from "../../ai/providers/base/AIProvider";
 
 /**
@@ -47,10 +48,12 @@ export class ChatAIManager {
 	): Promise<AIResponse> {
 		const builder = new AIRequestBuilder(this.engine);
 
+		const enrichedContext = await enrichAIContext(context, {}, { query: prompt });
+
 		const result = await builder
 			.chat()
 			.blocking()
-			.withContext(context)
+			.withContext(enrichedContext)
 			.provider("grok")
 			.persona("sophia")
 			.generate(prompt);
@@ -87,10 +90,12 @@ export class ChatAIManager {
 	): Promise<AIResponse> {
 		const builder = new AIRequestBuilder(this.engine);
 
+		const enrichedContext = await enrichAIContext(context, {}, { query: prompt });
+
 		const result = await builder
 			.chat()
 			.blocking()
-			.withContext(context)
+			.withContext(enrichedContext)
 			.history(history)
 			.provider("grok")
 			.persona("sophia")

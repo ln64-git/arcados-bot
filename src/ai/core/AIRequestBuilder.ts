@@ -166,6 +166,30 @@ export class AIRequestBuilder {
 	}
 
 	/**
+	 * Set maximum tool iterations for the execution loop
+	 */
+	maxToolIterations(iterations: number): this {
+		this.config.maxToolIterations = iterations;
+		return this;
+	}
+
+	/**
+	 * Set maximum bytes/characters of tool context to feed back into the model
+	 */
+	maxToolContextBytes(bytes: number): this {
+		this.config.maxToolContextBytes = bytes;
+		return this;
+	}
+
+	/**
+	 * Set maximum number of history messages to include
+	 */
+	maxHistoryMessages(count: number): this {
+		this.config.maxHistoryMessages = count;
+		return this;
+	}
+
+	/**
 	 * Enable Discord formatting
 	 */
 	discordFormatting(enabled = true): this {
@@ -292,6 +316,9 @@ export class AIRequestBuilder {
 			useDiscordFormatting: this.config.useDiscordFormatting,
 			maxTokens: this.config.maxTokens,
 			temperature: this.config.temperature,
+			maxToolIterations: this.config.maxToolIterations,
+			maxToolContextBytes: this.config.maxToolContextBytes,
+			maxHistoryMessages: this.config.maxHistoryMessages,
 		};
 
 		// Call engine

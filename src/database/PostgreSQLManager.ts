@@ -464,6 +464,12 @@ export class PostgreSQLManager {
 				ADD COLUMN IF NOT EXISTS current_owner_id VARCHAR(20)
 			`);
 
+      // Add server-wide summary column for guilds
+      await client.query(`
+        ALTER TABLE guilds
+        ADD COLUMN IF NOT EXISTS server_summary TEXT
+      `);
+
       // Voice channel preferences - user preferences for voice channels
       await client.query(`
 				CREATE TABLE IF NOT EXISTS voice_channel_preferences (

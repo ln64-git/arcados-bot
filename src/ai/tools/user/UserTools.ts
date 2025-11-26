@@ -494,9 +494,14 @@ export const getUserInfoTool: DatabaseTool = {
           .slice(0, 3); // Take top 3 most relevant messages
         
         if (userContributions.length > 0) {
-          // Build: "In conversations about [topic], [user] said [their contributions]"
+          // Build a cautious description that keeps the *conversation* summary
+          // separate from the user's own perspective. This avoids implying that
+          // the user is the one experiencing everything described in the segment
+          // (e.g., someone else venting about a problem).
           const userText = userContributions.join("; ");
-          const summary = `In discussions about ${ctx.conversationSummary}, ${member.display_name} said: ${userText}`;
+          const summary =
+            `In a conversation summarized as: "${ctx.conversationSummary}", ` +
+            `${member.display_name} specifically contributed lines like: ${userText}`;
           richSummaries.push(summary);
         }
       }
@@ -561,9 +566,13 @@ export const getUserInfoTool: DatabaseTool = {
         console.log(`[getUserInfo] Filtered rich summaries: ${topSummaries.length} from ${richSummaries.length}`);
         
         if (topSummaries.length > 0) {
-          // Join summaries naturally - they already include full context
+          // Join summaries naturally - they already include full context,
+          // but emphasize that these are *conversations they participated in*,
+          // not necessarily events that happened to them personally.
           const summaryText = topSummaries.join(". ");
-          interestParts.push(`Recently ${member.display_name}'s been involved in conversations where ${summaryText}`);
+          interestParts.push(
+            `Recently ${member.display_name} has been participating in conversations where ${summaryText}`
+          );
         }
       }
 

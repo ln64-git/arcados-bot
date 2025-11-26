@@ -2,6 +2,7 @@ import { pgvector, PostgreSQLManager } from "../../../database/PostgreSQLManager
 import type { AIEngine } from "../../../ai/core/AIEngine";
 import type { AIResponse } from "../../../ai/providers/base/AIProvider";
 import { AIRequestBuilder } from "../../../ai/core/AIRequestBuilder";
+import { AIContextBuilder } from "../../../ai/core/AIContext.js";
 import { AIFactory } from "../../../ai/core/AIFactory";
 import { EmbeddingService } from "../semantic-analysis/EmbeddingService.js";
 
@@ -438,9 +439,15 @@ Summary:`;
             try {
               const engine = await this.getAIEngine();
               const builder = new AIRequestBuilder(engine);
+              // Use a simple synthetic context for summarization calls
+              const ctx = new AIContextBuilder()
+                .user("system-summarizer")
+                .guild(guildId)
+                .build();
               const result = await builder
                 .chat()
                 .blocking()
+                .withContext(ctx)
                 .provider(provider as "gemini-flash" | "grok" | "openai")
                 .persona("casual")
                 .withoutTools() // Summaries don't need database tools

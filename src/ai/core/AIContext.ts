@@ -1,6 +1,37 @@
 import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
 
 /**
+ * High-level intent classification for a user turn.
+ * Used to bias context and tool selection.
+ */
+export type AIIntent =
+	| "open_question"
+	| "follow_up"
+	| "correction"
+	| "command"
+	| "chit_chat";
+
+/**
+ * Mid-term memory: compact conversation summaries.
+ */
+export interface ConversationSummary {
+	id: string;
+	type: "channel" | "user";
+	text: string;
+	createdAt: number;
+}
+
+/**
+ * Long-term semantic memory item (e.g., from pgvector search).
+ */
+export interface SemanticContextItem {
+	id: string;
+	source: string;
+	text: string;
+	score: number;
+}
+
+/**
  * AIContext - Centralized context management for all AI operations
  *
  * This interface provides a clean, type-safe way to pass context through
@@ -19,21 +50,31 @@ export interface AIContext {
 	// Database access (lazy loaded)
 	db?: PostgreSQLManager;
 
-	// Conversation state
+	// Conversation state (short-term window)
 	history?: Array<{ role: string; content: string }>;
 	sessionId?: string;
+
+	// Tiered memory layers
+	summaries?: ConversationSummary[];
+	semanticContext?: SemanticContextItem[];
+
+	// Dialogue state hints
+	intent?: AIIntent;
+	topicIds?: string[];
 
 	// Domain hints - helps optimize tool selection and formatting
 	domain?: "voice" | "chat" | "slash";
 	isStreaming?: boolean;
 
-	// Future context engineering hooks
-	// These will allow fine-tuning context inclusion based on token budgets,
-	// relevance scoring, and other advanced strategies
+	// Context engineering hooks and budgets
+	// These allow fine-tuning context inclusion based on token budgets,
+	// relevance scoring, and other advanced strategies.
 	contextEnrichment?: {
 		includeLiveConversations?: boolean;
 		includeUserProfile?: boolean;
 		includeRelationships?: boolean;
+		includeSummaries?: boolean;
+		includeSemanticContext?: boolean;
 		maxContextTokens?: number;
 		// Future: relevanceThreshold, contextSources, etc.
 	};

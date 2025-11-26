@@ -2,6 +2,7 @@ import "dotenv/config";
 import { ChatAIManager } from "../ChatAIManager.js";
 import { AIContextBuilder } from "../../../ai/core/AIContext.js";
 import { AIFactory } from "../../../ai/core/AIFactory.js";
+import { PostgreSQLManager } from "../../../database/PostgreSQLManager.js";
 
 const provider = process.env.PROVIDER || "grok"; // grok | openai | ollama | gemini
 const input = process.argv.slice(2).join(" ") || process.env.PROMPT || "hello";
@@ -46,12 +47,24 @@ async function main(): Promise<void> {
   const { engine } = await AIFactory.create();
   const chatAI = new ChatAIManager(engine);
 
+  // Initialize database (optional but enables environment context)
+  const db = new PostgreSQLManager();
+  const dbConnected = await db.connect();
+  if (!dbConnected) {
+    console.warn("🔸 Database not connected. Running without enriched environment context.");
+  }
+
   // Build AIContext
-  const context = new AIContextBuilder()
+  const contextBuilder = new AIContextBuilder()
     .guild(guildId)
     .user(userId)
-    .domain("chat")
-    .build();
+    .domain("chat");
+
+  if (dbConnected) {
+    contextBuilder.withDatabase(db);
+  }
+
+  const context = contextBuilder.build();
 
   const res = await chatAI.generateMentionResponse(rawForAI, context);
 
@@ -77,10 +90,23 @@ async function main(): Promise<void> {
     console.log("\n⚠️  Cost tracking flush skipped");
   }
 
+  if (dbConnected) {
+    await db.disconnect();
+  }
+
   process.exit(0);
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("🔸 Uncaught error:", err);
+  try {
+    // Best-effort DB cleanup if we created one
+    const db = new PostgreSQLManager();
+    if (db.isConnected()) {
+      await db.disconnect();
+    }
+  } catch {
+    // ignore
+  }
   process.exit(1);
 });
