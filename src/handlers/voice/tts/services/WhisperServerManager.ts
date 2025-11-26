@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { config } from "../../../../../config/index.js";
+import { config } from "../../../../config/index.js";
 
 /**
  * Manages the lifecycle of the local Whisper server process

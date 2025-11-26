@@ -1,4 +1,4 @@
-import { config } from "../../../../../config/index.js";
+import { config } from "../../../../config/index.js";
 import type { TriggerWordResult } from "../../types.js";
 import { TRIGGER_CONSTANTS } from "../../constants.js";
 

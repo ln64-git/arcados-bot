@@ -11,7 +11,7 @@ import {
   entersState,
   VoiceConnectionStatus,
 } from "@discordjs/voice";
-import { VoiceConnectionManager } from "../../utils/discord-handlers/voice/tts/services/VoiceConnectionManager.js";
+import { VoiceConnectionManager } from "../../handlers/voice/tts/services/VoiceConnectionManager.js";
 import { AudioQueue } from "./AudioQueue.js";
 import { PlaybackController } from "./PlaybackController.js";
 import { EmbedController } from "./EmbedController.js";

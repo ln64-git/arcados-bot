@@ -1,5 +1,5 @@
 import { CartesiaClient } from "@cartesia/cartesia-js";
-import { config } from "../../../../../config/index.js";
+import { config } from "../../../../config/index.js";
 import type { TTSChunk } from "../../types.js";
 import {
   TTS_CONSTANTS,
@@ -7,7 +7,7 @@ import {
   AUDIO_CONSTANTS,
 } from "../../constants.js";
 import { AudioProcessor } from "./AudioProcessor.js";
-import { APICostTracker } from "../../../../../utils/APICostTracker.js";
+import { APICostTracker } from "../../../../utils/APICostTracker.js";
 
 /**
  * Retry a function with exponential backoff

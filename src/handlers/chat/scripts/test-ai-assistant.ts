@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { ChatAIManager } from "../ChatAIManager.js";
-import { AIContextBuilder } from "../../../../ai/core/AIContext.js";
-import { AIFactory } from "../../../../ai/core/AIFactory.js";
+import { AIContextBuilder } from "../../../ai/core/AIContext.js";
+import { AIFactory } from "../../../ai/core/AIFactory.js";
 
 const provider = process.env.PROVIDER || "grok"; // grok | openai | ollama | gemini
 const input = process.argv.slice(2).join(" ") || process.env.PROMPT || "hello";
@@ -11,7 +11,6 @@ const botUserId = process.env.BOT_USER_ID; // optional: the bot's Discord user I
 
 async function main(): Promise<void> {
   console.log(`Provider: ${provider}`);
-  console.log("Mode: chat-like with tools");
 
   if (!process.env.BOT_TOKEN) {
     console.warn(
@@ -47,9 +46,6 @@ async function main(): Promise<void> {
   const { engine } = await AIFactory.create();
   const chatAI = new ChatAIManager(engine);
 
-  console.log(`\n=== Testing with prompt: "${rawForAI}" ===\n`);
-  console.log("Checking for hidden behavior trigger...\n");
-
   // Build AIContext
   const context = new AIContextBuilder()
     .guild(guildId)
@@ -69,15 +65,13 @@ async function main(): Promise<void> {
 
   // Flush cost tracking data before exiting
   try {
-    const { APICostTracker } = await import("../../../../utils/APICostTracker.js");
+    const { APICostTracker } = await import("../../../utils/APICostTracker.js");
     const tracker = APICostTracker.getInstance();
     // Use timeout to prevent hanging
     await Promise.race([
       tracker.writeStats(),
       new Promise((resolve) => setTimeout(resolve, 2000))
     ]);
-    console.log("\n💾 Cost tracking data flushed to api-costs/ directory");
-    console.log("   View costs with: bun view-costs");
   } catch (err) {
     // Ignore errors in cost tracking
     console.log("\n⚠️  Cost tracking flush skipped");

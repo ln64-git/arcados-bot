@@ -275,11 +275,6 @@ export class GrokProvider extends BaseAIProvider {
       const inputTokens = usage?.input_tokens || usage?.inputTokens || 0;
       const outputTokens = usage?.output_tokens || usage?.outputTokens || 0;
 
-      console.log(
-        "[GrokProvider] Raw response data:",
-        JSON.stringify(response.data, null, 2).substring(0, 2000)
-      );
-
       // Track successful request
       tracker.trackRequest("grok", {
         endpoint: "callTextAPIWithTools",

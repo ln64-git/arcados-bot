@@ -1,7 +1,7 @@
-import type { AIEngine } from "../../../ai/core/AIEngine";
-import { AIRequestBuilder } from "../../../ai/core/AIRequestBuilder";
-import type { AIContext } from "../../../ai/core/AIContext";
-import type { AIResponse } from "../../../ai/providers/base/AIProvider";
+import type { AIEngine } from "../../ai/core/AIEngine";
+import { AIRequestBuilder } from "../../ai/core/AIRequestBuilder";
+import type { AIContext } from "../../ai/core/AIContext";
+import type { AIResponse } from "../../ai/providers/base/AIProvider";
 
 /**
  * VoiceAIManager - Domain-specific AI interface for voice interactions

@@ -1,4 +1,4 @@
-import { config } from "../../../../../config/index.js";
+import { config } from "../../../../config/index.js";
 import type { AudioChunk } from "../../types.js";
 import { TRANSCRIPTION_CONSTANTS } from "../../constants.js";
 

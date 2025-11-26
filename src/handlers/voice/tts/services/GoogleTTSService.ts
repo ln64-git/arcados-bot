@@ -1,7 +1,7 @@
-import { config } from "../../../../../config/index.js";
+import { config } from "../../../../config/index.js";
 import type { TTSChunk } from "../../types.js";
 import { TTS_CONSTANTS } from "../../constants.js";
-import { APICostTracker } from "../../../../../utils/APICostTracker.js";
+import { APICostTracker } from "../../../../utils/APICostTracker.js";
 
 /**
  * Retry a function with exponential backoff

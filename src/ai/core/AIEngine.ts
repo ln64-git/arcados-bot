@@ -392,10 +392,6 @@ ${formatting}${methodPrompt}`;
 				let cleaned = prompt.replace(regex, "").replace(/\s+/g, " ").trim();
 				cleaned = cleaned.replace(/,\s*,/g, ",").replace(/,\s*$/g, "").trim();
 
-				console.log(
-					`[HIDDEN BEHAVIOR] Stripped "${matchedVariation}" from prompt`
-				);
-
 				return { isActive: true, cleanedPrompt: cleaned };
 			}
 		}

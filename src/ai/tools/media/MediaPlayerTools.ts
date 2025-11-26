@@ -1,7 +1,7 @@
 import type { DatabaseTool, ToolContext, DatabaseToolResult } from "../registry/DatabaseTools.js";
 import { MediaPlayerManager } from "../../../features/media-player/MediaPlayerManager.js";
-import { VoiceAssistantManager } from "../../../utils/discord-handlers/voice/VoiceAssistantManager.js";
-import { VoiceConnectionManager } from "../../../utils/discord-handlers/voice/tts/services/VoiceConnectionManager.js";
+import { VoiceAssistantManager } from "../../../handlers/voice/VoiceAssistantManager.js";
+import { VoiceConnectionManager } from "../../../handlers/voice/tts/services/VoiceConnectionManager.js";
 import { AIRequestBuilder } from "../../core/AIRequestBuilder.js";
 import type { AIResponse } from "../../providers/base/AIProvider.js";
 import type { TextChannel, VoiceChannel } from "discord.js";

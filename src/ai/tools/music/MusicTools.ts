@@ -1,5 +1,5 @@
 import type { DatabaseTool, ToolContext } from "../registry/DatabaseTools.js";
-import { VoiceAssistantManager } from "../../../utils/discord-handlers/voice/VoiceAssistantManager.js";
+import { VoiceAssistantManager } from "../../../handlers/voice/VoiceAssistantManager.js";
 import { AIRequestBuilder } from "../../core/AIRequestBuilder.js";
 import type { AIResponse } from "../../providers/base/AIProvider.js";
 import type { TextChannel, Webhook } from "discord.js";
