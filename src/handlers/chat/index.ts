@@ -7,5 +7,5 @@
 
 export { MessageHandler } from "./MessageHandler";
 export { ChatAIManager } from "./ChatAIManager";
-export * from "../../../ai/core/ChatSessionManager";
+export * from "../../ai/core/ChatSessionManager";
 

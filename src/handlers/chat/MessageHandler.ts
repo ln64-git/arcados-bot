@@ -7,20 +7,20 @@
 
 import type { Client, Message } from "discord.js";
 import { ChannelType } from "discord.js";
-import type { PostgreSQLManager } from "../../../database/PostgreSQLManager";
+import type { PostgreSQLManager } from "../../database/PostgreSQLManager";
 import { ChatAIManager } from "./ChatAIManager";
-import { AIContextBuilder } from "../../../ai/core/AIContext";
+import { AIContextBuilder } from "../../ai/core/AIContext";
 import {
   getSessionByRepliedMessageId,
   appendUserTurn,
   appendAssistantTurnAndTrackMessage,
   getSessionHistory,
   startSession,
-} from "../../../ai/core/ChatSessionManager";
-import { resolveMentionsInText } from "../../../ai/utils/MentionResolver";
+} from "../../ai/core/ChatSessionManager";
+import { resolveMentionsInText } from "../../ai/utils/MentionResolver";
 import { VoiceAssistantManager } from "../voice/VoiceAssistantManager";
-import { AIFactory } from "../../../ai/core/AIFactory";
-import type { AIEngine } from "../../../ai/core/AIEngine";
+import { AIFactory } from "../../ai/core/AIFactory";
+import type { AIEngine } from "../../ai/core/AIEngine";
 
 export class MessageHandler {
   private client: Client;
@@ -33,7 +33,7 @@ export class MessageHandler {
     this.client = client;
     this.db = db;
     this.provider = provider;
-    
+
     // Lazy initialization of AI engine to avoid segfaults in test environments
   }
 
@@ -85,53 +85,53 @@ export class MessageHandler {
           console.log(`[MessageHandler] Number ${selectionNumber} is out of range for selection, ignoring`);
         } else {
           console.log(`[MessageHandler] Detected number-only message: ${selectionNumber}`);
-        
-        try {
-          const { StreamPlayerManager } = await import("../../../features/stream-player/StreamPlayerManager");
-          const streamManager = StreamPlayerManager.getInstance();
-          const activeSession = streamManager.getActiveSession(message.guildId!);
-          
-          console.log(`[MessageHandler] Active session check:`, {
-            hasActiveSession: !!activeSession,
-            sessionState: activeSession?.state,
-            hasPendingResults: !!(activeSession as any)?.pendingSearchResults,
-            guildId: activeSession?.guildId,
-            messageGuildId: message.guildId,
-            query: activeSession?.query,
-          });
-          
-          if (activeSession && 
-              activeSession.state === "searching" && 
+
+          try {
+            const { StreamPlayerManager } = await import("../../features/stream-chrome/StreamPlayerManager");
+            const streamManager = StreamPlayerManager.getInstance();
+            const activeSession = streamManager.getActiveSession(message.guildId!);
+
+            console.log(`[MessageHandler] Active session check:`, {
+              hasActiveSession: !!activeSession,
+              sessionState: activeSession?.state,
+              hasPendingResults: !!(activeSession as any)?.pendingSearchResults,
+              guildId: activeSession?.guildId,
+              messageGuildId: message.guildId,
+              query: activeSession?.query,
+            });
+
+            if (activeSession &&
+              activeSession.state === "searching" &&
               (activeSession as any).pendingSearchResults) {
-            console.log(`[MessageHandler] Processing stream selection ${selectionNumber} for guild ${message.guildId}`);
-            const result = await streamManager.streamWithSelection(
-              message.guildId!,
-              selectionNumber
-            );
-            
-            console.log(`[MessageHandler] streamWithSelection result:`, {
-              success: result.success,
-              message: result.message,
-              error: result.error,
-            });
-            
-            if (result.success) {
-              await message.reply(result.message);
-              return;
+              console.log(`[MessageHandler] Processing stream selection ${selectionNumber} for guild ${message.guildId}`);
+              const result = await streamManager.streamWithSelection(
+                message.guildId!,
+                selectionNumber
+              );
+
+              console.log(`[MessageHandler] streamWithSelection result:`, {
+                success: result.success,
+                message: result.message,
+                error: result.error,
+              });
+
+              if (result.success) {
+                await message.reply(result.message);
+                return;
+              } else {
+                await message.reply(result.message || result.error || "Failed to process selection");
+                return;
+              }
             } else {
-              await message.reply(result.message || result.error || "Failed to process selection");
-              return;
+              console.log(`[MessageHandler] No active stream session waiting for selection`, {
+                hasSession: !!activeSession,
+                state: activeSession?.state,
+                hasPending: !!(activeSession as any)?.pendingSearchResults,
+              });
             }
-          } else {
-            console.log(`[MessageHandler] No active stream session waiting for selection`, {
-              hasSession: !!activeSession,
-              state: activeSession?.state,
-              hasPending: !!(activeSession as any)?.pendingSearchResults,
-            });
+          } catch (error) {
+            console.error("[MessageHandler] Error checking stream selection:", error);
           }
-        } catch (error) {
-          console.error("[MessageHandler] Error checking stream selection:", error);
-        }
         } // Close the selectionNumber range check
       }
 
@@ -251,7 +251,7 @@ export class MessageHandler {
     refId: string
   ): Promise<void> {
     console.log(`[MessageHandler] handleSessionContinuation called: refId=${refId}, content="${message.content}"`);
-    
+
     const found = getSessionByRepliedMessageId(refId);
     if (!found) {
       console.log(`[MessageHandler] No session found for refId ${refId}`);
@@ -305,47 +305,47 @@ export class MessageHandler {
         // Continue with normal AI processing
       } else {
         console.log(`[MessageHandler] handleSessionContinuation: Detected potential stream selection: ${selectionNumber}`);
-      
-      try {
-        const { StreamPlayerManager } = await import("../../../features/stream-player/StreamPlayerManager");
-        const streamManager = StreamPlayerManager.getInstance();
-        const activeSession = streamManager.getActiveSession(message.guildId!);
-        
-        console.log(`[MessageHandler] handleSessionContinuation: Active session check:`, {
-          hasActiveSession: !!activeSession,
-          sessionState: activeSession?.state,
-          hasPendingResults: !!(activeSession as any)?.pendingSearchResults,
-          guildId: activeSession?.guildId,
-          messageGuildId: message.guildId,
-          query: activeSession?.query,
-        });
-        
-        if (activeSession && 
-            activeSession.state === "searching" && 
-            (activeSession as any).pendingSearchResults) {
-          console.log(`[MessageHandler] handleSessionContinuation: Processing stream selection ${selectionNumber}`);
-          const result = await streamManager.streamWithSelection(
-            message.guildId!,
-            selectionNumber
-          );
-          
-          console.log(`[MessageHandler] handleSessionContinuation: streamWithSelection result:`, {
-            success: result.success,
-            message: result.message,
-            error: result.error,
+
+        try {
+          const { StreamPlayerManager } = await import("../../features/stream-chrome/StreamPlayerManager");
+          const streamManager = StreamPlayerManager.getInstance();
+          const activeSession = streamManager.getActiveSession(message.guildId!);
+
+          console.log(`[MessageHandler] handleSessionContinuation: Active session check:`, {
+            hasActiveSession: !!activeSession,
+            sessionState: activeSession?.state,
+            hasPendingResults: !!(activeSession as any)?.pendingSearchResults,
+            guildId: activeSession?.guildId,
+            messageGuildId: message.guildId,
+            query: activeSession?.query,
           });
-          
-          if (result.success) {
-            await message.reply(result.message);
-            return;
-          } else {
-            await message.reply(result.message || result.error || "Failed to process selection");
-            return;
+
+          if (activeSession &&
+            activeSession.state === "searching" &&
+            (activeSession as any).pendingSearchResults) {
+            console.log(`[MessageHandler] handleSessionContinuation: Processing stream selection ${selectionNumber}`);
+            const result = await streamManager.streamWithSelection(
+              message.guildId!,
+              selectionNumber
+            );
+
+            console.log(`[MessageHandler] handleSessionContinuation: streamWithSelection result:`, {
+              success: result.success,
+              message: result.message,
+              error: result.error,
+            });
+
+            if (result.success) {
+              await message.reply(result.message);
+              return;
+            } else {
+              await message.reply(result.message || result.error || "Failed to process selection");
+              return;
+            }
           }
+        } catch (error) {
+          console.error("[MessageHandler] handleSessionContinuation: Error processing stream selection:", error);
         }
-      } catch (error) {
-        console.error("[MessageHandler] handleSessionContinuation: Error processing stream selection:", error);
-      }
       } // Close the selectionNumber range check
     }
 
