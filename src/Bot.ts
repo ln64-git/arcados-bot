@@ -11,7 +11,6 @@ import type { Interaction, VoiceState } from "discord.js";
 import { config } from "./config";
 import type { Command } from "./types";
 import { CommandDeployer } from "./utils/CommandDeployer";
-import { StateSyncService } from "./features/discord-sync/StateSyncService";
 import { ConversationWorkflowManager } from "./features/social-intelligence";
 import { MessageHandler } from "./features/chat-assistant";
 import { VoiceAssistantManager } from "./features/voice-assistant/VoiceAssistantManager";
@@ -25,7 +24,6 @@ export class Bot {
   private db: PostgreSQLManager;
 
   // Feature coordinators
-  private stateSyncService?: StateSyncService;
   private conversationWorkflow?: ConversationWorkflowManager;
   private messageHandler?: MessageHandler;
   private commandDeployer?: CommandDeployer;

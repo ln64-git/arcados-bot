@@ -4,8 +4,8 @@
  */
 
 import { SentenceDetector } from "./utils/SentenceDetector";
-import type { TTSManager } from "../voice-assistant/services/TTSManager";
-import type { TTSChunk } from "../voice-assistant/types";
+import type { TTSManager } from "../services/TTSManager";
+import type { TTSChunk } from "../types";
 
 export interface StreamingQueueConfig {
 	/** Target buffer time before next chunk needed (ms, default: 200) */
@@ -100,7 +100,7 @@ export class StreamingTTSQueue {
 
 		// Queue any remaining paragraphs
 		this.processBuffer();
-		
+
 		// If we still have paragraphs in queue but no chunks created, create them now
 		// This handles cases where the response has no newlines (single paragraph)
 		while (this.paragraphQueue.length > 0) {
@@ -400,14 +400,14 @@ export class StreamingTTSQueue {
 					reject(new Error(`TTS synthesis timeout after 30 seconds`));
 				}, 30000);
 			});
-			
+
 			const audio = await Promise.race([synthesisPromise, timeoutPromise]);
-			
+
 			if (!audio || audio.length === 0) {
 				console.error(`[StreamingTTSQueue] Synthesis returned empty audio buffer`);
 				return null;
 			}
-			
+
 			return {
 				audio,
 				text: chunk.text,

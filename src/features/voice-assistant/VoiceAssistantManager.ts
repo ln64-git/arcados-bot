@@ -10,7 +10,7 @@ import { config } from "../../config/index.js";
 import { VoiceLogger } from "./utils/VoiceLogger.js";
 import { AudioToneGenerator } from "./utils/AudioToneGenerator.js";
 import { MediaPlayerManager } from "../media-player/MediaPlayerManager.js";
-import { StreamingTTSQueue } from "../tts/StreamingTTSQueue.js";
+import { StreamingTTSQueue } from "./tts/StreamingTTSQueue.js";
 import type { VoiceSession, TranscriptionEntry, TTSChunk } from "./types.js";
 import {
   VoiceAssistantEvent,
