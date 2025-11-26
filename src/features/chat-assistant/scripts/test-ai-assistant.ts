@@ -42,6 +42,9 @@ async function main(): Promise<void> {
   const rawForAI = userContent;
   const ai = AIManager.getInstance();
 
+  console.log(`\n=== Testing with prompt: "${rawForAI}" ===\n`);
+  console.log("Checking for hidden behavior trigger...\n");
+
   await ai.runWithGuildContext(guildId, async () => {
     const res = await ai.generateText(rawForAI, userId, provider, {
       personaKey: "sophia",
@@ -56,7 +59,20 @@ async function main(): Promise<void> {
 
     console.log("\n=== AI Response ===\n");
     console.log(res.content);
+
+    // Check if hidden behavior was activated by looking for keywords in response
+    const responseLower = res.content.toLowerCase();
+    const hasHiddenBehaviorKeywords =
+      responseLower.includes("carnal") ||
+      responseLower.includes("sensual") ||
+      responseLower.includes("erotic") ||
+      responseLower.includes("sexual") ||
+      responseLower.includes("desire") ||
+      responseLower.includes("hunger");
+
   });
+
+  process.exit(0);
 }
 
 main().catch((err) => {

@@ -141,6 +141,13 @@ export class WhisperTranscriber {
 		);
 		formData.append("response_format", "json");
 
+		// Add initial prompt to improve recognition of proper nouns and context
+		// This helps Whisper understand uncommon names and terms
+		formData.append(
+			"prompt",
+			"Ariya is a voice assistant. Common topics: Oracle of Delphi, philosophy, AI, technology."
+		);
+
 		const headers: Record<string, string> = {};
 		if (this.whisperApiKey) {
 			headers.Authorization = `Bearer ${this.whisperApiKey}`;
@@ -187,6 +194,10 @@ export class WhisperTranscriber {
 		formData.append("file", audioBlob, "audio.wav");
 		formData.append("model", "whisper-1");
 		formData.append("language", "en");
+		formData.append(
+			"prompt",
+			"Ariya is a voice assistant. Common topics: Oracle of Delphi, philosophy, AI, technology."
+		);
 
 		const response = await fetch(
 			"https://api.openai.com/v1/audio/transcriptions",

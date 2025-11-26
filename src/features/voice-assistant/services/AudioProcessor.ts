@@ -30,7 +30,7 @@ export class AudioProcessor {
 	private bufferStates: Map<string, BufferState> = new Map();
 	private lastAudioTime: Map<string, number> = new Map();
 
-	private constructor() {}
+	private constructor() { }
 
 	public static getInstance(): AudioProcessor {
 		if (!AudioProcessor.instance) {
@@ -81,11 +81,6 @@ export class AudioProcessor {
 
 		// Check if we have enough audio for a chunk
 		if (durationMs >= effectiveChunkDuration) {
-			this.logger?.debug?.(
-				`[AudioProcessor] Creating chunk for session ${sessionId} (duration ${durationMs.toFixed(
-					0
-				)}ms, bytes ${state.totalBytes})`
-			);
 			return this.sliceChunk(sessionId, state, effectiveChunkDuration);
 		}
 
@@ -372,6 +367,8 @@ export class AudioProcessor {
 
 		while (remaining > 0 && state.chunks.length > 0) {
 			const current = state.chunks[0];
+			if (!current) break;
+
 			if (current.length <= remaining) {
 				chunkParts.push(current);
 				state.chunks.shift();
@@ -433,9 +430,8 @@ export class AudioProcessor {
 
 		console.warn(
 			`[AudioProcessor] ${message} — session: ${sessionId}, ` +
-				`chunks: ${state.chunks.length}, bytes: ${
-					state.totalBytes
-				} (${percent}%), duration: ${duration.toFixed(0)}ms`
+			`chunks: ${state.chunks.length}, bytes: ${state.totalBytes
+			} (${percent}%), duration: ${duration.toFixed(0)}ms`
 		);
 	}
 }

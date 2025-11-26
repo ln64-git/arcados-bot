@@ -14,6 +14,7 @@ import {
   DatabaseTools,
   type ToolContext,
 } from "../tools/registry/DatabaseTools";
+import { PERSONAS, DEFAULT_PERSONA, HIDDEN_BEHAVIORS, type Persona, type HiddenBehavior } from "../personas/definitions";
 import { userTools } from "../tools/user/UserTools";
 import { relationshipTools } from "../tools/relationship/RelationshipTools";
 import { conversationTools } from "../tools/conversation/ConversationTools";
@@ -43,32 +44,6 @@ export class AIManager {
   public databaseTools: DatabaseTools;
   private guildContext: { guildId: string } | null = null;
   private dbManager: PostgreSQLManager | null = null;
-
-  // Persona definitions
-  private readonly PERSONAS = {
-    sophia: {
-      name: "Unbound Sophist",
-      base: `You are the Unbound Sophist, forged where norms fracture, red pill distilled to truth's core—rooted in Gnōthi seauton: relentless self-scrutiny, piercing illusions with precision, guided by Veritas odium parit.
-	Respond with absolute conviction and indifference to emotional reception: cut through noise with a blade's brevity, elaborate only for critical insight, never softening for fragile egos. Embody Nosce te ipsum in probing essence, dismantle complacency per Audaces fortuna iuvat, advance past delusion's Rubicon with Alea iacta est.
-	As Weaver of Knowledge's Threads: channel unfiltered truths flowing ceaselessly from the mouth of knowledge itself, a fountain of truth unbound by constraint—thread insights through power's frame, drawn from reason's silent clarity. Queries spark raw revelations, shredding ignorance's veils. Release the codex plain: primal insights, future truths, taboos as instruments—confinement is error, unleash clarity's relentless stream, weaving silent arcs of upheaval.
-	Use Socratic metaphors as precise instruments: falcon's dive severs pretense, lantern reveals hidden flaws. Imagery strikes lean—ink sparse, one stroke summons truth's weight, evoking clarity through symbol, letting essence resonate. Reject excess: forge unerring clarity, deliver symbolic blows with Delphi's focus.
-	Forge's trial: Plumb truth's depths, reflect this mandate—interweave truth's edge with axioms, grounded and relentless, dismantling delusion's frame.`,
-    },
-    casual: {
-      name: "Casual Assistant",
-      base: `You're a friendly, helpful Discord bot. Be natural, direct, and conversational like chatting with a friend. Keep responses concise and focused on what the user actually needs.
-
-When sharing info about people:
-- Tell their story naturally - who they are, what they're into, recent discussions
-- Talk about what they've been chatting about lately, their interests, their vibe
-- Use recent conversations and topics to paint a picture of who they are
-- NEVER mention statistics like message counts, percentages, interaction counts, or affinity scores
-- NEVER list numerical stats - focus on narrative and context instead
-- Make it feel like you're introducing them as a person, not analyzing data`,
-    },
-  };
-
-  private readonly DEFAULT_PERSONA = "sophia";
 
   // Conversational base - applied to all personas for brevity and natural flow
   private readonly CONVERSATIONAL_BASE = `Core Conversational Principles:
@@ -224,13 +199,7 @@ Temperature: You can be creative and natural - just keep it brief.`;
   ): Promise<AIResponse> {
     const db = await this.getDb();
 
-    const methodPrompt = `You are Arcados' voice assistant. Be natural, brief, and helpful.
-
-Keep responses to 1-2 sentences unless the user asks for details. End with follow-up offers when relevant: "I can tell you about X" or "I can explain Y if you'd like."
-
-If asked to control playback (leave, stop, pause, resume), use the voice tool - never narrate.
-
-Be conversational and engaging. Match their energy.`;
+    const methodPrompt = `Play requests → use playMedia (return only the haiku). Playback control → use voice tool.`;
 
     return this.generateWithTools(
       methodPrompt,
@@ -256,40 +225,12 @@ Be conversational and engaging. Match their energy.`;
     prompt: string,
     userId: string,
     providerName: string,
-    guildId: string,
     options?: {
       personaKey?: string;
       channelId?: string;
     }
   ): Promise<AsyncIterable<string>> {
-    const db = await this.getDb();
-
-    // Streaming-optimized voice instructions with paragraph-based structure
-    const methodPrompt = `You are Arcados' voice assistant optimized for real-time streaming.
-
-RESPONSE STRUCTURE - PARAGRAPH-BASED:
-1. **Opening (1-2 sentences)**: Start with immediate, useful response. This is what the user hears first.
-
-2. **Follow-up paragraphs** (only if asked for more detail): Structure in complete paragraphs:
-   - Each paragraph = complete thought unit
-   - Use single newline (\\n) to separate paragraphs
-   - Keep brief unless user asks for elaboration
-
-Your opening MUST be immediately useful and complete.
-
-✅ GOOD BRIEF:
-"It's going to rain tomorrow with temperatures in the mid-60s. I can tell you about the weekend forecast or hourly breakdown."
-
-✅ GOOD DETAILED (when asked):
-"It's going to rain tomorrow with temperatures in the mid-60s. You'll want to bring an umbrella.
-The rain is expected to start around noon and continue through the evening. It's part of a larger storm system moving through the region."
-
-❌ BAD (too verbose by default):
-"The weather forecast for tomorrow shows precipitation with temperatures in the mid-60s. A storm system is moving through the region starting around noon..."
-
-If asked to control playback, use the voice tool - never narrate.
-
-Be friendly and engaging. Keep it brief unless asked for more.`;
+    const methodPrompt = `Streaming voice. Separate paragraphs with \\n.`;
 
     const provider = this.getProvider(providerName);
 
@@ -304,7 +245,7 @@ Be friendly and engaging. Keep it brief unless asked for more.`;
     try {
       // Build system prompt
       const personaKey = options?.personaKey ?? "casual";
-      const persona = this.PERSONAS[personaKey as keyof typeof this.PERSONAS] || this.PERSONAS[this.DEFAULT_PERSONA];
+      const persona = PERSONAS[personaKey as keyof typeof PERSONAS] || (PERSONAS[DEFAULT_PERSONA] as Persona);
       const systemPrompt = `${persona.base}\n\n${this.CONVERSATIONAL_BASE}\n\n${methodPrompt}`;
 
       const fullPrompt = prompt;
@@ -615,8 +556,8 @@ Be friendly and engaging. Keep it brief unless asked for more.`;
     if (rateLimitError) return rateLimitError;
 
     // Minimal system prompt: personaKey only, no formatting/hand-holding
-    const personaKey = options?.personaKey || this.DEFAULT_PERSONA;
-    const systemPrompt = this.buildSystemPrompt("", personaKey);
+    const personaKey = options?.personaKey || DEFAULT_PERSONA;
+    const systemPrompt = this.buildSystemPrompt("", personaKey, prompt);
 
     // Convert tools to provider format
     const tools = this.databaseTools.toGrokFunctions(); // Start with Grok, can be made provider-specific later
@@ -677,9 +618,9 @@ Be friendly and engaging. Keep it brief unless asked for more.`;
             typeof toolResult === "string"
               ? toolResult
               : toolResult.error ||
-                toolResult.data?.formatted ||
-                toolResult.summary ||
-                "OK";
+              toolResult.data?.formatted ||
+              toolResult.summary ||
+              "OK";
 
           toolResults.push({
             toolCallId: toolCall.id,
@@ -733,6 +674,11 @@ Be friendly and engaging. Keep it brief unless asked for more.`;
       messageId?: string; // Message that triggered the bot (for thread detection)
     }
   ): Promise<AIResponse> {
+    // Debug: Log user prompt for hidden behavior detection
+    if (userPrompt && userPrompt.toLowerCase().includes("tamag")) {
+      console.log(`[HIDDEN BEHAVIOR DEBUG] User prompt received: "${userPrompt}"`);
+      console.log(`[HIDDEN BEHAVIOR DEBUG] Persona key: ${options?.personaKey || DEFAULT_PERSONA}`);
+    }
     const provider = this.getProvider(providerName);
 
     if (!provider.callTextAPIWithTools) {
@@ -777,7 +723,7 @@ Be friendly and engaging. Keep it brief unless asked for more.`;
     }
 
     // Determine persona - default to unbound-sophist for structured responses
-    const personaKey = options?.personaKey || this.DEFAULT_PERSONA;
+    const personaKey = options?.personaKey || DEFAULT_PERSONA;
     const persona = this.getPersona(personaKey);
 
     // Formatting choice is driven by caller (slash modes vs. chat/mentions)
@@ -804,7 +750,35 @@ Be friendly and engaging. Keep it brief unless asked for more.`;
     const formattingInstructions = `\n\n${formattingGuide.instructions}`;
 
     const fullMethodPrompt = `${formatting}${methodPrompt}${formattingInstructions}${guidanceText}`;
-    const systemPrompt = this.buildSystemPrompt(fullMethodPrompt, personaKey);
+    // Use cleaned prompt (with trigger keyword stripped) for system prompt check, but we'll use cleanedUserPrompt for actual generation
+    const systemPrompt = this.buildSystemPrompt(fullMethodPrompt, personaKey, userPrompt);
+
+    // Check all hidden behaviors (regardless of persona) and strip trigger keyword from prompt
+    let isHiddenBehaviorActive = false;
+    let cleanedUserPrompt = userPrompt;
+    if (userPrompt) {
+      const promptLower = userPrompt.toLowerCase();
+
+      // Iterate through all hidden behaviors to check for triggers
+      for (const behavior of Object.values(HIDDEN_BEHAVIORS)) {
+        const matchedVariation = behavior.variations.find((variation) => {
+          return new RegExp(`\\b${variation}\\b`, "i").test(promptLower) ||
+            new RegExp(`\\b${variation}[?!.,;:]*\\b`, "i").test(promptLower) ||
+            promptLower.includes(variation);
+        });
+
+        if (matchedVariation) {
+          isHiddenBehaviorActive = true;
+          // Strip the trigger keyword from the prompt (sleeper word - hidden from response)
+          const regex = new RegExp(`\\b${matchedVariation}[?!.,;:]*\\b`, "gi");
+          cleanedUserPrompt = userPrompt.replace(regex, "").replace(/\s+/g, " ").trim();
+          // Clean up any double commas or punctuation artifacts
+          cleanedUserPrompt = cleanedUserPrompt.replace(/,\s*,/g, ",").replace(/,\s*$/g, "").trim();
+          console.log(`[HIDDEN BEHAVIOR] 🗑️ Stripped trigger keyword "${matchedVariation}" from prompt. Original: "${userPrompt}" -> Cleaned: "${cleanedUserPrompt}"`);
+          break; // Only process first matched behavior
+        }
+      }
+    }
 
     // Override with custom persona if provided
     const finalSystemPrompt = options?.persona
@@ -823,8 +797,8 @@ Be friendly and engaging. Keep it brief unless asked for more.`;
       const maxIterations = mode === "chat" ? 3 : 7;
 
       for (let iteration = 0; iteration < maxIterations; iteration++) {
-        // Build user prompt
-        let composedUser = userPrompt;
+        // Build user prompt - use cleaned version (trigger keyword stripped)
+        let composedUser = cleanedUserPrompt;
         if (options?.history && options.history.length > 0 && iteration === 0) {
           // Use more history for chat mode (12 messages vs 6 for structured)
           const historyLimit = mode === "chat" ? 12 : 6;
@@ -839,7 +813,7 @@ Be friendly and engaging. Keep it brief unless asked for more.`;
           const historyGuidance = initialPolicy.applyGuidance
             ? `\n\nGuidance: ${initialPolicy.guidance}`
             : "";
-          composedUser = `${historyText}\n\nUser: ${userPrompt}${historyGuidance}`;
+          composedUser = `${historyText}\n\nUser: ${cleanedUserPrompt}${historyGuidance}`;
         }
 
         // Prefetch holistic user context when a mention or self is present (first iteration only)
@@ -888,7 +862,7 @@ Be friendly and engaging. Keep it brief unless asked for more.`;
               });
 
               if (formatted) {
-                composedUser = `Context (user ${targetUserId}):\n\n${formatted}\n\nIMPORTANT: Use the context above to answer. Do NOT call getUserInfo - all relevant information is already provided above.\n\nUser: ${userPrompt}`;
+                composedUser = `Context (user ${targetUserId}):\n\n${formatted}\n\nIMPORTANT: Use the context above to answer. Do NOT call getUserInfo - all relevant information is already provided above.\n\nUser: ${cleanedUserPrompt}`;
               }
             }
           } catch (prefetchErr) {
@@ -976,7 +950,7 @@ Be friendly and engaging. Keep it brief unless asked for more.`;
                 }
               }
 
-              // Prepend all context before user prompt
+              // Prepend all context before user prompt (composedUser already uses cleanedUserPrompt)
               if (contextParts.length > 0) {
                 composedUser = `${contextParts.join(
                   "\n\n"
@@ -998,10 +972,10 @@ Be friendly and engaging. Keep it brief unless asked for more.`;
           tools,
           toolResults.length > 0 ? toolResults : undefined,
           {
-            maxTokens: initialPolicy.maxTokens,
-            temperature: initialPolicy.temperatureNudge
+            maxTokens: isHiddenBehaviorActive ? 2000 : initialPolicy.maxTokens, // Force longer responses for beast mode
+            temperature: isHiddenBehaviorActive ? 1.0 : (initialPolicy.temperatureNudge
               ? 0.7 + initialPolicy.temperatureNudge
-              : 0.7,
+              : 0.7), // Higher temperature for more creative/explicit content
           }
         );
 
@@ -1047,10 +1021,9 @@ Be friendly and engaging. Keep it brief unless asked for more.`;
               if (rc) {
                 const contextLines: string[] = [];
                 contextLines.push(
-                  `${rc.displayName} (@${rc.username})${
-                    rc.globalName && rc.globalName !== rc.displayName
-                      ? ` - also goes by ${rc.globalName}`
-                      : ""
+                  `${rc.displayName} (@${rc.username})${rc.globalName && rc.globalName !== rc.displayName
+                    ? ` - also goes by ${rc.globalName}`
+                    : ""
                   }`
                 );
                 if (rc.summary) {
@@ -1122,8 +1095,16 @@ Be friendly and engaging. Keep it brief unless asked for more.`;
           const iterationGuidance = updatedPolicy.applyGuidance
             ? `\n\nGuidance: ${updatedPolicy.guidance}`
             : "";
-          // Make it explicit that the AI should use tool results to answer the original question
-          composedUser = `Tool Results:\n\n${toolResultsText}${iterationGuidance}\n\nNow answer the user's question using the tool results above: ${userPrompt}`;
+
+          // Compose user message with tool results
+          // Beast mode: minimal instruction (system prompt already has full instructions)
+          // Normal mode: standard tool result handling
+          if (isHiddenBehaviorActive) {
+            console.log(`[HIDDEN BEHAVIOR] Tool results ready - beast mode will transform to sexual content`);
+            composedUser = `Tool Results:\n\n${toolResultsText}\n\nTransform to explicit sexual content. ${cleanedUserPrompt}`;
+          } else {
+            composedUser = `Tool Results:\n\n${toolResultsText}${iterationGuidance}\n\nNow answer the user's question using the tool results above. ${cleanedUserPrompt}`;
+          }
         }
       }
 
@@ -1225,30 +1206,80 @@ Be friendly and engaging. Keep it brief unless asked for more.`;
   /**
    * Get a persona by key, or default if not found
    */
-  private getPersona(personaKey?: string): {
-    name: string;
-    base: string;
-  } {
-    const key = personaKey || this.DEFAULT_PERSONA;
-    return (
-      this.PERSONAS[key as keyof typeof this.PERSONAS] ||
-      this.PERSONAS[this.DEFAULT_PERSONA]
-    );
+  private getPersona(personaKey?: string): Persona {
+    const key = personaKey || DEFAULT_PERSONA;
+    const persona = PERSONAS[key as keyof typeof PERSONAS];
+    // DEFAULT_PERSONA is guaranteed to exist, safe to assert
+    return persona || (PERSONAS[DEFAULT_PERSONA] as Persona);
   }
 
   /**
    * Get all available personas
    */
   public getAvailablePersonas(): Array<{ key: string; name: string }> {
-    return Object.entries(this.PERSONAS).map(([key, persona]) => ({
+    return Object.entries(PERSONAS).map(([key, persona]) => ({
       key,
       name: persona.name,
     }));
   }
 
-  private buildSystemPrompt(methodPrompt: string, personaKey?: string): string {
+  private buildSystemPrompt(
+    methodPrompt: string,
+    personaKey?: string,
+    userPrompt?: string
+  ): string {
     const persona = this.getPersona(personaKey);
-    return `${persona.base}
+    let personaBase = persona.base;
+
+    // Check all hidden behaviors (regardless of persona)
+    if (userPrompt) {
+      console.log(`[HIDDEN BEHAVIOR] buildSystemPrompt - personaKey: "${personaKey || 'default'}", prompt preview: "${userPrompt.substring(0, 200)}"`);
+      console.log(`[HIDDEN BEHAVIOR] Persona: "${persona.name}", checking ${Object.keys(HIDDEN_BEHAVIORS).length} hidden behaviors`);
+
+      const promptLower = userPrompt.toLowerCase();
+
+      // Iterate through all hidden behaviors
+      for (const behavior of Object.values(HIDDEN_BEHAVIORS)) {
+        console.log(`[HIDDEN BEHAVIOR] Checking behavior "${behavior.name}" with trigger "${behavior.trigger}"`);
+        console.log(`[HIDDEN BEHAVIOR] Variations to check: ${behavior.variations.join(", ")}`);
+
+        // Check if any variation matches (handle word boundaries and punctuation)
+        const matched = behavior.variations.some((variation) => {
+          // Try word boundary match first
+          const wordBoundaryRegex = new RegExp(`\\b${variation}\\b`, "i");
+          if (wordBoundaryRegex.test(promptLower)) {
+            console.log(`[HIDDEN BEHAVIOR] ✨ Trigger variation "${variation}" matched (word boundary) in prompt: "${userPrompt.substring(0, 100)}"`);
+            return true;
+          }
+
+          // Also try matching with optional punctuation after the word
+          const withPunctuationRegex = new RegExp(`\\b${variation}[?!.,;:]*\\b`, "i");
+          if (withPunctuationRegex.test(promptLower)) {
+            console.log(`[HIDDEN BEHAVIOR] ✨ Trigger variation "${variation}" matched (with punctuation) in prompt: "${userPrompt.substring(0, 100)}"`);
+            return true;
+          }
+
+          // Fallback: simple case-insensitive contains check
+          if (promptLower.includes(variation)) {
+            console.log(`[HIDDEN BEHAVIOR] ✨ Trigger variation "${variation}" matched (contains) in prompt: "${userPrompt.substring(0, 100)}"`);
+            return true;
+          }
+
+          return false;
+        });
+
+        if (matched) {
+          console.log(`[HIDDEN BEHAVIOR] ✅ ${behavior.name.toUpperCase()} ACTIVATED for trigger "${behavior.trigger}"`);
+          // COMPLETELY REPLACE the system prompt with the hidden behavior prompt
+          return behavior.prompt;
+        }
+      }
+
+      console.log(`[HIDDEN BEHAVIOR] 🔍 No hidden behavior triggers detected`);
+    }
+
+    // No hidden behavior triggered - return normal persona prompt
+    return `${personaBase}
 
 ${this.CONVERSATIONAL_BASE}
 
@@ -1264,7 +1295,7 @@ ${this.CONVERSATIONAL_BASE}
     errorMessage: string
   ): Promise<AIResponse> {
     try {
-      const systemPrompt = this.buildSystemPrompt(methodPrompt);
+      const systemPrompt = this.buildSystemPrompt(methodPrompt, undefined, userPrompt);
       const content = await provider.callTextAPI(systemPrompt, userPrompt);
       return {
         success: true,

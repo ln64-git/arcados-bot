@@ -34,7 +34,6 @@ export class CommandDeployer {
       await this.rest.put(Routes.applicationGuildCommands(appId, guildId), {
         body: commandData,
       });
-      console.log("✅ Guild commands deployed successfully");
     } else {
       // Global deployment (takes up to an hour)
       console.log(

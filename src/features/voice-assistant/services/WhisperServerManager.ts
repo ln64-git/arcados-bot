@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
 import { config } from "../../../config/index.js";
 
 /**
@@ -14,12 +15,12 @@ export class WhisperServerManager {
 	// Configuration
 	private readonly WHISPER_BINARY = "whisper-server";
 	private readonly WHISPER_MODEL_PATH =
-		"/home/ln64/.voicemode/services/whisper/models/ggml-base.bin";
+		"/home/ln64/.voicemode/services/whisper/models/ggml-medium.bin";
 	private readonly WHISPER_PORT = 8086;
 	private readonly STARTUP_TIMEOUT_MS = 30000; // 30 seconds to start
 	private readonly SHUTDOWN_TIMEOUT_MS = 5000; // 5 seconds to stop gracefully
 
-	private constructor() {}
+	private constructor() { }
 
 	public static getInstance(): WhisperServerManager {
 		if (!WhisperServerManager.instance) {
@@ -36,30 +37,42 @@ export class WhisperServerManager {
 		// Check if Whisper URL is configured (if not, user wants to use OpenAI)
 		if (!config.whisperUrl) {
 			console.log(
-				"[WhisperServer] WHISPER_URL not configured, skipping local Whisper server startup"
+				"🎤 WHISPER_URL not configured, skipping local Whisper server startup"
 			);
 			return false;
 		}
 
 		// Check if already running
 		if (this.whisperProcess) {
-			console.log("[WhisperServer] Server already running");
+			console.log("🎤 Server already running");
 			return true;
 		}
 
 		// Check if already starting
 		if (this.isStarting) {
-			console.log("[WhisperServer] Server is already starting...");
+			console.log("🎤 Server is already starting...");
 			return false;
 		}
 
 		this.isStarting = true;
 
 		try {
-			console.log("[WhisperServer] Starting Whisper server...");
-			console.log(`[WhisperServer] Binary: ${this.WHISPER_BINARY}`);
-			console.log(`[WhisperServer] Model: ${this.WHISPER_MODEL_PATH}`);
-			console.log(`[WhisperServer] Port: ${this.WHISPER_PORT}`);
+			// Check if model file exists
+			if (!existsSync(this.WHISPER_MODEL_PATH)) {
+				console.error(
+					`🎤 Model file not found: ${this.WHISPER_MODEL_PATH}`
+				);
+				console.error(
+					"🎤 Please download the model file or update WHISPER_MODEL_PATH in the code"
+				);
+				this.isStarting = false;
+				return false;
+			}
+
+			console.log("🎤 Starting Whisper server...");
+			console.log(`🎤 Binary: ${this.WHISPER_BINARY}`);
+			console.log(`🎤 Model: ${this.WHISPER_MODEL_PATH}`);
+			console.log(`🎤 Port: ${this.WHISPER_PORT}`);
 
 			// Kill any existing Whisper processes on this port
 			await this.killExistingProcesses();
@@ -89,18 +102,18 @@ export class WhisperServerManager {
 
 			if (isReady) {
 				console.log(
-					`[WhisperServer] ✓ Server started successfully on port ${this.WHISPER_PORT}`
+					`🎤 Server started successfully on port ${this.WHISPER_PORT}`
 				);
 				this.isStarting = false;
 				return true;
 			} else {
-				console.error("[WhisperServer] Failed to start server (timeout)");
+				console.error("🎤 Failed to start server (timeout)");
 				await this.stop();
 				this.isStarting = false;
 				return false;
 			}
 		} catch (error) {
-			console.error("[WhisperServer] Error starting server:", error);
+			console.error("🎤 Error starting server:", error);
 			this.isStarting = false;
 			return false;
 		}
@@ -114,7 +127,7 @@ export class WhisperServerManager {
 			return;
 		}
 
-		console.log("[WhisperServer] Stopping Whisper server...");
+		console.log("🎤 Stopping Whisper server...");
 
 		// Clear startup timeout if still pending
 		if (this.startupTimeout) {
@@ -135,7 +148,7 @@ export class WhisperServerManager {
 			const forceKillTimeout = setTimeout(() => {
 				if (process && !process.killed) {
 					console.warn(
-						`[WhisperServer] Force killing process (PID: ${pid}) after timeout`
+						`🎤 Force killing process (PID: ${pid}) after timeout`
 					);
 					process.kill("SIGKILL");
 				}
@@ -144,13 +157,13 @@ export class WhisperServerManager {
 			// Wait for process to exit
 			process.once("exit", () => {
 				clearTimeout(forceKillTimeout);
-				console.log("[WhisperServer] ✓ Server stopped");
+				console.log("🎤 ✓ Server stopped");
 				this.whisperProcess = null;
 				resolve();
 			});
 
 			// Send SIGTERM for graceful shutdown
-			console.log(`[WhisperServer] Sending SIGTERM to PID ${pid}...`);
+			console.log(`🎤 Sending SIGTERM to PID ${pid}...`);
 			process.kill("SIGTERM");
 		});
 	}
@@ -191,6 +204,9 @@ export class WhisperServerManager {
 			/dtw/,
 			/devices/,
 			/backends/,
+			/Successfully loaded/,
+			/Running whisper\.cpp inference/,
+			/Received request:/,
 		];
 
 		const shouldSuppress = (text: string): boolean => {
@@ -201,15 +217,20 @@ export class WhisperServerManager {
 		process.stdout?.on("data", (data) => {
 			const output = data.toString().trim();
 			if (output && !shouldSuppress(output)) {
-				console.log(`[WhisperServer] ${output}`);
+				console.log(`🎤 ${output}`);
 			}
 		});
+
+		// Collect stderr for error reporting
+		let stderrBuffer = "";
 
 		// Log stderr (with filtering)
 		process.stderr?.on("data", (data) => {
 			const output = data.toString().trim();
+			// Always collect stderr for error reporting
+			stderrBuffer += output + "\n";
 			if (output && !shouldSuppress(output)) {
-				console.error(`[WhisperServer] ${output}`);
+				console.error(`🎤 ${output}`);
 			}
 		});
 
@@ -217,15 +238,26 @@ export class WhisperServerManager {
 		process.on("exit", (code, signal) => {
 			if (code !== 0 && code !== null) {
 				console.error(
-					`[WhisperServer] Process exited with code ${code} (signal: ${signal})`
+					`🎤 Process exited with code ${code} (signal: ${signal})`
 				);
+				// Show stderr if available for debugging
+				if (stderrBuffer.trim()) {
+					const errorLines = stderrBuffer
+						.split("\n")
+						.filter((line) => line.trim() && !shouldSuppress(line.trim()))
+						.slice(0, 5); // Show first 5 non-suppressed error lines
+					if (errorLines.length > 0) {
+						console.error("🎤 Error details:");
+						errorLines.forEach((line) => console.error(`🎤   ${line}`));
+					}
+				}
 			}
 			this.whisperProcess = null;
 		});
 
 		// Handle errors
 		process.on("error", (error) => {
-			console.error("[WhisperServer] Process error:", error);
+			console.error("🎤 Process error:", error);
 			this.whisperProcess = null;
 		});
 	}
@@ -279,7 +311,7 @@ export class WhisperServerManager {
 
 			if (pids.length > 0) {
 				console.log(
-					`[WhisperServer] Killing ${pids.length} existing process(es) on port ${this.WHISPER_PORT}...`
+					`🎤 Killing ${pids.length} existing process(es) on port ${this.WHISPER_PORT}...`
 				);
 				for (const pid of pids) {
 					try {
@@ -294,7 +326,7 @@ export class WhisperServerManager {
 		} catch (error) {
 			// lsof might not be available or other error - not critical
 			console.warn(
-				"[WhisperServer] Could not check for existing processes:",
+				"🎤 Could not check for existing processes:",
 				error
 			);
 		}
@@ -304,7 +336,7 @@ export class WhisperServerManager {
 	 * Restart the Whisper server
 	 */
 	public async restart(): Promise<boolean> {
-		console.log("[WhisperServer] Restarting server...");
+		console.log("🎤 Restarting server...");
 		await this.stop();
 		return await this.start();
 	}

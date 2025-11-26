@@ -27,11 +27,16 @@ const pipelineAsync = promisify(pipeline);
 // but it's handled correctly with a 1ms timeout fallback
 // Set up filter at module load time to catch warnings early
 const originalConsoleWarn = console.warn;
+const originalConsoleError = console.error;
 const originalStderrWrite = process.stderr.write.bind(process.stderr);
 let warnFilterInstalled = false;
 
 function shouldSuppressWarning(text: string): boolean {
-  return text.includes("TimeoutNegativeWarning");
+  return (
+    text.includes("TimeoutNegativeWarning") ||
+    text.includes("DecryptionFailed") ||
+    text.includes("UnencryptedWhenPassthroughDisabled")
+  );
 }
 
 function installWarnFilter(): void {
@@ -40,23 +45,44 @@ function installWarnFilter(): void {
 
   // Intercept console.warn
   console.warn = (...args: unknown[]) => {
-    // Check all arguments for TimeoutNegativeWarning
-    const hasTimeoutWarning = args.some((arg) => {
+    // Check all arguments for suppressed warnings/errors
+    const shouldSuppress = args.some((arg) => {
       const text =
         typeof arg === "string"
           ? arg
           : arg instanceof Error
-          ? arg.message
-          : String(arg);
+            ? arg.message
+            : String(arg);
       return shouldSuppressWarning(text);
     });
 
-    if (hasTimeoutWarning) {
+    if (shouldSuppress) {
       // Suppress this specific warning - it's harmless
       return;
     }
     // Pass through all other warnings
     originalConsoleWarn.apply(console, args);
+  };
+
+  // Intercept console.error (library might log errors directly)
+  console.error = (...args: unknown[]) => {
+    // Check all arguments for suppressed errors
+    const shouldSuppress = args.some((arg) => {
+      const text =
+        typeof arg === "string"
+          ? arg
+          : arg instanceof Error
+            ? arg.message
+            : String(arg);
+      return shouldSuppressWarning(text);
+    });
+
+    if (shouldSuppress) {
+      // Suppress this specific error - it's harmless
+      return;
+    }
+    // Pass through all other errors
+    originalConsoleError.apply(console, args);
   };
 
   // Intercept stderr.write (library might write directly to stderr)
@@ -207,11 +233,6 @@ export class VoiceConnectionManager {
         throw stateError;
       }
 
-      this.logger.info(
-        `[VOICE_CONNECTION] Connection ready for guild ${guild.id}, ` +
-          `receiver available: ${connection.receiver ? "yes" : "no"}`
-      );
-
       // CRITICAL: Immediately clear any buffered audio from the receiver
       // The receiver starts capturing audio as soon as the connection is ready,
       // even before we set up our listeners. We need to destroy all existing
@@ -244,15 +265,8 @@ export class VoiceConnectionManager {
       for (const [userId, member] of channel.members) {
         if (userId !== channel.client.user?.id) {
           participants.add(userId);
-          this.logger.info(
-            `👤 Participant detected: ${member.displayName} (${userId}) - Voice state: muted=${member.voice.mute}, deafened=${member.voice.deaf}, self-muted=${member.voice.selfMute}, self-deafened=${member.voice.selfDeaf}`
-          );
         }
       }
-
-      this.logger.info(
-        `Total participants in channel: ${participants.size}`
-      );
 
       // Create voice session
       const now = Date.now();
@@ -283,8 +297,7 @@ export class VoiceConnectionManager {
     } catch (error) {
       this.logger.error(`Failed to join voice channel:`, error);
       throw new Error(
-        `Failed to join voice channel: ${
-          error instanceof Error ? error.message : "Unknown error"
+        `Failed to join voice channel: ${error instanceof Error ? error.message : "Unknown error"
         }`
       );
     }
@@ -386,6 +399,22 @@ export class VoiceConnectionManager {
           resolve();
         });
       });
+    }
+
+    // If player is paused (including autopaused), unpause it first
+    // This can happen after a stop/clear command leaves the player in a paused state
+    const playerStatus = player.state.status;
+    if (
+      playerStatus === AudioPlayerStatus.Paused ||
+      playerStatus === "autopaused" ||
+      (playerStatus as string) === "AutoPaused"
+    ) {
+      this.logger.debug(
+        `Player is ${playerStatus}, unpausing before playback...`
+      );
+      player.unpause();
+      // Wait a moment for the state to update
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
 
     // Mark as speaking
@@ -569,13 +598,26 @@ export class VoiceConnectionManager {
       return false;
     }
 
+    // Stop the player and ensure it's not left in a paused state
     player.stop(true);
+
+    // If player is paused/autopaused, unpause it to ensure clean state for next playback
+    const playerStatus = player.state.status;
+    if (
+      playerStatus === AudioPlayerStatus.Paused ||
+      playerStatus === "autopaused" ||
+      (playerStatus as string) === "AutoPaused"
+    ) {
+      this.logger.debug(
+        `Player was ${playerStatus} after stop, unpausing to reset state`
+      );
+      player.unpause();
+    }
 
     if (session) {
       session.isSpeaking = false;
     }
 
-    this.logger.info(`Stopped playback in guild ${guildId}`);
     return true;
   }
 
@@ -761,18 +803,22 @@ export class VoiceConnectionManager {
       });
 
       opusStream.on("error", (error) => {
+        // Suppress common harmless decryption errors
+        const errorMessage = error?.message || String(error);
+        if (
+          errorMessage.includes("DecryptionFailed") ||
+          errorMessage.includes("UnencryptedWhenPassthroughDisabled")
+        ) {
+          // This is a harmless error that occurs when user audio isn't encrypted
+          // No need to log or clean up
+          return;
+        }
         this.logger.error(`[AUDIO_RECEIVE] Opus stream error for user ${userId} in guild ${guildId}:`, error);
         // Clean up on stream error
         decoder.destroy();
       });
     });
 
-    // Log that receiver is set up
-    this.logger.info(
-      `[AUDIO_RECEIVE] Audio receiver listeners set up for guild ${guildId}. ` +
-      `Receiver available: ${connection.receiver ? "yes" : "no"}, ` +
-      `Connection status: ${connection.state.status}`
-    );
   }
 
   /**
@@ -859,7 +905,7 @@ export class VoiceConnectionManager {
       } catch {
         // Disconnect if reconnection fails
         this.logger.warn(`Failed to reconnect in guild ${session.guildId}`);
-        
+
         // Remove session BEFORE destroying to prevent race conditions
         this.sessions.delete(session.guildId);
         this.audioPlayers.delete(session.guildId);

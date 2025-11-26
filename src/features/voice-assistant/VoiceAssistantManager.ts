@@ -174,7 +174,7 @@ export class VoiceAssistantManager {
     this.triggerDetector = TriggerWordDetector.getInstance();
     this.aiManager = AIManager.getInstance();
     this.mediaPlayer = MediaPlayerManager.getInstance();
-    this.logger = new VoiceLogger("🎧");
+    this.logger = new VoiceLogger("🎤");
   }
 
   public static getInstance(): VoiceAssistantManager {
@@ -345,9 +345,6 @@ export class VoiceAssistantManager {
    * @param session Voice session
    */
   private startReceivingAudio(session: VoiceSession): void {
-    this.logger.info(
-      `[AUDIO_RECEIVE] Setting up audio reception for guild ${session.guildId}, session ${session.sessionId}`
-    );
     this.connectionManager.startReceiving(
       session.guildId,
       async (userId, audioData) => {
@@ -385,8 +382,7 @@ export class VoiceAssistantManager {
             session.sessionId
           );
           this.logger.debug(
-            `[AUDIO_RECEIVE] Audio buffered but chunk not ready yet from user ${userId} - buffer: ${
-              bufferStatus.totalBytes
+            `[AUDIO_RECEIVE] Audio buffered but chunk not ready yet from user ${userId} - buffer: ${bufferStatus.totalBytes
             } bytes, ${bufferStatus.durationMs.toFixed(0)}ms (need 2000ms)`
           );
         }
@@ -554,6 +550,28 @@ export class VoiceAssistantManager {
   }
 
   /**
+   * Strip [BLANK_AUDIO] and similar markers from text
+   * Removes these markers anywhere in the text, not just at the start/end
+   *
+   * @param text Text that may contain blank audio markers
+   * @returns Text with blank audio markers removed
+   */
+  private stripBlankAudioMarkers(text: string): string {
+    if (!text) return text;
+
+    // Remove [BLANK_AUDIO], [blank_audio], [BLANK AUDIO], etc.
+    let cleaned = text
+      .replace(/\[BLANK[_\s]?AUDIO\]/gi, "")
+      .replace(/blank[_\s]?audio/gi, "")
+      .trim();
+
+    // Clean up any extra whitespace left behind
+    cleaned = cleaned.replace(/\s+/g, " ").trim();
+
+    return cleaned;
+  }
+
+  /**
    * Calculate RMS (Root Mean Square) of audio to check if it's actual speech
    * Filters out silence and very quiet background noise
    * Handles both mono and stereo audio
@@ -612,10 +630,8 @@ export class VoiceAssistantManager {
     try {
       if (chunk.forced) {
         this.logger.warn(
-          `[AUDIO] Forced buffer flush (${
-            chunk.flushReason ?? "unknown"
-          }) detected for guild ${
-            session.guildId
+          `[AUDIO] Forced buffer flush (${chunk.flushReason ?? "unknown"
+          }) detected for guild ${session.guildId
           }. Resetting transcription state.`
         );
         this.resetTranscriptionState(
@@ -637,8 +653,7 @@ export class VoiceAssistantManager {
       this.logger.debug(
         `🔊 Audio RMS: ${audioRMS.toFixed(
           2
-        )} (threshold: ${effectiveMinRMS}, duration: ${
-          chunk.duration
+        )} (threshold: ${effectiveMinRMS}, duration: ${chunk.duration
         }ms, size: ${chunk.data.length} bytes)`
       );
 
@@ -668,28 +683,19 @@ export class VoiceAssistantManager {
       }
 
       // Transcribe the audio (using mono version if converted)
-      this.logger.info(
-        `🎙️ Sending ${chunk.data.length} bytes (${chunk.duration}ms, RMS: ${audioRMS.toFixed(2)}) to Whisper for transcription...`
-      );
       let transcription = await this.transcriber.transcribe(
         audioChunkForTranscription
       );
-      this.logger.info(`📝 Whisper result: "${transcription}"`);
-
       if (!transcription || transcription.trim().length === 0) {
         this.logger.debug(`⚠️ Empty transcription received, skipping`);
         return; // Ignore empty transcriptions
       }
 
-      // Filter out [BLANK_AUDIO] and similar patterns explicitly
-      const blankCheckNormalized = transcription.trim().toLowerCase();
-      if (
-        blankCheckNormalized === "[blank_audio]" ||
-        blankCheckNormalized === "blank_audio" ||
-        blankCheckNormalized === "blank audio" ||
-        blankCheckNormalized.startsWith("[blank") ||
-        blankCheckNormalized === ""
-      ) {
+      // Strip [BLANK_AUDIO] and similar patterns from transcriptions
+      transcription = this.stripBlankAudioMarkers(transcription);
+
+      // If transcription is empty or only blank audio markers after cleaning, skip it
+      if (!transcription || transcription.trim().length === 0) {
         return;
       }
 
@@ -1164,6 +1170,7 @@ export class VoiceAssistantManager {
             triggerResult.position || 0,
             triggerResult.triggerWord
           ) || utterance;
+        console.log(`[VOICE ASSISTANT] Extracted query: "${query}" (from utterance: "${utterance}")`);
         shouldProcess = true;
         this.conversationUsers.set(session.guildId, userId);
         session.conversationUserId = userId;
@@ -1220,11 +1227,20 @@ export class VoiceAssistantManager {
       }
     }
 
-    if (shouldProcess) {
-      this.logger.info(
-        `[TRIGGER] Processing request: mode=${currentMode}, query="${query}", userId=${userId}`
-      );
+    // Clean query of any remaining blank audio markers
+    if (query) {
+      query = this.stripBlankAudioMarkers(query);
+    }
 
+    // If query is empty after cleaning, don't process
+    if (shouldProcess && (!query || query.trim().length === 0)) {
+      this.logger.debug(
+        `[TRIGGER] Query is empty after cleaning blank audio markers, skipping processing`
+      );
+      shouldProcess = false;
+    }
+
+    if (shouldProcess) {
       // Play thinking sound when processing
       await this.playThinkingSound(session.guildId);
 
@@ -1730,7 +1746,6 @@ export class VoiceAssistantManager {
             query,
             userId,
             "grok",
-            session.guildId,
             {
               personaKey: AI_CONSTANTS.DEFAULT_PERSONA,
               channelId: session.channelId,
@@ -1894,13 +1909,30 @@ export class VoiceAssistantManager {
               );
             }
 
-            return await this.aiManager.generateText(query, userId, "grok", {
-              personaKey: AI_CONSTANTS.DEFAULT_PERSONA,
-              history: session.conversationHistory.slice(0, -1), // Exclude current user message
-              channelId: session.channelId,
-              useDiscordFormatting: false,
-              mode: "chat",
-            });
+            // Use generateWithTools directly to ensure tool usage instructions are included
+            const db = await this.aiManager.getDb();
+            return await this.aiManager.generateWithTools(
+              `You are Arcados' voice assistant in conversation mode. Be natural, brief, and helpful.
+
+IMPORTANT - TOOL USAGE:
+- If asked to play music or a song (e.g., "play [song/artist]", "can you play..."), ALWAYS use the playMedia tool - never say you can't play music.
+- If asked to control playback (leave, stop, pause, resume), use the voice tool - never narrate.
+- When using playMedia, respond with ONLY the haiku returned by the tool, nothing else.
+
+Keep responses conversational and engaging.`,
+              query,
+              userId,
+              session.guildId,
+              "grok",
+              db,
+              {
+                personaKey: AI_CONSTANTS.DEFAULT_PERSONA,
+                history: session.conversationHistory.slice(0, -1), // Exclude current user message
+                channelId: session.channelId,
+                useDiscordFormatting: false,
+                mode: "chat",
+              }
+            );
           } else {
             // Command mode - use generateVoiceResponse
             return await this.aiManager.generateVoiceResponse(
@@ -2014,8 +2046,7 @@ export class VoiceAssistantManager {
         }
 
         this.logger.debug(
-          `Playing chunk ${chunk.sequence + 1}/${totalChunks} (${
-            chunk.audio.length
+          `Playing chunk ${chunk.sequence + 1}/${totalChunks} (${chunk.audio.length
           } bytes): "${chunk.text}"`
         );
 
@@ -2023,8 +2054,7 @@ export class VoiceAssistantManager {
           await this.connectionManager.playAudio(guildId, chunk.audio);
           totalBytes += chunk.audio.length;
           this.logger.debug(
-            `✓ Chunk ${
-              chunk.sequence + 1
+            `✓ Chunk ${chunk.sequence + 1
             } playback complete (total streamed: ${totalBytes} bytes)`
           );
         } catch (error) {
@@ -2235,8 +2265,7 @@ export class VoiceAssistantManager {
     session.transcriptions = [];
     session.lastActivity = new Date();
     this.logger.info(
-      `[AUDIO] Cleared transcription buffers for guild ${session.guildId} (${
-        reason ?? "reset"
+      `[AUDIO] Cleared transcription buffers for guild ${session.guildId} (${reason ?? "reset"
       })`
     );
   }

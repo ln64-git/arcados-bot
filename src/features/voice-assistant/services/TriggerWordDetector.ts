@@ -34,11 +34,14 @@ export class TriggerWordDetector {
         "ariah",
         "area", // Common mishearing
         "ariya",
-        "are you", // Very common STT mishearing
+        "maria", // Common STT mishearing
+        // "are you", // Very common STT mishearing
+				"arctic",
         "ari",
         "airy",
         "arianna",
         "ariel",
+				"aurea",
       ];
 			
 			// Add all case variations for each phonetic variation

@@ -12,8 +12,8 @@ export const AUDIO_CONSTANTS = {
   CHANNELS: 2, // Stereo
 
   // Chunk configuration
-  CHUNK_DURATION_MS: 2000, // 2 second chunks for transcription (allows more context for natural speech)
-  SILENCE_DURATION_MS: 100, // 0.1 seconds of silence = end of utterance for snappier detection
+  CHUNK_DURATION_MS: 3000, // 3 second chunks for transcription (allows more context for natural speech)
+  SILENCE_DURATION_MS: 1500, // 1.5 seconds of silence = end of utterance (allows natural pauses)
 
   // Buffer limits (prevent memory leaks)
   MAX_BUFFER_DURATION_MS: 30000, // 30 seconds max buffer

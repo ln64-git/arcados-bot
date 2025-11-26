@@ -41,7 +41,7 @@ export class AudioToneGenerator {
 			const envelope = attack * decay;
 
 			// Generate sine wave with envelope
-			const amplitude = 0.3; // 30% max amplitude - audible but not jarring
+			const amplitude = 0.9; // 90% max amplitude - louder and more noticeable
 			const value = Math.sin(2 * Math.PI * frequency * t) * envelope * amplitude;
 
 			// Convert to 16-bit signed integer with clamping
