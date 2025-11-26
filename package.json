@@ -7,7 +7,8 @@
   "scripts": {
     "start": "bun run src/main.ts",
     "start:node": "tsx src/main.ts",
-    "test:ai": "npx tsx src/handlers/chat/scripts/test-ai-assistant.ts",
+    "test:ai": "npx tsx src/scripts/test-ai-assistant.ts",
+    "test:conversation": "npx tsx src/scripts/test-conversation-chain.ts",
     "test:discord-stream": "bun run src/features/stream-player/tests/test-discord-stream.ts",
     "view-conversations": "bun run src/scripts/view-conversations.ts",
     "regenerate:conversations": "bun run src/scripts/regenerate-conversations.ts",

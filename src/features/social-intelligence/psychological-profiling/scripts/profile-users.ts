@@ -8,10 +8,10 @@
  *   GUILD_ID=123456789 USER_LIMIT=50 npm run profile:users
  */
 
-import { config } from "../config/index.js";
-import { PostgreSQLManager } from "../database/PostgreSQLManager.js";
-import { AIFactory } from "../ai/core/AIFactory.js";
-import { PsychologicalProfiler } from "../features/social-intelligence/psychological-profiling/PsychologicalProfiler.js";
+import { config } from "../../../../config/index.js";
+import { PostgreSQLManager } from "../../../../database/PostgreSQLManager.js";
+import { AIFactory } from "../../../../ai/core/AIFactory.js";
+import { PsychologicalProfiler } from "../PsychologicalProfiler.js";
 
 async function main() {
 	const guildId = process.env.GUILD_ID;

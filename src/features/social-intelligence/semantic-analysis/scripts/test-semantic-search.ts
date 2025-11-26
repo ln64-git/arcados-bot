@@ -4,9 +4,9 @@
  * Tests the new RAG implementation with vector embeddings
  */
 
-import { pgvector, PostgreSQLManager } from "../database/PostgreSQLManager.js";
-import { config } from "../config/index.js";
-import { EmbeddingService } from "../features/social-intelligence/semantic-analysis/EmbeddingService.js";
+import { pgvector, PostgreSQLManager } from "../../../../database/PostgreSQLManager.js";
+import { config } from "../../../../config/index.js";
+import { EmbeddingService } from "../EmbeddingService.js";
 
 async function main() {
   console.log("🔍 Testing Semantic Conversation Search\n");

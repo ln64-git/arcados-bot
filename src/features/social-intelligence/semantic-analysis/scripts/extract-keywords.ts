@@ -6,10 +6,10 @@
  * Uses hybrid TF-IDF + semantic extraction to identify contextually relevant terms.
  */
 
-import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { KeywordExtractor } from "../features/social-intelligence/semantic-analysis/KeywordExtractor";
-import type { KeywordMessage } from "../features/social-intelligence/semantic-analysis/types";
-import { config } from "../config/index.js";
+import { PostgreSQLManager } from "../../../../database/PostgreSQLManager";
+import { KeywordExtractor } from "../KeywordExtractor";
+import type { KeywordMessage } from "../types";
+import { config } from "../../../../config/index.js";
 
 const db = new PostgreSQLManager();
 

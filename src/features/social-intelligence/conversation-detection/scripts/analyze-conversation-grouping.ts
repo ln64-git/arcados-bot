@@ -7,8 +7,8 @@
  * conversation detection algorithm.
  */
 
-import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { config } from "../config/index.js";
+import { PostgreSQLManager } from "../../../../database/PostgreSQLManager";
+import { config } from "../../../../config/index.js";
 
 interface Message {
 	id: string;

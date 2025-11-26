@@ -428,11 +428,7 @@ export class GrokProvider extends BaseAIProvider {
       data.output || data.response?.output || data.response?.output_text || [];
     const outputArray = Array.isArray(rawOutput) ? rawOutput : [rawOutput];
 
-    // Debug logging
-    console.log(
-      "[GrokProvider] parseResponsePayload - outputArray length:",
-      outputArray.length
-    );
+
     if (outputArray.length > 1) {
       console.log(
         "[GrokProvider] WARNING: Multiple outputs detected:",

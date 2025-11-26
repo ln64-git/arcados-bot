@@ -2,8 +2,8 @@
  * Simple test to debug vector query parameter passing
  */
 
-import { PostgreSQLManager } from "../database/PostgreSQLManager.js";
-import { EmbeddingService } from "../features/social-intelligence/semantic-analysis/EmbeddingService.js";
+import { PostgreSQLManager } from "../../../../database/PostgreSQLManager.js";
+import { EmbeddingService } from "../EmbeddingService.js";
 
 async function main() {
   console.log("🔍 Testing Vector Query Parameter Passing\n");

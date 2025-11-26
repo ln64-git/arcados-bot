@@ -4,9 +4,9 @@
  * Checks if a specific message exists in Discord and the database
  */
 
-import { PostgreSQLManager } from "../database/PostgreSQLManager";
+import { PostgreSQLManager } from "../PostgreSQLManager";
 import { Client, GatewayIntentBits } from "discord.js";
-import { config } from "../config";
+import { config } from "../../config";
 
 const MESSAGE_ID = "1439478488280072254";
 

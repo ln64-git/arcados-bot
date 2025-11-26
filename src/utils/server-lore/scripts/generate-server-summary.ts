@@ -6,11 +6,11 @@
  * conversation segment summaries and stores it on the guild row.
  */
 
-import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { AIFactory } from "../ai/core/AIFactory";
-import { AIRequestBuilder } from "../ai/core/AIRequestBuilder";
-import { AIContextBuilder } from "../ai/core/AIContext";
-import { config } from "../config/index.js";
+import { PostgreSQLManager } from "../../../database/PostgreSQLManager";
+import { AIFactory } from "../../../ai/core/AIFactory";
+import { AIRequestBuilder } from "../../../ai/core/AIRequestBuilder";
+import { AIContextBuilder } from "../../../ai/core/AIContext";
+import { config } from "../../../config/index.js";
 
 const db = new PostgreSQLManager();
 

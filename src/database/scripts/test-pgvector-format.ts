@@ -1,4 +1,4 @@
-import { pgvector } from "../database/PostgreSQLManager.js";
+import { pgvector } from "../PostgreSQLManager.js";
 
 const testArray = [1.1, 2.2, 3.3];
 const formatted = pgvector.toSql(testArray);

@@ -6,9 +6,9 @@
  * This vocabulary is used for keyword extraction to identify contextually relevant terms.
  */
 
-import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { KeywordExtractor } from "../features/social-intelligence/semantic-analysis/KeywordExtractor";
-import { config } from "../config/index.js";
+import { PostgreSQLManager } from "../../../../database/PostgreSQLManager";
+import { KeywordExtractor } from "../KeywordExtractor";
+import { config } from "../../../../config/index.js";
 
 const db = new PostgreSQLManager();
 

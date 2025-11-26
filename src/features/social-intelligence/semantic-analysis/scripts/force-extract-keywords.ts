@@ -3,8 +3,8 @@
  * Useful after changing keyword extraction parameters
  */
 
-import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { SocialIntelligence } from "../features/social-intelligence";
+import { PostgreSQLManager } from "../../../../database/PostgreSQLManager";
+import { SocialIntelligence } from "../../index";
 
 const guildId = process.env.GUILD_ID || "";
 

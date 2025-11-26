@@ -9,14 +9,14 @@
  * 4. Validate and improve grouping quality
  */
 
-import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { AIFactory } from "../ai/core/AIFactory";
-import type { AIEngine } from "../ai/core/AIEngine";
-import { AIRequestBuilder } from "../ai/core/AIRequestBuilder";
-import type { AIResponse } from "../ai/providers/base/AIProvider";
-import { SocialIntelligence } from "../features/social-intelligence/index.js";
-import { EnhancementOrchestrator } from "../features/social-intelligence/enrichment-pipeline/EnhancementOrchestrator";
-import { config } from "../config/index.js";
+import { PostgreSQLManager } from "../../../../database/PostgreSQLManager";
+import { AIFactory } from "../../../../ai/core/AIFactory";
+import type { AIEngine } from "../../../../ai/core/AIEngine";
+import { AIRequestBuilder } from "../../../../ai/core/AIRequestBuilder";
+import type { AIResponse } from "../../../../ai/providers/base/AIProvider";
+import { SocialIntelligence } from "../../index.js";
+import { EnhancementOrchestrator } from "../EnhancementOrchestrator";
+import { config } from "../../../../config/index.js";
 
 interface Message {
 	id: string;

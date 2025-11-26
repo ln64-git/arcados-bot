@@ -5,9 +5,9 @@
  */
 
 import { Client, GatewayIntentBits } from "discord.js";
-import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { EmbeddingService } from "../features/social-intelligence/semantic-analysis/EmbeddingService";
-import { config } from "../config";
+import { PostgreSQLManager } from "../PostgreSQLManager";
+import { EmbeddingService } from "../../features/social-intelligence/semantic-analysis/EmbeddingService";
+import { config } from "../../config";
 
 const db = new PostgreSQLManager();
 const embeddingService = EmbeddingService.getInstance();

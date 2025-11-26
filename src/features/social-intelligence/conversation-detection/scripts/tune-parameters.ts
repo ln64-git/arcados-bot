@@ -6,8 +6,8 @@
  * Helps identify optimal settings for your specific chat patterns.
  */
 
-import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { config } from "../config/index.js";
+import { PostgreSQLManager } from "../../../../database/PostgreSQLManager";
+import { config } from "../../../../config/index.js";
 
 interface TuningScenario {
 	name: string;

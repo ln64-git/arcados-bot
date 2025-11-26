@@ -7,9 +7,9 @@
  * which grouping strategies are applied, and why messages are included/excluded.
  */
 
-import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { ConversationDetector } from "../features/social-intelligence/conversation-detection/ConversationDetector";
-import { config } from "../config/index.js";
+import { PostgreSQLManager } from "../../../../database/PostgreSQLManager";
+import { ConversationDetector } from "../ConversationDetector";
+import { config } from "../../../../config/index.js";
 
 interface Message {
 	id: string;

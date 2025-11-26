@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { PostgreSQLManager } from "../PostgreSQLManager";
-import { config } from "../../../config";
+import { config } from "../../config";
 
 // Ensure SSL for Neon if not in the URL/params
 if (!process.env.PGSSLMODE) process.env.PGSSLMODE = "require";

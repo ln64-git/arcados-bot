@@ -6,10 +6,10 @@
  * that don't have summaries yet.
  */
 
-import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { AIFactory } from "../ai/core/AIFactory";
-import { EnhancementOrchestrator } from "../features/social-intelligence/enrichment-pipeline/EnhancementOrchestrator";
-import { config } from "../config/index.js";
+import { PostgreSQLManager } from "../../../../database/PostgreSQLManager";
+import { AIFactory } from "../../../../ai/core/AIFactory";
+import { EnhancementOrchestrator } from "../EnhancementOrchestrator";
+import { config } from "../../../../config/index.js";
 
 const db = new PostgreSQLManager();
 

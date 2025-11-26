@@ -9,9 +9,9 @@
  * - The conversation tables need to be rebuilt
  */
 
-import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { ConversationDetector } from "../features/social-intelligence/conversation-detection/ConversationDetector";
-import { config } from "../config/index.js";
+import { PostgreSQLManager } from "../../../../database/PostgreSQLManager";
+import { ConversationDetector } from "../ConversationDetector";
+import { config } from "../../../../config/index.js";
 
 interface Message {
 	id: string;

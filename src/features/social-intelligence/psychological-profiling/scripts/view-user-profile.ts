@@ -5,7 +5,7 @@
  *   GUILD_ID=123456789 USER_ID=987654321 npm run profile:view-user
  */
 
-import { PostgreSQLManager } from "../database/PostgreSQLManager.js";
+import { PostgreSQLManager } from "../../../../database/PostgreSQLManager.js";
 
 async function main() {
 	const guildId = process.env.GUILD_ID;

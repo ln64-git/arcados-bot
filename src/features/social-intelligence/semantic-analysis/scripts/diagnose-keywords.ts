@@ -5,10 +5,10 @@
  * It checks message content, embeddings, and attempts keyword extraction to identify failures.
  */
 
-import { PostgreSQLManager } from "../database/PostgreSQLManager";
-import { KeywordExtractor } from "../features/social-intelligence/semantic-analysis/KeywordExtractor";
-import { EmbeddingService } from "../features/social-intelligence/semantic-analysis/EmbeddingService";
-import { config } from "../config";
+import { PostgreSQLManager } from "../../../../database/PostgreSQLManager";
+import { KeywordExtractor } from "../KeywordExtractor";
+import { EmbeddingService } from "../EmbeddingService";
+import { config } from "../../../../config";
 
 interface ConversationSegment {
   id: string;

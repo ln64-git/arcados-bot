@@ -1,8 +1,8 @@
 import "dotenv/config";
-import { ChatAIManager } from "../ChatAIManager.js";
-import { AIContextBuilder } from "../../../ai/core/AIContext.js";
-import { AIFactory } from "../../../ai/core/AIFactory.js";
-import { PostgreSQLManager } from "../../../database/PostgreSQLManager.js";
+import { ChatAIManager } from "../handlers/chat/ChatAIManager.js";
+import { AIContextBuilder } from "../ai/core/AIContext.js";
+import { AIFactory } from "../ai/core/AIFactory.js";
+import { PostgreSQLManager } from "../database/PostgreSQLManager.js";
 
 const provider = process.env.PROVIDER || "grok"; // grok | openai | ollama | gemini
 const input = process.argv.slice(2).join(" ") || process.env.PROMPT || "hello";
@@ -78,7 +78,7 @@ async function main(): Promise<void> {
 
   // Flush cost tracking data before exiting
   try {
-    const { APICostTracker } = await import("../../../utils/APICostTracker.js");
+    const { APICostTracker } = await import("../utils/APICostTracker.js");
     const tracker = APICostTracker.getInstance();
     // Use timeout to prevent hanging
     await Promise.race([
