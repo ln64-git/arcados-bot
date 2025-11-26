@@ -139,14 +139,7 @@ export class Bot {
 
     // Initialize state sync service
     // Handles real-time Discord state synchronization
-    this.stateSyncService = new StateSyncService(
-      this.client,
-      this.db,
-      this.conversationWorkflow.getRelationshipMapper()!,
-      this.conversationWorkflow.getConversationDetector()!,
-      false // Set to true for verbose logging
-    );
-    await this.stateSyncService.start();
+
 
     console.log("✅ All features initialized successfully");
   }
@@ -324,11 +317,6 @@ export class Bot {
     // Stop conversation workflow (handles conversation finalization + cleanup)
     if (this.conversationWorkflow) {
       await this.conversationWorkflow.stop();
-    }
-
-    // Stop state sync service
-    if (this.stateSyncService) {
-      await this.stateSyncService.stop();
     }
 
     // Shutdown stream player
