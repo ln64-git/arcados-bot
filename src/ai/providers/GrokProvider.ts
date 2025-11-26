@@ -546,21 +546,15 @@ export class GrokProvider extends BaseAIProvider {
       }
     }
 
-    // Use only the LAST text output to avoid multiple responses
-    // Grok sometimes returns multiple output blocks, but we only want the final one
+    // Combine all text outputs into a single string.
+    // Grok sometimes splits a single logical response across multiple output blocks,
+    // so joining them avoids accidental truncation of structured outputs (like JSON).
     const finalText =
-      textOutputs.length > 0 ? textOutputs[textOutputs.length - 1] || "" : "";
+      textOutputs.length > 0 ? textOutputs.join("\n\n") : "";
 
     if (textOutputs.length > 1) {
-      console.log(
-        "[GrokProvider] Multiple text outputs found:",
-        textOutputs.length
-      );
-      console.log(
-        "[GrokProvider] Using last output. Discarded outputs:",
-        textOutputs.slice(0, -1).map((t) => t.substring(0, 100))
-      );
-      console.log("[GrokProvider] Final output:", finalText.substring(0, 200));
+      console.log("[GrokProvider] Multiple text outputs found:", textOutputs.length);
+      console.log("[GrokProvider] Combined final output preview:", finalText.substring(0, 200));
     }
 
     return {

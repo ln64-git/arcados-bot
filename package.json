@@ -21,7 +21,10 @@
     "diagnose-keywords": "bun run src/scripts/diagnose-keywords.ts",
     "check-message": "bun run src/scripts/check-message.ts",
     "repair-sync": "bun run src/scripts/repair-sync.ts",
-    "view-costs": "bun run src/utils/view-costs.ts"
+    "view-costs": "bun run src/utils/view-costs.ts",
+    "profile:users": "tsx src/scripts/profile-users.ts",
+    "profile:users:stale": "tsx src/scripts/profile-stale-users.ts",
+    "profile:view-user": "tsx src/scripts/view-user-profile.ts"
   },
   "keywords": [
     "discord",

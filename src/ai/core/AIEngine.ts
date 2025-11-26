@@ -229,6 +229,10 @@ Temperature: You can be creative and natural - just keep it brief.`;
 			toolContextBytes: 0,
 			mode,
 		});
+		const maxTokensOverride =
+			typeof config.maxTokens === "number" && config.maxTokens > 0
+				? config.maxTokens
+				: undefined;
 
 		try {
 			let finalContent = "";
@@ -395,7 +399,9 @@ Temperature: You can be creative and natural - just keep it brief.`;
 					providerTools,
 					toolResults.length > 0 ? toolResults : undefined,
 					{
-						maxTokens: isHiddenBehaviorActive ? 2000 : initialPolicy.maxTokens,
+						maxTokens: isHiddenBehaviorActive
+							? 2000
+							: maxTokensOverride || initialPolicy.maxTokens,
 						temperature: isHiddenBehaviorActive
 							? 1.0
 							: initialPolicy.temperatureNudge

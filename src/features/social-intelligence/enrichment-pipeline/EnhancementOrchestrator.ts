@@ -5,6 +5,7 @@ import { AIRequestBuilder } from "../../../ai/core/AIRequestBuilder";
 import { AIContextBuilder } from "../../../ai/core/AIContext.js";
 import { AIFactory } from "../../../ai/core/AIFactory";
 import { EmbeddingService } from "../semantic-analysis/EmbeddingService.js";
+import { PsychologicalProfiler } from "../psychological-profiling/PsychologicalProfiler";
 
 const SUMMARY_STOP_WORDS = new Set([
   "the",
@@ -63,6 +64,10 @@ export interface EnhancementConfig {
   enableSummaries?: boolean; // Enable summary generation (default: true)
   enableOrphans?: boolean; // Enable orphan classification (default: true)
   enableSplitting?: boolean; // Enable conversation splitting (default: false)
+  enableProfiling?: boolean; // Enable psychological profiling (default: false)
+  enableCommunityAnalysis?: boolean; // Enable community structure analysis (default: false)
+  minMessagesForProfiling?: number; // Min messages for profiling (default: 10)
+  profilingBatchSize?: number; // Users per profiling batch (default: 10)
   dryRun?: boolean; // Don't write to database (default: false)
   regenerateSummaries?: boolean; // Regenerate summaries even if they exist (default: false)
 }
@@ -75,6 +80,8 @@ export interface EnhancementStats {
   summariesGenerated: number;
   orphansRecovered: number;
   conversationsSplit: number;
+  usersProfiled: number;
+  communityAnalysisRun: boolean;
   errors: number;
   apiCallsMade: number;
   startTime: Date;
@@ -120,6 +127,10 @@ export class EnhancementOrchestrator {
       enableSummaries: config.enableSummaries ?? true,
       enableOrphans: config.enableOrphans ?? true,
       enableSplitting: config.enableSplitting ?? false,
+      enableProfiling: config.enableProfiling ?? false,
+      enableCommunityAnalysis: config.enableCommunityAnalysis ?? false,
+      minMessagesForProfiling: config.minMessagesForProfiling ?? 10,
+      profilingBatchSize: config.profilingBatchSize ?? 10,
       dryRun: config.dryRun ?? false,
       regenerateSummaries: config.regenerateSummaries ?? false,
     };
@@ -129,6 +140,8 @@ export class EnhancementOrchestrator {
       summariesGenerated: 0,
       orphansRecovered: 0,
       conversationsSplit: 0,
+      usersProfiled: 0,
+      communityAnalysisRun: false,
       errors: 0,
       apiCallsMade: 0,
       startTime: new Date(),
@@ -173,6 +186,16 @@ export class EnhancementOrchestrator {
       // Phase 3: Conversation Splitting (Medium Priority, expensive)
       if (this.config.enableSplitting) {
         await this.runConversationSplitting(guildId);
+      }
+
+      // Phase 4: Psychological Profiling (batch process)
+      if (this.config.enableProfiling) {
+        await this.runUserProfiling(guildId);
+      }
+
+      // Phase 5: Community Structure Analysis (behind-the-scenes)
+      if (this.config.enableCommunityAnalysis) {
+        await this.runCommunityAnalysis(guildId);
       }
 
       this.stats.endTime = new Date();
@@ -602,6 +625,83 @@ Summary:`;
   }
 
   /**
+   * Phase 4: Psychological Profiling
+   */
+  private async runUserProfiling(guildId: string): Promise<void> {
+    console.log(
+      "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    );
+    console.log("🧠 PHASE 4: Psychological Profiling");
+    console.log(
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    );
+
+    // Get active users (>= minMessagesForProfiling, not bots)
+    const usersResult = await this.db.query(
+      `
+      SELECT m.user_id, COUNT(msg.id) as message_count
+      FROM members m
+      LEFT JOIN messages msg ON msg.author_id = m.user_id AND msg.guild_id = m.guild_id
+      WHERE m.guild_id = $1
+        AND m.bot = false
+        AND m.active = true
+      GROUP BY m.user_id
+      HAVING COUNT(msg.id) >= $2
+      ORDER BY COUNT(msg.id) DESC
+      `,
+      [guildId, this.config.minMessagesForProfiling]
+    );
+
+    if (!usersResult.success || !usersResult.data || usersResult.data.length === 0) {
+      console.log("   ℹ️  No users found for profiling");
+      return;
+    }
+
+    const userIds = usersResult.data.map((row: any) => row.user_id);
+    console.log(`   Found ${userIds.length} users to profile`);
+
+    // Initialize profiler
+    const aiEngine = await this.getAIEngine();
+    const profiler = new PsychologicalProfiler(this.db, aiEngine, {
+      minMessagesForProfiling: this.config.minMessagesForProfiling,
+      batchSize: this.config.profilingBatchSize,
+      sleepBetweenBatchesMs: 1000, // 1 second for Grok (better rate limits)
+    });
+
+    // Profile users in batches
+    const successCount = await profiler.profileBatch(guildId, userIds);
+
+    this.stats.usersProfiled = successCount;
+    this.stats.apiCallsMade += profiler.getStats().api_calls_made;
+
+    console.log(
+      `\n   ✅ Phase 4 complete: ${successCount}/${userIds.length} users profiled\n`
+    );
+  }
+
+  /**
+   * Phase 5: Community Structure Analysis
+   */
+  private async runCommunityAnalysis(guildId: string): Promise<void> {
+    console.log(
+      "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    );
+    console.log("🌐 PHASE 5: Community Structure Analysis");
+    console.log(
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    );
+
+    // TODO: Implement community structure analysis (Louvain, PageRank, etc.)
+    console.log("   ℹ️  Community structure analysis not yet implemented");
+    console.log("   ℹ️  This will include:");
+    console.log("      - Clique detection (Louvain algorithm)");
+    console.log("      - Influence ranking (PageRank-style)");
+    console.log("      - Bridge detection (users connecting groups)");
+
+    this.stats.communityAnalysisRun = false;
+  }
+
+  /**
    * Rate limiting to stay within Gemini free tier (15 RPM)
    */
   private async rateLimit(): Promise<void> {
@@ -650,6 +750,8 @@ Summary:`;
     console.log(`   Summaries Generated:    ${this.stats.summariesGenerated}`);
     console.log(`   Orphans Recovered:      ${this.stats.orphansRecovered}`);
     console.log(`   Conversations Split:    ${this.stats.conversationsSplit}`);
+    console.log(`   Users Profiled:         ${this.stats.usersProfiled}`);
+    console.log(`   Community Analysis:     ${this.stats.communityAnalysisRun ? "Yes" : "No"}`);
     console.log(`   API Calls Made:         ${this.stats.apiCallsMade}`);
     console.log(`   Errors:                 ${this.stats.errors}`);
     console.log(`   Duration:               ${duration.toFixed(1)}s`);
