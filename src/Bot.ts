@@ -12,10 +12,10 @@ import { config } from "./config";
 import type { Command } from "./types";
 import { CommandDeployer } from "./utils/CommandDeployer";
 import { ConversationWorkflowManager } from "./features/social-intelligence";
-import { MessageHandler } from "./utils/discord-handlers/chat";
-import { VoiceAssistantManager } from "./utils/discord-handlers/voice/VoiceAssistantManager";
+import { MessageHandler } from "./handlers/chat";
+import { VoiceAssistantManager } from "./handlers/voice/VoiceAssistantManager";
 import { MediaPlayerManager } from "./features/media-player/MediaPlayerManager";
-import { VoiceConnectionManager } from "./utils/discord-handlers/voice/tts/services/VoiceConnectionManager";
+import { VoiceConnectionManager } from "./handlers/voice/tts/services/VoiceConnectionManager";
 import { StreamPlayerManager } from "./features/stream-chrome/StreamPlayerManager";
 import { APICostTracker } from "./utils/APICostTracker";
 
