@@ -51,6 +51,7 @@ export class StreamingTTSQueue {
 	// Sequence tracking for maintaining order
 	private nextSequenceNumber = 0;
 	private totalChunksQueued = 0;
+	private nextExpectedSequence = 0; // Track the next chunk we expect to play
 
 	constructor(ttsManager: TTSManager, config?: Partial<StreamingQueueConfig>) {
 		this.ttsManager = ttsManager;
@@ -124,21 +125,39 @@ export class StreamingTTSQueue {
 
 	/**
 	 * Check if audio is ready for playback
+	 * Only returns true if the next expected chunk (by sequence number) is ready
+	 * This ensures chunks play in order even if synthesis completes out of order
 	 */
 	public hasReadyAudio(): boolean {
-		const firstChunk = this.playbackQueue[0];
-		return this.playbackQueue.length > 0 && firstChunk !== undefined && firstChunk.audio !== undefined;
+		// Find the chunk with the next expected sequence number
+		const nextChunk = this.playbackQueue.find(
+			chunk => chunk.sequenceNumber === this.nextExpectedSequence && chunk.audio !== undefined
+		);
+		return nextChunk !== undefined;
 	}
 
 	/**
 	 * Get next audio chunk for playback
 	 * Call this when ready to play next chunk
+	 * Only returns the chunk with the next expected sequence number
 	 */
 	public getNextChunk(): Buffer | null {
-		const chunk = this.playbackQueue.shift();
+		// Find and remove the chunk with the next expected sequence number
+		const chunkIndex = this.playbackQueue.findIndex(
+			chunk => chunk.sequenceNumber === this.nextExpectedSequence
+		);
+		
+		if (chunkIndex === -1) {
+			return null;
+		}
+		
+		const chunk = this.playbackQueue.splice(chunkIndex, 1)[0];
 		if (!chunk || !chunk.audio) {
 			return null;
 		}
+
+		// Increment expected sequence for next chunk
+		this.nextExpectedSequence++;
 
 		// Track playback timing
 		this.currentPlaybackChunk = chunk;
@@ -319,22 +338,16 @@ export class StreamingTTSQueue {
 		const estimatedDuration = SentenceDetector.estimateSpeakingDuration(text);
 		const now = Date.now();
 
+		const sequenceNumber = this.nextSequenceNumber++;
 		const chunk: QueuedChunk = {
 			text,
 			isParagraph,
 			estimatedDuration,
 			synthesisStartTime: now,
-			sequenceNumber: this.nextSequenceNumber++,
+			sequenceNumber,
 		};
 
 		this.totalChunksQueued++;
-
-		// Only log chunks when there's more than 1 chunk (don't log the first chunk)
-		// This avoids redundancy when there's only 1 chunk total
-		if (this.requestStartTime && chunk.sequenceNumber > 0) {
-			const duration = now - this.requestStartTime;
-			console.log(`🎤 [TTS_CHUNK] Queued chunk ${chunk.sequenceNumber} for synthesis (+${(duration / 1000).toFixed(2)}s)`);
-		}
 
 		// Start synthesis immediately
 		chunk.synthesisPromise = this.synthesizeChunk(chunk);

@@ -393,12 +393,23 @@ export class VoiceConnectionManager {
       this.logger.debug(
         `Player is ${player.state.status}, waiting for current playback to finish...`
       );
-      await new Promise<void>((resolve) => {
-        player.once(AudioPlayerStatus.Idle, () => {
-          this.logger.debug("Previous playback finished, ready for next chunk");
-          resolve();
-        });
-      });
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          player.once(AudioPlayerStatus.Idle, () => {
+            this.logger.debug("Previous playback finished, ready for next chunk");
+            resolve();
+          });
+        }),
+        new Promise<void>((resolve) => {
+          // Timeout after 1 second - if player is stuck, force continue
+          setTimeout(() => {
+            this.logger.warn(
+              `Player did not become idle within 1 second, forcing continue`
+            );
+            resolve();
+          }, 1000);
+        }),
+      ]);
     }
 
     // If player is paused (including autopaused), unpause it first
@@ -415,6 +426,22 @@ export class VoiceConnectionManager {
       player.unpause();
       // Wait a moment for the state to update
       await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    // Ensure player is subscribed to connection (may have been unsubscribed after stop)
+    const { connection } = session;
+    try {
+      // Try to subscribe - if already subscribed, this is a no-op
+      connection.subscribe(player);
+      this.logger.debug(
+        `Ensured player is subscribed to connection for guild ${guildId}`
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Failed to subscribe player to connection for guild ${guildId}:`,
+        error
+      );
+      // Continue anyway - subscription might already exist
     }
 
     // Mark as speaking

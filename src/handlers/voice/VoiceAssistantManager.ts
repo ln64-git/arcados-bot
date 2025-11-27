@@ -78,6 +78,9 @@ export class VoiceAssistantManager {
 
   // Processing locks to prevent duplicate responses
   private processingLocks: Map<Snowflake, boolean> = new Map();
+  
+  // Track active generation promises to allow cancellation
+  private activeGenerations: Map<Snowflake, Promise<void>> = new Map();
 
   // Playback controllers per guild for pause/stop coordination
   private playbackControllers: Map<Snowflake, PlaybackControllerState> =
@@ -113,6 +116,9 @@ export class VoiceAssistantManager {
     Snowflake,
     { text: string; timestamp: number; userId?: string }
   > = new Map();
+
+  // Track when trigger word is detected - wait for complete utterance before processing
+  private pendingTriggerDetections: Map<Snowflake, boolean> = new Map();
 
   private readonly controlKeywords: Record<VoiceControlCommand, string[]> = {
     [VoiceControlCommand.LEAVE]: [
@@ -293,6 +299,7 @@ export class VoiceAssistantManager {
     this.processingLocks.delete(session.guildId);
     this.conversationUsers.delete(session.guildId);
     this.playbackControllers.delete(session.guildId);
+    this.pendingTriggerDetections.delete(session.guildId);
 
     // Initialize mode state
     this.sessionModes.set(session.guildId, VoiceMode.COMMAND);
@@ -309,6 +316,7 @@ export class VoiceAssistantManager {
       this.sessionModes.delete(session.guildId);
       this.conversationUsers.delete(session.guildId);
       this.interruptionCallbacks.delete(session.guildId);
+      this.pendingTriggerDetections.delete(session.guildId);
     });
 
     // Clear audio processor buffer one more time right before starting to receive
@@ -868,11 +876,14 @@ export class VoiceAssistantManager {
       session.transcriptionBuffer += ` ${transcription}`;
       session.lastActivity = new Date();
 
+      // Check if trigger word is detected in this chunk
+      const triggerResult = this.triggerDetector.detect(transcription);
+
       // Store transcription entry
       const entry: TranscriptionEntry = {
         text: transcription,
         timestamp: new Date(),
-        containsTriggerWord: false,
+        containsTriggerWord: triggerResult.detected,
         userId,
       };
 
@@ -891,8 +902,28 @@ export class VoiceAssistantManager {
         return;
       }
 
-      // Process the transcription immediately for chunked transcriptions
-      // This provides real-time responsiveness instead of waiting for silence
+      // Check if trigger word is detected in this chunk
+      // If so, wait for complete utterance before processing to avoid cutting off queries
+      if (triggerResult.detected) {
+        // Trigger word detected - mark that we're waiting for complete utterance
+        this.pendingTriggerDetections.set(session.guildId, true);
+        this.logger.debug(
+          `[TRIGGER] Trigger word detected in chunk, waiting for complete utterance before processing`
+        );
+        return;
+      }
+
+      // Check if we're waiting for a complete utterance (trigger word detected earlier)
+      if (this.pendingTriggerDetections.get(session.guildId)) {
+        // Still waiting for complete utterance - don't process chunks individually
+        this.logger.debug(
+          `[TRIGGER] Waiting for complete utterance (trigger detected earlier), deferring chunk processing`
+        );
+        return;
+      }
+
+      // No trigger word and not waiting - process immediately for real-time responsiveness
+      // This allows non-triggered utterances to be processed in real-time
       await this.processTranscriptionBuffer(session, transcription.trim());
     } catch (error) {
       this.logger.error("Transcription error:", error);
@@ -1085,6 +1116,9 @@ export class VoiceAssistantManager {
       session.transcriptions.push(entry);
       session.lastActivity = new Date();
 
+      // Clear pending trigger detection flag since we're processing the complete utterance
+      this.pendingTriggerDetections.delete(session.guildId);
+
       // Process the complete transcription
       await this.processTranscriptionBuffer(session, transcription.trim());
     } catch (error) {
@@ -1130,7 +1164,7 @@ export class VoiceAssistantManager {
     // Check if already processing for this guild
     const isLocked = this.processingLocks.get(session.guildId);
     if (isLocked) {
-      this.logger.debug(
+      this.logger.info(
         `[processTranscriptionBuffer] Skipping - already processing for guild ${session.guildId}`
       );
       return;
@@ -1307,43 +1341,123 @@ export class VoiceAssistantManager {
     }
 
     // Clean query of any remaining blank audio markers
+    const queryBeforeCleaning = query;
     if (query) {
       query = this.stripBlankAudioMarkers(query);
+      if (query !== queryBeforeCleaning) {
+        this.logger.debug(
+          `[processTranscriptionBuffer] Query after stripBlankAudioMarkers: "${query}" (was: "${queryBeforeCleaning}")`
+        );
+      }
     }
 
     // Strip hidden behavior trigger words from query (prevent them from being sent to AI)
+    const queryBeforeHidden = query;
     if (query) {
       query = this.stripHiddenBehaviorTriggers(query);
+      if (query !== queryBeforeHidden) {
+        this.logger.debug(
+          `[processTranscriptionBuffer] Query after stripHiddenBehaviorTriggers: "${query}" (was: "${queryBeforeHidden}")`
+        );
+      }
     }
 
     // If query is empty after cleaning, don't process
     if (shouldProcess && (!query || query.trim().length === 0)) {
-      this.logger.debug(
-        `[TRIGGER] Query is empty after cleaning blank audio markers, skipping processing`
+      this.logger.info(
+        `[TRIGGER] Query is empty after cleaning, skipping processing. Original: "${queryBeforeCleaning}", after cleaning: "${query}"`
       );
       shouldProcess = false;
     }
 
+    // Clear pending trigger detection flag when processing any utterance
+    this.pendingTriggerDetections.delete(session.guildId);
+
+    this.logger.debug(
+      `[processTranscriptionBuffer] shouldProcess: ${shouldProcess}, query: "${query || utterance}", guild: ${session.guildId}`
+    );
+
     if (shouldProcess) {
-      // Play thinking sound when processing
-      await this.playThinkingSound(session.guildId);
-
-      // Set processing lock
-      this.processingLocks.set(session.guildId, true);
-
       try {
-        // Generate and speak response
-        await this.generateAndSpeakResponse(
+        this.logger.info(
+          `[processTranscriptionBuffer] Processing query: "${query || utterance}" for guild ${session.guildId}`
+        );
+
+        // Cancel any existing generation for this guild
+        const existingGeneration = this.activeGenerations.get(session.guildId);
+        if (existingGeneration) {
+          this.activeGenerations.delete(session.guildId);
+        }
+
+        // Check if lock is already set (shouldn't be, but check anyway)
+        const existingLock = this.processingLocks.get(session.guildId);
+        if (existingLock) {
+          this.logger.warn(
+            `[processTranscriptionBuffer] Processing lock already set for guild ${session.guildId}, clearing it`
+          );
+          this.processingLocks.delete(session.guildId);
+        }
+
+        // Set processing lock first to prevent race conditions
+        this.processingLocks.set(session.guildId, true);
+
+        // Play thinking sound when processing (with timeout to prevent hanging)
+        try {
+          // Add timeout to prevent hanging if playAudio gets stuck
+          const thinkingSoundPromise = this.playThinkingSound(session.guildId);
+          const timeoutPromise = new Promise<void>((_, reject) => {
+            setTimeout(() => {
+              reject(new Error("Thinking sound timeout after 2 seconds"));
+            }, 2000);
+          });
+          
+          await Promise.race([thinkingSoundPromise, timeoutPromise]);
+        } catch (error) {
+          this.logger.warn(
+            `[processTranscriptionBuffer] Error or timeout playing thinking sound for guild ${session.guildId}:`,
+            error
+          );
+          // Continue anyway - thinking sound is not critical
+        }
+
+        // Start generation and track it
+        const generationPromise = this.generateAndSpeakResponse(
           session,
           query || utterance,
           userId
         );
+
+        this.activeGenerations.set(session.guildId, generationPromise);
+
+        try {
+        await generationPromise;
       } catch (error) {
-        this.logger.error("Error during response generation:", error);
-        throw error;
+        this.logger.error(
+          `[processTranscriptionBuffer] Error during response generation for guild ${session.guildId}:`,
+          error
+        );
+        // Don't rethrow - we want to clear the lock even on error
       } finally {
-        // Release lock
-        this.processingLocks.delete(session.guildId);
+        // Only clear lock if this is still the active generation
+        // (prevents old generation from clearing lock set by new generation)
+        const currentActiveGeneration = this.activeGenerations.get(session.guildId);
+        if (currentActiveGeneration === generationPromise) {
+          this.processingLocks.delete(session.guildId);
+          this.activeGenerations.delete(session.guildId);
+        }
+      }
+      } catch (error) {
+        this.logger.error(
+          `[processTranscriptionBuffer] CRITICAL ERROR in shouldProcess block for guild ${session.guildId}:`,
+          error
+        );
+        // Clear lock on error - only if we set it
+        if (this.processingLocks.get(session.guildId)) {
+          this.processingLocks.delete(session.guildId);
+        }
+        if (this.activeGenerations.get(session.guildId)) {
+          this.activeGenerations.delete(session.guildId);
+        }
       }
     } else {
       // Clear request start time if we're not processing
@@ -1584,6 +1698,31 @@ export class VoiceAssistantManager {
         // Stop both voice assistant and media player
         await this.stopActivePlayback(guildId);
         this.mediaPlayer.stop(guildId);
+        
+        // Cancel any active generation
+        const activeGeneration = this.activeGenerations.get(guildId);
+        if (activeGeneration) {
+          this.logger.debug(
+            `Cancelling active generation for guild ${guildId}`
+          );
+          this.activeGenerations.delete(guildId);
+        }
+        
+        // Clear processing lock to allow new queries
+        this.processingLocks.delete(guildId);
+        
+        // Clear request start times for this guild
+        const session = this.connectionManager.getSession(guildId);
+        if (session) {
+          // Clear all request start times for this guild
+          for (const [key, _] of this.requestStartTimes) {
+            if (key.startsWith(`${guildId}:`)) {
+              this.requestStartTimes.delete(key);
+            }
+          }
+        }
+        
+        this.logger.info(`Stopped playback and cleared processing state for guild ${guildId}`);
         break;
       }
       case VoiceControlCommand.PAUSE: {
@@ -1807,10 +1946,19 @@ export class VoiceAssistantManager {
     query: string,
     userId: string
   ): Promise<void> {
+    this.logger.info(
+      `[generateAndSpeakResponse] Called for guild ${session.guildId}, query: "${query}", useStreamingTTS: ${this.useStreamingTTS}`
+    );
     // Use streaming if enabled, otherwise fallback to blocking
     if (this.useStreamingTTS) {
+      this.logger.debug(
+        `[generateAndSpeakResponse] Using streaming mode for guild ${session.guildId}`
+      );
       return this.generateAndSpeakResponseStreaming(session, query, userId);
     } else {
+      this.logger.debug(
+        `[generateAndSpeakResponse] Using blocking mode for guild ${session.guildId}`
+      );
       return this.generateAndSpeakResponseBlocking(session, query, userId);
     }
   }
@@ -1824,7 +1972,22 @@ export class VoiceAssistantManager {
     userId: string
   ): Promise<void> {
     try {
+      this.logger.info(
+        `[STREAMING] Starting response generation for guild ${session.guildId}, query: "${query}"`
+      );
       const controller = this.resetPlaybackController(session.guildId);
+      this.logger.debug(
+        `[STREAMING] Controller created for guild ${session.guildId}, aborted: ${controller.aborted}`
+      );
+      
+      // Double-check that controller wasn't aborted immediately after creation
+      // (could happen if stop was called in a race condition)
+      if (controller.aborted) {
+        this.logger.warn(
+          `[STREAMING] Controller was aborted immediately after creation for guild ${session.guildId}, aborting generation`
+        );
+        return;
+      }
 
       // Build AIContext for voice streaming
       const baseContext = new AIContextBuilder()
@@ -1837,13 +2000,16 @@ export class VoiceAssistantManager {
         .build();
 
       const context = await enrichAIContext(baseContext, {}, { query });
+      this.logger.debug(`[STREAMING] Context enriched for guild ${session.guildId}`);
 
       // Start streaming tokens from LLM
       const voiceAI = await this.getVoiceAI();
+      this.logger.debug(`[STREAMING] Getting token stream for guild ${session.guildId}`);
       const tokenStream = await voiceAI.streamConversationResponse(
         query,
         context
       );
+      this.logger.debug(`[STREAMING] Token stream obtained for guild ${session.guildId}`);
 
       // Create streaming TTS queue
       const streamingQueue = new StreamingTTSQueue(this.tts);
@@ -1865,6 +2031,9 @@ export class VoiceAssistantManager {
         try {
           for await (const token of tokenStream) {
             if (controller.aborted) {
+              this.logger.info(
+                `[STREAMING] Token stream aborted for guild ${session.guildId}`
+              );
               break;
             }
 
@@ -1872,11 +2041,25 @@ export class VoiceAssistantManager {
             fullResponse += token;
             streamingQueue.addToken(token);
           }
+          this.logger.debug(
+            `[STREAMING] Token stream completed for guild ${session.guildId}, received tokens: ${hasReceivedAnyToken}`
+          );
         } catch (error) {
-          this.logger.error("[STREAMING] Error in token stream:", error);
+          this.logger.error(
+            `[STREAMING] Error in token stream for guild ${session.guildId}:`,
+            error
+          );
         } finally {
           // Ensure any buffered text is flushed even if the stream errors
+          this.logger.info(
+            `[STREAMING] Finalizing streaming queue for guild ${session.guildId}`
+          );
           streamingQueue.finalize();
+          const queueStats = streamingQueue.getStats();
+            this.logger.debug(
+            `[STREAMING] Queue stats after finalize for guild ${session.guildId}:`,
+            queueStats
+          );
 
           if (!hasReceivedAnyToken) {
             this.logger.error(
@@ -1902,29 +2085,54 @@ export class VoiceAssistantManager {
 
       const playbackLoop = (async () => {
         try {
+          this.logger.info(
+            `[STREAMING] Playback loop started for guild ${session.guildId}`
+          );
+          let loopIterations = 0;
           while (!controller.aborted) {
+            loopIterations++;
+            
             // Check if we have audio ready
             const hasReady = streamingQueue.hasReadyAudio();
 
             if (hasReady) {
+              this.logger.debug(
+                `[STREAMING] Audio ready, getting chunk for guild ${session.guildId}`
+              );
               const audioChunk = streamingQueue.getNextChunk();
 
               if (audioChunk) {
+                this.logger.info(
+                  `[STREAMING] Got audio chunk (${audioChunk.length} bytes) for guild ${session.guildId}, about to play`
+                );
                 // Wait for playback resume if paused
                 await this.waitForPlaybackResume(controller);
 
                 if (controller.aborted) {
+                  this.logger.warn(
+                    `[STREAMING] Controller aborted before playing chunk for guild ${session.guildId}`
+                  );
                   break;
                 }
 
                 // Play the chunk
+                this.logger.info(
+                  `[STREAMING] Playing audio chunk for guild ${session.guildId}`
+                );
                 await this.connectionManager.playAudio(
                   session.guildId,
                   audioChunk
                 );
+                this.logger.info(
+                  `[STREAMING] Audio chunk played successfully for guild ${session.guildId}`
+                );
 
                 // Notify queue that playback finished
                 streamingQueue.notifyPlaybackComplete();
+              } else {
+                this.logger.warn(
+                  `[STREAMING] hasReadyAudio returned true but getNextChunk returned null for guild ${session.guildId}`
+                );
               }
             } else {
               // No audio ready yet, wait a bit
@@ -1932,25 +2140,43 @@ export class VoiceAssistantManager {
 
               // Check if we're done (tokens complete AND queue is idle)
               if (tokensComplete && streamingQueue.isIdle()) {
+                this.logger.info(
+                  `[STREAMING] Playback loop exiting: tokens complete and queue idle for guild ${session.guildId}`
+                );
                 break;
               }
             }
           }
+          this.logger.info(
+            `[STREAMING] Playback loop exited for guild ${session.guildId} after ${loopIterations} iterations`
+          );
         } catch (error) {
-          this.logger.error("[STREAMING] Error in playback loop:", error);
+          this.logger.error(
+            `[STREAMING] Error in playback loop for guild ${session.guildId}:`,
+            error
+          );
           throw error;
         }
       })();
 
       // Wait for both to complete
+      this.logger.debug(
+        `[STREAMING] Waiting for token processor and playback loop to complete for guild ${session.guildId}`
+      );
       await Promise.all([tokenProcessor, playbackLoop]);
+      this.logger.debug(
+        `[STREAMING] Token processor and playback loop completed for guild ${session.guildId}`
+      );
 
       // Clear request start time after response is complete
       const cleanupRequestKey = `${session.guildId}:${userId}`;
       this.requestStartTimes.delete(cleanupRequestKey);
+      this.logger.info(
+        `[STREAMING] Response generation completed successfully for guild ${session.guildId}`
+      );
     } catch (error) {
       this.logger.error(
-        "[STREAMING] Error generating/speaking response:",
+        `[STREAMING] Error generating/speaking response for guild ${session.guildId}:`,
         error
       );
 
@@ -1968,6 +2194,8 @@ export class VoiceAssistantManager {
         errorType,
         "I encountered an error processing your request. Please try again."
       );
+      // Re-throw to ensure the error is propagated
+      throw error;
     }
   }
 
@@ -2182,6 +2410,9 @@ export class VoiceAssistantManager {
     const existing = this.playbackControllers.get(guildId);
 
     if (existing) {
+      this.logger.debug(
+        `[resetPlaybackController] Aborting existing controller for guild ${guildId}`
+      );
       existing.aborted = true;
       existing.paused = false;
       this.resolvePlaybackController(existing);
@@ -2194,6 +2425,9 @@ export class VoiceAssistantManager {
     };
 
     this.playbackControllers.set(guildId, controller);
+    this.logger.debug(
+      `[resetPlaybackController] Created new controller for guild ${guildId}, aborted: ${controller.aborted}`
+    );
     return controller;
   }
 
@@ -2252,6 +2486,8 @@ export class VoiceAssistantManager {
       controller.aborted = true;
       controller.paused = false;
       this.resolvePlaybackController(controller);
+      // Delete the controller to ensure clean state for next query
+      this.playbackControllers.delete(guildId);
     }
 
     this.connectionManager.stopPlayback(guildId);
