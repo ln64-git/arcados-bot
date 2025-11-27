@@ -21,6 +21,7 @@ import { resolveMentionsInText } from "../../ai/utils/MentionResolver";
 import { VoiceAssistantManager } from "../voice/VoiceAssistantManager";
 import { AIFactory } from "../../ai/core/AIFactory";
 import type { AIEngine } from "../../ai/core/AIEngine";
+import { detectModeFromMessage, stripModeKeywords } from "../../ai/personas/modes";
 
 export class MessageHandler {
   private client: Client;
@@ -184,6 +185,10 @@ export class MessageHandler {
       return; // Voice command was handled, don't process with AI
     }
 
+    // Detect and strip yin/yang mode keywords
+    const detectedMode = detectModeFromMessage(userContent);
+    userContent = stripModeKeywords(userContent);
+
     // Map self-referential queries to explicit self-mention
     userContent = this.mapSelfReferentialQuery(userContent, message.author.id);
 
@@ -204,15 +209,20 @@ export class MessageHandler {
       }
     }
 
-    // Build AIContext from message
-    const context = new AIContextBuilder()
+    // Build AIContext from message with communication mode
+    const contextBuilder = new AIContextBuilder()
       .guild(message.guildId!)
       .user(message.author.id)
       .channel(message.channel.id)
       .message(message.id)
       .domain("chat")
-      .withDatabase(this.db)
-      .build();
+      .withDatabase(this.db);
+
+    if (detectedMode) {
+      contextBuilder.communicationMode(detectedMode);
+    }
+
+    const context = contextBuilder.build();
 
     const chatAI = await this.getChatAI();
     const contentResponse = await chatAI.generateMentionResponse(
@@ -271,8 +281,12 @@ export class MessageHandler {
       return;
     }
 
+    // Detect and strip yin/yang mode keywords
+    const detectedMode = detectModeFromMessage(message.content);
+    let contentToProcess = stripModeKeywords(message.content);
+
     // Resolve mentions in user message
-    let resolvedContent = message.content;
+    let resolvedContent = contentToProcess;
     resolvedContent = this.mapSelfReferentialQuery(
       resolvedContent,
       message.author.id
@@ -283,7 +297,7 @@ export class MessageHandler {
     if (this.db.isConnected()) {
       try {
         resolvedContent = await resolveMentionsInText(
-          message.content,
+          contentToProcess,
           message.guildId!,
           this.db
         );
@@ -358,16 +372,21 @@ export class MessageHandler {
       content: msg.content,
     }));
 
-    // Build AIContext from message
-    const context = new AIContextBuilder()
+    // Build AIContext from message with communication mode
+    const contextBuilder = new AIContextBuilder()
       .guild(message.guildId!)
       .user(message.author.id)
       .channel(message.channel.id)
       .message(message.id)
       .domain("chat")
       .withDatabase(this.db)
-      .withHistory(historyFormatted)
-      .build();
+      .withHistory(historyFormatted);
+
+    if (detectedMode) {
+      contextBuilder.communicationMode(detectedMode);
+    }
+
+    const context = contextBuilder.build();
 
     const chatAI = await this.getChatAI();
     const contentResponse = await chatAI.generateReplyResponse(

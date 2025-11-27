@@ -369,7 +369,14 @@ export class ReconciliationSync {
                 }
 
                 // Either: no complete sync yet, watermark outdated, or gaps detected
-                // Do full scan to ensure all history is captured
+                // First check for messages newer than watermark (bot downtime scenario)
+                const hasNewerMessages = await this.backfillNewerMessages(
+                  guildId,
+                  channel.id,
+                  watermark
+                );
+                
+                // Then do full scan backwards to ensure all history is captured
                 await this.detectAndFillGaps(guildId, channel.id, watermark);
                 return { type: "gapCheck" as const };
               }
@@ -631,6 +638,163 @@ export class ReconciliationSync {
     }
 
     await this.streamBackfilledMessages(backfilledMessages);
+  }
+
+  /**
+   * Backfill messages newer than watermark (sent while bot was offline)
+   * This handles the case where the bot reconnects after being offline
+   */
+  private async backfillNewerMessages(
+    guildId: string,
+    channelId: string,
+    watermark: string
+  ): Promise<boolean> {
+    const channel = this.client.channels.cache.get(channelId);
+    if (!channel || !channel.isTextBased()) return false;
+
+    try {
+      // Fetch the latest message from Discord
+      const latestMessages = await (channel as any).messages.fetch({ limit: 1 });
+      if (!latestMessages || latestMessages.size === 0) {
+        return false; // No messages in channel
+      }
+
+      const latestMessage = latestMessages.first()!;
+      const latestMessageId = latestMessage.id;
+
+      // Compare snowflake IDs to check if there are newer messages
+      const watermarkSnowflake = BigInt(watermark);
+      const latestSnowflake = BigInt(latestMessageId);
+
+      // If latest message is older or equal to watermark, no newer messages
+      if (latestSnowflake <= watermarkSnowflake) {
+        return false;
+      }
+
+      // There are newer messages! Backfill forward from watermark
+      let synced = 0;
+      let lastId: string | null = watermark;
+      const batchSize = 100;
+      const maxBatches = 50; // Safety limit
+      const backfilledMessages: BackfilledMessage[] = [];
+
+      // Fetch messages after the watermark
+      for (let i = 0; i < maxBatches; i++) {
+        const options: any = { limit: batchSize };
+        if (lastId) {
+          options.after = lastId; // Fetch messages after this ID
+        }
+
+        const messages = await (channel as any).messages.fetch(options);
+        if (!messages || messages.size === 0) break;
+
+        // Check which messages already exist in DB
+        const messageIds = Array.from(messages.keys());
+        const existingResult = await this.db.query(
+          `SELECT id FROM messages WHERE id = ANY($1) AND active = true`,
+          [messageIds]
+        );
+
+        const existingIds = new Set<string>();
+        if (existingResult.success && existingResult.data) {
+          for (const row of existingResult.data) {
+            existingIds.add(row.id);
+          }
+        }
+
+        // Insert missing messages
+        for (const [, msg] of messages) {
+          if (!existingIds.has(msg.id)) {
+            // Generate embedding for message content
+            let embedding: number[] | undefined = undefined;
+            if (msg.content && msg.content.trim().length > 0) {
+              try {
+                embedding = await this.embeddingService.generateEmbedding(
+                  msg.content
+                );
+              } catch (error) {
+                if (this.verbose) {
+                  console.error(
+                    `🔸 ReconciliationSync: Failed to generate embedding for message ${msg.id}:`,
+                    error
+                  );
+                }
+              }
+            }
+
+            await this.db.upsertMessage({
+              id: msg.id,
+              guild_id: guildId,
+              channel_id: channelId,
+              author_id: msg.author.id,
+              content: msg.content || "",
+              created_at: msg.createdAt,
+              edited_at: msg.editedAt || undefined,
+              attachments: Array.from(msg.attachments.values()).map(
+                (a: any) => a.url
+              ),
+              embeds: msg.embeds.map((e: any) => JSON.stringify(e.toJSON())),
+              referenced_message_id: msg.reference?.messageId || undefined,
+              embedding: embedding,
+              active: true,
+            });
+
+            // Update watermark as we go (these are newer messages)
+            await this.coordinator.tryUpdateWatermark(
+              channelId,
+              msg.id,
+              "reconciliation"
+            );
+
+            if (!msg.author.bot) {
+              synced++;
+              this.stats.messagesFilled++;
+              this.stats.gapsDetected++;
+            }
+
+            const conversationMessage = this.buildBackfilledMessage(
+              msg,
+              guildId,
+              channelId,
+              embedding
+            );
+            if (conversationMessage) {
+              backfilledMessages.push(conversationMessage);
+            }
+          }
+        }
+
+        // Stop if we've reached the latest message or end of history
+        if (messages.has(latestMessageId) || messages.size < batchSize) {
+          break;
+        }
+
+        // Get the newest message ID from this batch for next iteration
+        const sortedMessages = Array.from(messages.values()).sort(
+          (a, b) => BigInt(b.id) - BigInt(a.id)
+        );
+        lastId = sortedMessages[0]?.id || null;
+        if (!lastId) break;
+      }
+
+      const channelName = `#${(channel as any).name || channelId}`;
+      if (synced > 0) {
+        console.log(
+          `   ✅ ReconciliationSync: Backfilled ${synced} newer messages in ${channelName} (bot downtime recovery)`
+        );
+      }
+
+      await this.streamBackfilledMessages(backfilledMessages);
+      return synced > 0;
+    } catch (error) {
+      if (this.verbose) {
+        console.error(
+          `🔸 ReconciliationSync: Error backfilling newer messages in ${channelId}:`,
+          error
+        );
+      }
+      return false;
+    }
   }
 
   /**

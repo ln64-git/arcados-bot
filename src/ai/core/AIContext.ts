@@ -78,6 +78,9 @@ export interface AIContext {
 		maxContextTokens?: number;
 		// Future: relevanceThreshold, contextSources, etc.
 	};
+
+	// Communication mode for yin/yang system
+	communicationMode?: "yin" | "yang";
 }
 
 /**
@@ -171,6 +174,14 @@ export class AIContextBuilder {
 	 */
 	enrichment(config: AIContext["contextEnrichment"]): this {
 		this.context.contextEnrichment = config;
+		return this;
+	}
+
+	/**
+	 * Set communication mode (yin/yang)
+	 */
+	communicationMode(mode: "yin" | "yang"): this {
+		this.context.communicationMode = mode;
 		return this;
 	}
 

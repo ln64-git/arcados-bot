@@ -72,13 +72,6 @@ export interface MemberData {
   activities?: string; // JSON string of activities
   client_status?: string; // JSON string of client status
 
-  //  Relationship metadata
-  summary?: string;
-  keywords?: string[];
-  emojis?: string[];
-  notes?: string[];
-  relationship_network?: RelationshipEntry[];
-
   // Metadata
   active: boolean;
   created_at: Date;
@@ -100,6 +93,28 @@ export interface RelationshipEntry {
   username?: string;
   raw_points?: number;
   total_messages?: number;
+}
+
+export interface UserProfileData {
+  guild_id: string;
+  user_id: string;
+  
+  // AI profile data
+  summary?: string;
+  keywords?: string[];
+  emojis?: string[];
+  notes?: string[];
+  aliases?: string[];
+  relationship_network?: RelationshipEntry[];
+  
+  // Psychological profiling
+  psych_profile?: any; // JSONB - Big 5, MBTI, etc.
+  behavior_patterns?: any; // JSONB
+  temporal_profile?: any; // JSONB
+  
+  // Metadata
+  created_at: Date;
+  updated_at: Date;
 }
 
 export interface RoleData {
@@ -287,18 +302,39 @@ export class PostgreSQLManager {
 					activities TEXT,
 					client_status TEXT,
 					
-					-- Relationship metadata
-					summary TEXT,
-					keywords TEXT[],
-					emojis TEXT[],
-					notes TEXT[],
-					relationship_network JSONB DEFAULT '[]',
-					
 					-- Metadata
 					active BOOLEAN DEFAULT true,
 					created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
 					updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
 					UNIQUE(guild_id, user_id)
+				)
+			`);
+
+      // User profiles - centralized AI-focused user data
+      await client.query(`
+				CREATE TABLE IF NOT EXISTS user_profiles (
+					guild_id VARCHAR(20) NOT NULL,
+					user_id VARCHAR(20) NOT NULL,
+					
+					-- AI profile data
+					summary TEXT,
+					keywords TEXT[] DEFAULT '{}',
+					emojis TEXT[] DEFAULT '{}',
+					notes TEXT[] DEFAULT '{}',
+					aliases TEXT[] DEFAULT '{}',
+					relationship_network JSONB DEFAULT '[]',
+					
+					-- Psychological profiling
+					psych_profile JSONB DEFAULT '{}',
+					behavior_patterns JSONB DEFAULT '{}',
+					temporal_profile JSONB DEFAULT '{}',
+					
+					-- Metadata
+					created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+					
+					PRIMARY KEY (guild_id, user_id),
+					FOREIGN KEY (guild_id, user_id) REFERENCES members(guild_id, user_id) ON DELETE CASCADE
 				)
 			`);
 
@@ -610,6 +646,20 @@ export class PostgreSQLManager {
 				CREATE INDEX IF NOT EXISTS idx_voice_channel_preferences_guild_user ON voice_channel_preferences(guild_id, user_id);
 				CREATE INDEX IF NOT EXISTS idx_voice_channel_ownership_channel ON voice_channel_ownership(channel_id);
 				CREATE INDEX IF NOT EXISTS idx_voice_channel_ownership_user ON voice_channel_ownership(user_id);
+				
+				-- User profiles indexes for AI retrieval
+				CREATE INDEX IF NOT EXISTS idx_user_profiles_guild_id ON user_profiles(guild_id);
+				CREATE INDEX IF NOT EXISTS idx_user_profiles_user_id ON user_profiles(user_id);
+				CREATE INDEX IF NOT EXISTS idx_user_profiles_relationship_network ON user_profiles USING GIN (relationship_network);
+				CREATE INDEX IF NOT EXISTS idx_user_profiles_psych_profile ON user_profiles USING GIN (psych_profile);
+				CREATE INDEX IF NOT EXISTS idx_user_profiles_behavior_patterns ON user_profiles USING GIN (behavior_patterns);
+				CREATE INDEX IF NOT EXISTS idx_user_profiles_temporal_profile ON user_profiles USING GIN (temporal_profile);
+				CREATE INDEX IF NOT EXISTS idx_user_profiles_psych_profile_metadata ON user_profiles USING GIN ((psych_profile->'profile_metadata'));
+				CREATE INDEX IF NOT EXISTS idx_user_profiles_psych_profile_last_updated ON user_profiles ((psych_profile->'profile_metadata'->>'last_updated'));
+				CREATE INDEX IF NOT EXISTS idx_user_profiles_keywords ON user_profiles USING GIN (keywords);
+				CREATE INDEX IF NOT EXISTS idx_user_profiles_emojis ON user_profiles USING GIN (emojis);
+				CREATE INDEX IF NOT EXISTS idx_user_profiles_notes ON user_profiles USING GIN (notes);
+				CREATE INDEX IF NOT EXISTS idx_user_profiles_aliases ON user_profiles USING GIN (aliases);
 			`);
     } catch (error) {
       console.error("🔸 Failed to initialize PostgreSQL schema:", error);
@@ -771,6 +821,19 @@ export class PostgreSQLManager {
 
     const client = await this.pool!.connect();
     try {
+      // Check if member exists and get old values for alias tracking
+      const existingResult = await client.query(
+        `SELECT username, display_name, nick FROM members WHERE guild_id = $1 AND user_id = $2`,
+        [memberData.guild_id, memberData.user_id]
+      );
+
+      const existing = existingResult.rows[0];
+      const nameChanged = existing && (
+        existing.username !== memberData.username ||
+        existing.display_name !== memberData.display_name ||
+        existing.nick !== (memberData.nick || null)
+      );
+
       const query = `
 				INSERT INTO members (
 					id, guild_id, user_id, username, display_name, global_name, avatar, avatar_decoration,
@@ -845,6 +908,36 @@ export class PostgreSQLManager {
       ];
 
       const result = await client.query(query, values);
+      
+      // Update aliases if name changed or if this is a new member
+      if (existing) {
+        // Existing member - update aliases if name changed
+        if (nameChanged) {
+          await this.updateAliasesFromNameChange(
+            memberData.user_id,
+            memberData.guild_id,
+            existing,
+            {
+              username: memberData.username,
+              display_name: memberData.display_name,
+              nick: memberData.nick || null,
+            }
+          );
+        }
+      } else {
+        // New member - add current names to aliases
+        await this.updateAliasesFromNameChange(
+          memberData.user_id,
+          memberData.guild_id,
+          {},
+          {
+            username: memberData.username,
+            display_name: memberData.display_name,
+            nick: memberData.nick || null,
+          }
+        );
+      }
+
       return { success: true, data: result.rows[0] };
     } catch (error) {
       console.error("🔸 Failed to upsert member:", error);
@@ -854,6 +947,59 @@ export class PostgreSQLManager {
       };
     } finally {
       client.release();
+    }
+  }
+
+  /**
+   * Update aliases in user_profiles when user changes display_name, username, or nick
+   * Adds both old values (that changed) and current values to the aliases array
+   */
+  private async updateAliasesFromNameChange(
+    userId: string,
+    guildId: string,
+    oldNames: { username?: string; display_name?: string; nick?: string | null },
+    newNames: { username: string; display_name: string; nick?: string | null }
+  ): Promise<void> {
+    try {
+      // Get current aliases
+      const profileResult = await this.getUserProfile(userId, guildId);
+      const currentAliases = profileResult.success && profileResult.data
+        ? (profileResult.data.aliases || [])
+        : [];
+
+      const aliasesSet = new Set<string>(currentAliases);
+
+      // Add old values to aliases if they changed and are not empty
+      // Track the old values that were replaced
+      if (oldNames.username && oldNames.username !== newNames.username && oldNames.username.trim()) {
+        aliasesSet.add(oldNames.username);
+      }
+      if (oldNames.display_name && oldNames.display_name !== newNames.display_name && oldNames.display_name.trim()) {
+        aliasesSet.add(oldNames.display_name);
+      }
+      if (oldNames.nick && oldNames.nick !== (newNames.nick || null) && oldNames.nick.trim()) {
+        aliasesSet.add(oldNames.nick);
+      }
+
+      // Also add current values to aliases (for search/retrieval)
+      if (newNames.username && newNames.username.trim()) {
+        aliasesSet.add(newNames.username);
+      }
+      if (newNames.display_name && newNames.display_name.trim()) {
+        aliasesSet.add(newNames.display_name);
+      }
+      if (newNames.nick && newNames.nick.trim()) {
+        aliasesSet.add(newNames.nick);
+      }
+
+      // Update aliases in user_profiles if we added any
+      if (aliasesSet.size > currentAliases.length) {
+        const updatedAliases = Array.from(aliasesSet);
+        await this.updateUserProfileField(userId, guildId, 'aliases', updatedAliases);
+      }
+    } catch (error) {
+      console.error("🔸 Failed to update aliases from name change:", error);
+      // Don't throw - alias update failure shouldn't break member upsert
     }
   }
 
@@ -1087,6 +1233,47 @@ export class PostgreSQLManager {
     userId: string,
     guildId: string
   ): Promise<DatabaseResult<RelationshipEntry[]>> {
+    // Delegate to user_profiles table
+    const profileResult = await this.getUserProfile(userId, guildId);
+    
+    if (!profileResult.success) {
+      return profileResult as DatabaseResult<RelationshipEntry[]>;
+    }
+
+    if (!profileResult.data) {
+      return { success: true, data: [] };
+    }
+
+    return {
+      success: true,
+      data: (profileResult.data.relationship_network || []) as RelationshipEntry[],
+    };
+  }
+
+  async updateMemberRelationshipNetwork(
+    memberId: string,
+    relationships: RelationshipEntry[]
+  ): Promise<DatabaseResult<void>> {
+    // Extract guild_id and user_id from memberId (format: guild_id_user_id)
+    const parts = memberId.split('_');
+    if (parts.length < 2) {
+      return {
+        success: false,
+        error: `Invalid memberId format: ${memberId}. Expected format: guild_id_user_id`,
+      };
+    }
+
+    const guildId = parts[0];
+    const userId = parts.slice(1).join('_'); // Handle cases where user_id might contain underscores
+
+    // Delegate to user_profiles table
+    return this.updateUserProfileRelationships(userId, guildId, relationships);
+  }
+
+  // User profile operations
+  async upsertUserProfile(
+    profileData: UserProfileData
+  ): Promise<DatabaseResult<UserProfileData>> {
     if (!this.isConnected()) {
       return { success: false, error: "Database not connected" };
     }
@@ -1094,22 +1281,63 @@ export class PostgreSQLManager {
     const client = await this.pool!.connect();
     try {
       const query = `
-				SELECT relationship_network 
-				FROM members 
-				WHERE user_id = $1 AND guild_id = $2 AND active = true
+				INSERT INTO user_profiles (
+					guild_id, user_id, summary, keywords, emojis, notes, aliases,
+					relationship_network, psych_profile, behavior_patterns, temporal_profile,
+					updated_at
+				)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+				ON CONFLICT (guild_id, user_id) DO UPDATE SET
+					summary = EXCLUDED.summary,
+					keywords = EXCLUDED.keywords,
+					emojis = EXCLUDED.emojis,
+					notes = EXCLUDED.notes,
+					aliases = EXCLUDED.aliases,
+					relationship_network = EXCLUDED.relationship_network,
+					psych_profile = EXCLUDED.psych_profile,
+					behavior_patterns = EXCLUDED.behavior_patterns,
+					temporal_profile = EXCLUDED.temporal_profile,
+					updated_at = NOW()
+				RETURNING *
 			`;
 
-      const result = await client.query(query, [userId, guildId]);
-      const member = result.rows[0];
+      const values = [
+        profileData.guild_id,
+        profileData.user_id,
+        profileData.summary || null,
+        profileData.keywords || [],
+        profileData.emojis || [],
+        profileData.notes || [],
+        profileData.aliases || [],
+        profileData.relationship_network ? JSON.stringify(profileData.relationship_network) : '[]',
+        profileData.psych_profile ? JSON.stringify(profileData.psych_profile) : '{}',
+        profileData.behavior_patterns ? JSON.stringify(profileData.behavior_patterns) : '{}',
+        profileData.temporal_profile ? JSON.stringify(profileData.temporal_profile) : '{}',
+      ];
 
-      if (!member) {
-        return { success: true, data: [] };
-      }
-
-      const relationshipNetwork = member.relationship_network || [];
-      return { success: true, data: relationshipNetwork };
+      const result = await client.query(query, values);
+      const row = result.rows[0];
+      
+      return {
+        success: true,
+        data: {
+          guild_id: row.guild_id,
+          user_id: row.user_id,
+          summary: row.summary,
+          keywords: row.keywords || [],
+          emojis: row.emojis || [],
+          notes: row.notes || [],
+          aliases: row.aliases || [],
+          relationship_network: row.relationship_network || [],
+          psych_profile: row.psych_profile || {},
+          behavior_patterns: row.behavior_patterns || {},
+          temporal_profile: row.temporal_profile || {},
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+        },
+      };
     } catch (error) {
-      console.error("🔸 Failed to get member relationship network:", error);
+      console.error("🔸 Failed to upsert user profile:", error);
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",
@@ -1119,8 +1347,172 @@ export class PostgreSQLManager {
     }
   }
 
-  async updateMemberRelationshipNetwork(
-    memberId: string,
+  async getUserProfile(
+    userId: string,
+    guildId: string
+  ): Promise<DatabaseResult<UserProfileData>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+				SELECT * FROM user_profiles
+				WHERE user_id = $1 AND guild_id = $2
+			`;
+
+      const result = await client.query(query, [userId, guildId]);
+      
+      if (result.rows.length === 0) {
+        return { success: true, data: undefined };
+      }
+
+      const row = result.rows[0];
+      return {
+        success: true,
+        data: {
+          guild_id: row.guild_id,
+          user_id: row.user_id,
+          summary: row.summary,
+          keywords: row.keywords || [],
+          emojis: row.emojis || [],
+          notes: row.notes || [],
+          aliases: row.aliases || [],
+          relationship_network: row.relationship_network || [],
+          psych_profile: row.psych_profile || {},
+          behavior_patterns: row.behavior_patterns || {},
+          temporal_profile: row.temporal_profile || {},
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+        },
+      };
+    } catch (error) {
+      console.error("🔸 Failed to get user profile:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  async updateUserProfileField(
+    userId: string,
+    guildId: string,
+    field: 'summary' | 'keywords' | 'emojis' | 'notes' | 'aliases',
+    value: string | string[]
+  ): Promise<DatabaseResult<void>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const query = `
+				UPDATE user_profiles
+				SET ${field} = $1, updated_at = NOW()
+				WHERE user_id = $2 AND guild_id = $3
+			`;
+
+      const result = await client.query(query, [value, userId, guildId]);
+
+      if (result.rowCount === 0) {
+        // Create profile if it doesn't exist
+        await this.upsertUserProfile({
+          guild_id: guildId,
+          user_id: userId,
+          [field]: value,
+        } as UserProfileData);
+      }
+
+      return { success: true };
+    } catch (error) {
+      console.error(`🔸 Failed to update user profile field ${field}:`, error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  async updateUserProfilePsych(
+    userId: string,
+    guildId: string,
+    psychProfile: any,
+    behaviorPatterns?: any,
+    temporalProfile?: any
+  ): Promise<DatabaseResult<void>> {
+    if (!this.isConnected()) {
+      return { success: false, error: "Database not connected" };
+    }
+
+    const client = await this.pool!.connect();
+    try {
+      const updates: string[] = [];
+      const values: any[] = [];
+      let paramCount = 1;
+
+      if (psychProfile !== undefined) {
+        updates.push(`psych_profile = $${paramCount}`);
+        values.push(JSON.stringify(psychProfile));
+        paramCount++;
+      }
+
+      if (behaviorPatterns !== undefined) {
+        updates.push(`behavior_patterns = $${paramCount}`);
+        values.push(JSON.stringify(behaviorPatterns));
+        paramCount++;
+      }
+
+      if (temporalProfile !== undefined) {
+        updates.push(`temporal_profile = $${paramCount}`);
+        values.push(JSON.stringify(temporalProfile));
+        paramCount++;
+      }
+
+      if (updates.length === 0) {
+        return { success: false, error: "No fields to update" };
+      }
+
+      values.push(userId, guildId);
+      const query = `
+				UPDATE user_profiles
+				SET ${updates.join(', ')}, updated_at = NOW()
+				WHERE user_id = $${paramCount} AND guild_id = $${paramCount + 1}
+			`;
+
+      const result = await client.query(query, values);
+
+      if (result.rowCount === 0) {
+        // Create profile if it doesn't exist
+        await this.upsertUserProfile({
+          guild_id: guildId,
+          user_id: userId,
+          psych_profile: psychProfile,
+          behavior_patterns: behaviorPatterns,
+          temporal_profile: temporalProfile,
+        } as UserProfileData);
+      }
+
+      return { success: true };
+    } catch (error) {
+      console.error("🔸 Failed to update user profile psych:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  async updateUserProfileRelationships(
+    userId: string,
+    guildId: string,
     relationships: RelationshipEntry[]
   ): Promise<DatabaseResult<void>> {
     if (!this.isConnected()) {
@@ -1129,42 +1521,32 @@ export class PostgreSQLManager {
 
     const client = await this.pool!.connect();
     try {
-      // First check if member exists
-      const checkResult = await client.query(
-        `SELECT id FROM members WHERE id = $1`,
-        [memberId]
-      );
-
-      if (checkResult.rows.length === 0) {
-        console.error(`🔸 Member not found with id: ${memberId}`);
-        return {
-          success: false,
-          error: `Member not found: ${memberId}`,
-        };
-      }
-
       const query = `
-				UPDATE members 
+				UPDATE user_profiles
 				SET relationship_network = $1, updated_at = NOW()
-				WHERE id = $2
+				WHERE user_id = $2 AND guild_id = $3
 			`;
 
       const result = await client.query(query, [
         JSON.stringify(relationships),
-        memberId,
+        userId,
+        guildId,
       ]);
 
       if (result.rowCount === 0) {
-        console.error(`🔸 Update affected 0 rows for id: ${memberId}`);
-        return {
-          success: false,
-          error: "Update affected 0 rows",
-        };
+        // Create profile if it doesn't exist
+        await this.upsertUserProfile({
+          guild_id: guildId,
+          user_id: userId,
+          relationship_network: relationships,
+        } as UserProfileData);
+      } else {
+        return { success: true };
       }
 
       return { success: true };
     } catch (error) {
-      console.error("🔸 Failed to update member relationship network:", error);
+      console.error("🔸 Failed to update user profile relationships:", error);
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",

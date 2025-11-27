@@ -135,11 +135,14 @@ export const getUserInfoTool: DatabaseTool = {
           fallbackResult.data.length > 0
         ) {
           const member = fallbackResult.data[0] as MemberData;
+          // Get profile data for inactive member
+          const profileResult = await context.db.getUserProfile(targetUserId, context.guildId);
+          const summary = profileResult.success && profileResult.data ? profileResult.data.summary : undefined;
           const formatted = formatUserInfo(member);
           return {
             success: true,
             summary: `${member.display_name} - ${
-              member.summary || "Member of this server"
+              summary || "Member of this server"
             }`,
             data: { formatted, member },
           };
@@ -152,6 +155,10 @@ export const getUserInfoTool: DatabaseTool = {
       }
 
       const member = result.data[0] as MemberData;
+
+      // Get user profile data (AI-focused data from user_profiles)
+      const profileResult = await context.db.getUserProfile(targetUserId, context.guildId);
+      const profile = profileResult.success && profileResult.data ? profileResult.data : null;
 
       // Get role names (not just IDs)
       let roleNames: string[] = [];
@@ -188,7 +195,7 @@ export const getUserInfoTool: DatabaseTool = {
           : null;
 
       // Get top relationships with more context
-      const network = member.relationship_network || [];
+      const network = profile?.relationship_network || [];
       const topRelationshipsRaw = network
         .sort((a: { affinity_percentage: number }, b: { affinity_percentage: number }) => b.affinity_percentage - a.affinity_percentage)
         .slice(0, 5);
@@ -267,9 +274,9 @@ export const getUserInfoTool: DatabaseTool = {
         displayName: member.display_name,
         username: member.username,
         globalName: member.global_name,
-        summary: member.summary,
-        keywords: member.keywords || [],
-        emojis: member.emojis || [],
+        summary: profile?.summary,
+        keywords: profile?.keywords || [],
+        emojis: profile?.emojis || [],
         roles: roleNames,
         roleCount: member.roles?.length || 0,
         joinedAt: new Date(member.joined_at),
@@ -278,7 +285,7 @@ export const getUserInfoTool: DatabaseTool = {
         active: member.active,
         relationships: topRelationships || "No relationships tracked",
         relationshipNetwork: enrichedNetwork, // Top 10 with names enriched
-        notes: member.notes || [],
+        notes: profile?.notes || [],
       };
 
       // Compute server-age-relative descriptor
@@ -696,55 +703,61 @@ export const getUserSummaryTool: DatabaseTool = {
       }
       
       const targetUserId = resolved.userId;
-      const result = await context.db.query(
-        `SELECT summary, keywords, emojis, notes, display_name
+      
+      // Get display name from members table
+      const memberResult = await context.db.query(
+        `SELECT display_name
          FROM members 
          WHERE user_id = $1 AND guild_id = $2 AND active = true
          LIMIT 1`,
         [targetUserId, context.guildId]
       );
 
-      if (!result.success || !result.data || result.data.length === 0) {
+      if (!memberResult.success || !memberResult.data || memberResult.data.length === 0) {
         return {
           success: false,
           error: `User ${targetUserId} not found in this server`,
         };
       }
 
-      const member = result.data[0];
+      // Get profile data from user_profiles
+      const profileResult = await context.db.getUserProfile(targetUserId, context.guildId);
+      const profile = profileResult.success && profileResult.data ? profileResult.data : null;
+      const displayName = memberResult.data[0].display_name;
+
       const parts: string[] = [];
 
-      if (member.display_name) {
-        parts.push(`User: ${member.display_name}`);
+      if (displayName) {
+        parts.push(`User: ${displayName}`);
       }
 
-      if (member.summary) {
-        parts.push(`Summary: ${member.summary}`);
+      if (profile?.summary) {
+        parts.push(`Summary: ${profile.summary}`);
       } else {
         parts.push("Summary: No summary available");
       }
 
-      if (member.keywords && member.keywords.length > 0) {
-        parts.push(`Keywords: ${member.keywords.join(", ")}`);
+      if (profile?.keywords && profile.keywords.length > 0) {
+        parts.push(`Keywords: ${profile.keywords.join(", ")}`);
       }
 
-      if (member.emojis && member.emojis.length > 0) {
-        parts.push(`Emojis: ${member.emojis.join(" ")}`);
+      if (profile?.emojis && profile.emojis.length > 0) {
+        parts.push(`Emojis: ${profile.emojis.join(" ")}`);
       }
 
-      if (member.notes && member.notes.length > 0) {
-        parts.push(`Notes: ${member.notes.join(", ")}`);
+      if (profile?.notes && profile.notes.length > 0) {
+        parts.push(`Notes: ${profile.notes.join(", ")}`);
       }
 
       return {
         success: true,
-        summary: member.summary || "No summary available",
+        summary: profile?.summary || "No summary available",
         data: {
           formatted: parts.join("\n"),
-          summary: member.summary,
-          keywords: member.keywords || [],
-          emojis: member.emojis || [],
-          notes: member.notes || [],
+          summary: profile?.summary,
+          keywords: profile?.keywords || [],
+          emojis: profile?.emojis || [],
+          notes: profile?.notes || [],
         },
       };
     } catch (error) {

@@ -1,0 +1,519 @@
+/**
+ * UserProfileEnrichmentPipeline (Layer 2)
+ *
+ * Enriches user profiles with incremental updates based on new conversations.
+ * Uses IncrementalEnrichment to append deltas instead of full regeneration.
+ *
+ * Extracted from PsychologicalProfiler with incremental enrichment support.
+ */
+
+import type { PostgreSQLManager } from "../../../../database/PostgreSQLManager";
+import type { AIEngine } from "../../../../ai/core/AIEngine";
+import type { AIResponse } from "../../../../ai/providers/base/AIProvider";
+import { AIRequestBuilder } from "../../../../ai/core/AIRequestBuilder";
+import { AIContextBuilder } from "../../../../ai/core/AIContext.js";
+import { EnrichmentRateLimiter } from "../EnrichmentRateLimiter";
+import {
+	IncrementalEnrichment,
+	type EnrichmentHistory,
+} from "../utils/IncrementalEnrichment";
+import { CommunicationStyleAnalyzer } from "../../psychological-profiling/analyzers/CommunicationStyleAnalyzer";
+import { TemporalPatternAnalyzer } from "../../psychological-profiling/analyzers/TemporalPatternAnalyzer";
+import { ResponsePatternAnalyzer } from "../../psychological-profiling/analyzers/ResponsePatternAnalyzer";
+import { BigFiveEstimator } from "../../psychological-profiling/analyzers/BigFiveEstimator";
+import { MBTIEstimator } from "../../psychological-profiling/analyzers/MBTIEstimator";
+import type {
+	UserAnalysisData,
+	MessageData,
+	EmojiSignature,
+} from "../../psychological-profiling/types";
+
+export class UserProfileEnrichmentPipeline {
+	private db: PostgreSQLManager;
+	private aiEngine: AIEngine;
+	private rateLimiter: EnrichmentRateLimiter;
+	private bigFiveEstimator: BigFiveEstimator;
+	private mbtiEstimator: MBTIEstimator;
+
+	constructor(db: PostgreSQLManager, aiEngine: AIEngine) {
+		this.db = db;
+		this.aiEngine = aiEngine;
+		this.rateLimiter = EnrichmentRateLimiter.getInstance();
+		this.bigFiveEstimator = new BigFiveEstimator(aiEngine);
+		this.mbtiEstimator = new MBTIEstimator(aiEngine);
+	}
+
+	/**
+	 * Enrich user profile based on new conversations
+	 * Returns new profile_version or null if enrichment failed
+	 */
+	async enrichUser(userId: string, guildId: string): Promise<number | null> {
+		try {
+			// Get current profile state
+			const profileResult = await this.db.getUserProfile(userId, guildId);
+
+			if (!profileResult.success) {
+				console.warn(
+					`⚠️  Failed to get user profile for ${userId.slice(0, 8)}`,
+				);
+				return null;
+			}
+
+			const existingProfile = profileResult.data;
+			const lastEnrichedConversationId =
+				existingProfile?.last_enriched_conversation_id || null;
+			const lastEnrichedConversationCount =
+				existingProfile?.last_enriched_conversation_count || 0;
+			const existingSummary = existingProfile?.summary || "";
+			const existingHistoryJson = existingProfile?.enrichment_history || null;
+
+			// Parse existing enrichment history
+			let existingHistory: EnrichmentHistory | null = null;
+			if (existingHistoryJson) {
+				existingHistory = IncrementalEnrichment.parseHistory(existingHistoryJson);
+			}
+
+			// Query NEW conversations since last enrichment
+			const newConversationsQuery = lastEnrichedConversationId
+				? `
+					SELECT cs.id, cs.summary, cs.participants, cs.message_count, cs.start_time, cs.end_time
+					FROM conversation_segments cs
+					WHERE cs.guild_id = $1
+					AND $2 = ANY(cs.participants)
+					AND cs.id > $3
+					AND cs.status = 'finalized'
+					AND cs.ai_processing_status = 'completed'
+					AND cs.summary IS NOT NULL
+					ORDER BY cs.start_time DESC
+					LIMIT 5
+				`
+				: `
+					SELECT cs.id, cs.summary, cs.participants, cs.message_count, cs.start_time, cs.end_time
+					FROM conversation_segments cs
+					WHERE cs.guild_id = $1
+					AND $2 = ANY(cs.participants)
+					AND cs.status = 'finalized'
+					AND cs.ai_processing_status = 'completed'
+					AND cs.summary IS NOT NULL
+					ORDER BY cs.start_time DESC
+					LIMIT 5
+				`;
+
+			const newConversationsResult = await this.db.query(
+				newConversationsQuery,
+				lastEnrichedConversationId
+					? [guildId, userId, lastEnrichedConversationId]
+					: [guildId, userId],
+			);
+
+			if (
+				!newConversationsResult.success ||
+				!newConversationsResult.data ||
+				newConversationsResult.data.length === 0
+			) {
+				console.log(
+					`   ℹ️  No new conversations for user ${userId.slice(0, 8)}`,
+				);
+				return null;
+			}
+
+			const newConversations = newConversationsResult.data;
+
+			// Get current conversation count
+			const countResult = await this.db.query(
+				`
+				SELECT COUNT(DISTINCT cs.id) as count
+				FROM conversation_segments cs
+				WHERE cs.guild_id = $1
+				AND $2 = ANY(cs.participants)
+				AND cs.status = 'finalized'
+				AND cs.ai_processing_status = 'completed'
+				`,
+				[guildId, userId],
+			);
+
+			const currentConversationCount =
+				countResult.success && countResult.data && countResult.data.length > 0
+					? parseInt(countResult.data[0].count)
+					: 0;
+
+			// Check if we have enough new conversations (5+ threshold)
+			const newConversationCount =
+				currentConversationCount - lastEnrichedConversationCount;
+			if (newConversationCount < 5) {
+				console.log(
+					`   ℹ️  Only ${newConversationCount} new conversations (need 5+) for user ${userId.slice(0, 8)}`,
+				);
+				return null;
+			}
+
+			// Estimate cost and check budget
+			const costEstimate = this.rateLimiter.estimateUserProfileCost(
+				newConversations.length,
+			);
+			const canAfford = await this.rateLimiter.canAffordEnrichment(
+				costEstimate.estimatedCost,
+			);
+
+			if (!canAfford.canAfford) {
+				console.warn(
+					`⚠️  Cannot afford user enrichment for ${userId.slice(0, 8)}: ${canAfford.reason}`,
+				);
+				return null;
+			}
+
+			// Gather user data for analysis
+			const userData = await this.gatherUserData(userId, guildId);
+			if (!userData) {
+				console.warn(
+					`⚠️  Insufficient data for user ${userId.slice(0, 8)}`,
+				);
+				return null;
+			}
+
+			// Run statistical analyzers
+			const communicationStyle = await CommunicationStyleAnalyzer.analyze(
+				userData.messages,
+			);
+			const temporalProfile = await TemporalPatternAnalyzer.analyze(
+				userData.messages,
+			);
+			const responsePatterns = await ResponsePatternAnalyzer.analyze(
+				userId,
+				userData.messages,
+				userData.conversations,
+			);
+			const emojiSignature = this.extractEmojiSignature(userData.messages);
+
+			// Generate Big Five and MBTI (if needed)
+			let bigFive = undefined;
+			let mbtiType = undefined;
+
+			try {
+				const bigFiveResult = await this.bigFiveEstimator.estimate(
+					userData,
+					communicationStyle.data,
+					responsePatterns.data,
+					emojiSignature,
+				);
+				if (bigFiveResult.success && bigFiveResult.data) {
+					bigFive = bigFiveResult.data;
+				}
+			} catch (error) {
+				console.warn(
+					`⚠️  Big Five estimation failed for ${userId.slice(0, 8)}: ${error}`,
+				);
+			}
+
+			if (bigFive) {
+				try {
+					const mbtiResult = await this.mbtiEstimator.estimate(
+						bigFive,
+						communicationStyle.data,
+						responsePatterns.data,
+						temporalProfile.data,
+						userData,
+					);
+					if (mbtiResult.success && mbtiResult.data) {
+						mbtiType = mbtiResult.data;
+					}
+				} catch (error) {
+					console.warn(
+						`⚠️  MBTI estimation failed for ${userId.slice(0, 8)}: ${error}`,
+					);
+				}
+			}
+
+			// Build conversation summaries for delta prompt
+			const conversationSummaries = newConversations
+				.map((c: any) => c.summary)
+				.filter(Boolean)
+				.join("\n\n");
+
+			// Generate context range
+			const contextRange = IncrementalEnrichment.userContextRange(
+				lastEnrichedConversationCount,
+				currentConversationCount,
+			);
+
+			// Get base summary (from history or existing summary)
+			const baseSummary = existingHistory
+				? IncrementalEnrichment.getCompositeSummary(existingHistory)
+				: existingSummary || "No previous profile data.";
+
+			// Generate delta using LLM
+			const deltaPrompt = IncrementalEnrichment.createDeltaPrompt(
+				"user",
+				baseSummary,
+				conversationSummaries,
+				contextRange,
+			);
+
+			const delta = await this.generateDelta(deltaPrompt, guildId);
+			if (!delta) {
+				console.warn(
+					`⚠️  Failed to generate delta for user ${userId.slice(0, 8)}`,
+				);
+				return null;
+			}
+
+			// Calculate confidence
+			const confidence = Math.min(
+				1.0,
+				0.6 + (newConversations.length / 10) * 0.2 + (userData.messages.length / 200) * 0.2,
+			);
+
+			// Append delta to history
+			let newHistory: EnrichmentHistory;
+			if (existingHistory) {
+				newHistory = IncrementalEnrichment.appendDelta(
+					existingHistory,
+					contextRange,
+					delta,
+					confidence,
+				);
+			} else {
+				// First enrichment - create history with base summary
+				const initialHistory = IncrementalEnrichment.createHistory(baseSummary);
+				newHistory = IncrementalEnrichment.appendDelta(
+					initialHistory,
+					contextRange,
+					delta,
+					confidence,
+				);
+			}
+
+			// Check if consolidation is needed
+			if (IncrementalEnrichment.needsConsolidation(newHistory)) {
+				const consolidationPrompt =
+					IncrementalEnrichment.createConsolidationPrompt("user", newHistory);
+				const consolidatedSummary = await this.generateDelta(
+					consolidationPrompt,
+					guildId,
+				);
+
+				if (consolidatedSummary) {
+					newHistory = IncrementalEnrichment.consolidate(consolidatedSummary);
+				}
+			}
+
+			// Get final composite summary
+			const finalSummary = IncrementalEnrichment.getCompositeSummary(newHistory);
+
+			// Get new profile version
+			const currentProfileVersion = existingProfile?.profile_version || 0;
+			const newProfileVersion = currentProfileVersion + 1;
+
+			// Get latest conversation ID
+			const latestConversationId =
+				newConversations.length > 0 ? newConversations[0].id : lastEnrichedConversationId;
+
+			// Update database
+			const updateResult = await this.db.query(
+				`
+				UPDATE user_profiles
+				SET summary = $3,
+					enrichment_history = $4::jsonb,
+					profile_version = $5,
+					last_enriched_at = NOW(),
+					last_enriched_conversation_count = $6,
+					last_enriched_conversation_id = $7,
+					psych_profile = COALESCE(psych_profile, '{}'::jsonb) || jsonb_build_object(
+						'big_five_proxies', $8::jsonb,
+						'mbti_type', $9::jsonb
+					),
+					behavior_patterns = COALESCE(behavior_patterns, '{}'::jsonb) || jsonb_build_object(
+						'communication_style', $10::jsonb,
+						'response_patterns', $11::jsonb,
+						'emoji_signature', $12::jsonb,
+						'temporal_profile', $13::jsonb
+					)
+				WHERE user_id = $1 AND guild_id = $2
+				RETURNING profile_version
+				`,
+				[
+					userId,
+					guildId,
+					finalSummary,
+					JSON.stringify(newHistory),
+					newProfileVersion,
+					currentConversationCount,
+					latestConversationId,
+					bigFive ? JSON.stringify(bigFive) : null,
+					mbtiType ? JSON.stringify(mbtiType) : null,
+					JSON.stringify(communicationStyle.data),
+					JSON.stringify(responsePatterns.data),
+					JSON.stringify(emojiSignature),
+					JSON.stringify(temporalProfile.data),
+				],
+			);
+
+			if (!updateResult.success) {
+				console.error(
+					`❌ Failed to update user profile for ${userId.slice(0, 8)}`,
+				);
+				return null;
+			}
+
+			// Track cost
+			await this.rateLimiter.trackCost(costEstimate.estimatedCost, "user_profile");
+
+			console.log(
+				`✅ Enriched user ${userId.slice(0, 8)} (version ${newProfileVersion}, ${newConversationCount} new conversations)`,
+			);
+
+			return newProfileVersion;
+		} catch (error) {
+			console.error(
+				`❌ Error enriching user ${userId.slice(0, 8)}:`,
+				error,
+			);
+			return null;
+		}
+	}
+
+	/**
+	 * Gather user data for analysis
+	 */
+	private async gatherUserData(
+		userId: string,
+		guildId: string,
+	): Promise<UserAnalysisData | null> {
+		// Get user messages (last 200)
+		const messagesResult = await this.db.query(
+			`
+			SELECT id, content, created_at, author_id, referenced_message_id, attachments, embeds
+			FROM messages
+			WHERE guild_id = $1 AND author_id = $2
+			ORDER BY created_at DESC
+			LIMIT 200
+			`,
+			[guildId, userId],
+		);
+
+		if (
+			!messagesResult.success ||
+			!messagesResult.data ||
+			messagesResult.data.length < 10
+		) {
+			return null;
+		}
+
+		const messages: MessageData[] = messagesResult.data.map((row: any) => ({
+			id: row.id,
+			content: row.content || "",
+			created_at: new Date(row.created_at),
+			author_id: row.author_id,
+			referenced_message_id: row.referenced_message_id,
+			attachments: row.attachments,
+			embeds: row.embeds,
+		}));
+
+		// Get user conversations
+		const conversationsResult = await this.db.query(
+			`
+			SELECT id, participants, message_count, start_time, end_time
+			FROM conversation_segments
+			WHERE guild_id = $1 AND $2 = ANY(participants)
+			AND status = 'finalized'
+			ORDER BY start_time DESC
+			LIMIT 50
+			`,
+			[guildId, userId],
+		);
+
+		const conversations =
+			conversationsResult.success && conversationsResult.data
+				? conversationsResult.data.map((row: any) => ({
+						id: row.id,
+						participants: row.participants,
+						message_count: row.message_count,
+						start_time: new Date(row.start_time),
+						end_time: new Date(row.end_time),
+					}))
+				: [];
+
+		return {
+			userId,
+			guildId,
+			messages,
+			conversations,
+			relationships: [],
+			keywords: [],
+			emojis: [],
+		};
+	}
+
+	/**
+	 * Extract emoji signature from messages
+	 */
+	private extractEmojiSignature(messages: MessageData[]): EmojiSignature {
+		const emojiRegex = /[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu;
+		const emojiCounts: Record<string, number> = {};
+		let totalEmojis = 0;
+
+		for (const msg of messages) {
+			const emojis = msg.content.match(emojiRegex) || [];
+			totalEmojis += emojis.length;
+
+			for (const emoji of emojis) {
+				emojiCounts[emoji] = (emojiCounts[emoji] || 0) + 1;
+			}
+		}
+
+		const topEmojis: Record<string, number> = {};
+		const sorted = Object.entries(emojiCounts)
+			.sort(([, a], [, b]) => b - a)
+			.slice(0, 10);
+
+		for (const [emoji, count] of sorted) {
+			topEmojis[emoji] = count;
+		}
+
+		return {
+			top_emojis: topEmojis,
+			emoji_per_message: messages.length > 0 ? totalEmojis / messages.length : 0,
+			emoji_timing: "mixed",
+		};
+	}
+
+	/**
+	 * Generate delta using LLM
+	 */
+	private async generateDelta(prompt: string, guildId: string): Promise<string | null> {
+		let provider = "grok";
+		if (!process.env.GROK_API_KEY) {
+			if (process.env.GEMINI_API_KEY) {
+				provider = "gemini-flash";
+			} else if (process.env.OPENAI_API_KEY) {
+				provider = "openai";
+			}
+		}
+
+		try {
+			const builder = new AIRequestBuilder(this.aiEngine);
+			const ctx = new AIContextBuilder()
+				.user("system-enricher")
+				.guild(guildId)
+				.build();
+			const result = await builder
+				.chat()
+				.blocking()
+				.withContext(ctx)
+				.provider(provider as "gemini-flash" | "grok" | "openai")
+				.persona("casual")
+				.withoutTools()
+				.generate(prompt);
+
+			const response = result as AIResponse;
+			if (response.success && response.content) {
+				return response.content.trim();
+			}
+		} catch (error) {
+			console.error(`❌ Failed to generate delta: ${error}`);
+		}
+
+		return null;
+	}
+}
+

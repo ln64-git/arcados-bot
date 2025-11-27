@@ -352,9 +352,9 @@ export const getHolisticUserContextTool: DatabaseTool = {
       const messageLimit = Math.max(5, Math.min(messageLimitParam || 25, 100));
       const relationshipsLimit = Math.max(1, Math.min(relationshipsLimitParam || 5, 15));
 
-      // Member profile
+      // Member profile (Discord data)
       const memberResult = await context.db.query(
-        `SELECT user_id, display_name, username, global_name, nick, summary, keywords, emojis, roles, joined_at, active, relationship_network
+        `SELECT user_id, display_name, username, global_name, nick, roles, joined_at, active
          FROM members
          WHERE user_id = $1 AND guild_id = $2
          ORDER BY active DESC
@@ -367,6 +367,10 @@ export const getHolisticUserContextTool: DatabaseTool = {
       }
 
       const member = memberResult.data[0];
+
+      // Get user profile data (AI-focused data from user_profiles)
+      const profileResult = await context.db.getUserProfile(userId, context.guildId);
+      const profile = profileResult.success && profileResult.data ? profileResult.data : null;
 
       // Role names
       let roleNames: string[] = [];
@@ -382,7 +386,7 @@ export const getHolisticUserContextTool: DatabaseTool = {
 
       // Top relationships (prefer embedded network for speed)
       let relationshipsFormatted = "No relationships tracked";
-      let relationships = Array.isArray(member.relationship_network) ? member.relationship_network : [];
+      let relationships = Array.isArray(profile?.relationship_network) ? profile.relationship_network : [];
       if (relationships.length > 0) {
         const top = relationships
           .slice()
@@ -467,7 +471,7 @@ export const getHolisticUserContextTool: DatabaseTool = {
       const joinedAt = member.joined_at ? new Date(member.joined_at) : null;
       const header: string[] = [];
       header.push(identity);
-      if (member.summary) header.push(`Summary: ${member.summary}`);
+      if (profile?.summary) header.push(`Summary: ${profile.summary}`);
       if (roleNames.length > 0) header.push(`Roles: ${roleNames.join(", ")}`);
       if (joinedAt) header.push(`Joined: ${joinedAt.toLocaleDateString()}`);
 
@@ -526,8 +530,8 @@ export const getHolisticUserContextTool: DatabaseTool = {
       parts.push(header.join(" \u2014 "));
 
       // Include user keywords/interests if available
-      if (member.keywords && Array.isArray(member.keywords) && member.keywords.length > 0) {
-        const topKeywords = member.keywords.slice(0, 8).join(", ");
+      if (profile?.keywords && Array.isArray(profile.keywords) && profile.keywords.length > 0) {
+        const topKeywords = profile.keywords.slice(0, 8).join(", ");
         parts.push(`Interests: ${topKeywords}`);
       }
 

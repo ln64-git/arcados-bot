@@ -250,10 +250,10 @@ export class RelationshipMapper {
         guildId
       );
 
-      // Update member record - database uses underscore format
-      const memberId = `${guildId}_${userId}`;
-      const updateResult = await this.db.updateMemberRelationshipNetwork(
-        memberId,
+      // Update user profile with relationship network
+      const updateResult = await this.db.updateUserProfileRelationships(
+        userId,
+        guildId,
         relationships
       );
 
@@ -287,10 +287,10 @@ export class RelationshipMapper {
   ): Promise<DatabaseResult<RelationshipEntry[]>> {
     try {
       // Get existing relationships from database
-      const existingResult = await this.db.getMemberRelationshipNetwork(
-        userId,
-        guildId
-      );
+      const profileResult = await this.db.getUserProfile(userId, guildId);
+      const existingResult: DatabaseResult<RelationshipEntry[]> = profileResult.success && profileResult.data
+        ? { success: true, data: (profileResult.data.relationship_network || []) as RelationshipEntry[] }
+        : { success: true, data: [] };
 
       if (
         existingResult.success &&
@@ -678,9 +678,9 @@ export class RelationshipMapper {
       );
       const topRelationships = relationships.slice(0, limit);
 
-      const memberId = `${guildId}_${userId}`;
-      const updateResult = await this.db.updateMemberRelationshipNetwork(
-        memberId,
+      const updateResult = await this.db.updateUserProfileRelationships(
+        userId,
+        guildId,
         topRelationships
       );
 

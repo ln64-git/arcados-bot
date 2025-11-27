@@ -56,6 +56,29 @@ export class Bot {
     const dbConnected = await this.db.connect();
     if (dbConnected) {
       console.log("🔹 PostgreSQL connected successfully");
+
+      // Initialize enrichment pipeline
+      try {
+        const { EnrichmentPipelineOrchestrator } = await import(
+          "./features/social-intelligence/enrichment-pipeline/EnrichmentPipelineOrchestrator"
+        );
+        const { EnrichmentScheduler } = await import(
+          "./features/social-intelligence/enrichment-pipeline/EnrichmentScheduler"
+        );
+        const { AIFactory } = await import("./ai/core/AIFactory");
+
+        const { engine } = await AIFactory.create();
+        const orchestrator = EnrichmentPipelineOrchestrator.getInstance();
+        await orchestrator.initialize(this.db, engine);
+
+        // Start scheduler
+        const scheduler = EnrichmentScheduler.getInstance();
+        await scheduler.start();
+
+        console.log("✅ Enrichment pipeline initialized");
+      } catch (error) {
+        console.warn("⚠️  Failed to initialize enrichment pipeline:", error);
+      }
     } else {
       console.log(
         "🔸 PostgreSQL connection failed, some commands may not work"

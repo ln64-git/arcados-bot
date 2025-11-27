@@ -356,29 +356,22 @@ export class PsychologicalProfiler {
 					}))
 				: [];
 
-		// Get user relationships (from member profile)
-		const memberResult = await this.db.query(
-			`
-      SELECT relationship_network, keywords, emojis
-      FROM members
-      WHERE guild_id = $1 AND user_id = $2
-      `,
-			[guildId, userId]
-		);
+		// Get user relationships and profile data (from user_profiles)
+		const profileResult = await this.db.getUserProfile(userId, guildId);
 
 		const relationships =
-			memberResult.success && memberResult.data && memberResult.data.length > 0
-				? memberResult.data[0].relationship_network || []
+			profileResult.success && profileResult.data
+				? (profileResult.data.relationship_network || [])
 				: [];
 
 		const keywords =
-			memberResult.success && memberResult.data && memberResult.data.length > 0
-				? memberResult.data[0].keywords || []
+			profileResult.success && profileResult.data
+				? (profileResult.data.keywords || [])
 				: [];
 
 		const emojis =
-			memberResult.success && memberResult.data && memberResult.data.length > 0
-				? memberResult.data[0].emojis || []
+			profileResult.success && profileResult.data
+				? (profileResult.data.emojis || [])
 				: [];
 
 		return {
@@ -479,23 +472,12 @@ export class PsychologicalProfiler {
 		behaviorPatterns: BehaviorPatterns,
 		temporalProfile: TemporalProfile
 	): Promise<boolean> {
-		const result = await this.db.query(
-			`
-      UPDATE members
-      SET
-        psych_profile = $3::jsonb,
-        behavior_patterns = $4::jsonb,
-        temporal_profile = $5::jsonb,
-        updated_at = NOW()
-      WHERE guild_id = $1 AND user_id = $2
-      `,
-			[
-				guildId,
-				userId,
-				JSON.stringify(psychProfile),
-				JSON.stringify(behaviorPatterns),
-				JSON.stringify(temporalProfile),
-			]
+		const result = await this.db.updateUserProfilePsych(
+			userId,
+			guildId,
+			psychProfile,
+			behaviorPatterns,
+			temporalProfile
 		);
 
 		return result.success;

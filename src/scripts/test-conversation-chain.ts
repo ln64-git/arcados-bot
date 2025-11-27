@@ -118,6 +118,7 @@ async function processTurn(userInput: string): Promise<void> {
 	conversationHistory.push({ role: "user", content: processedInput });
 	turnCount++;
 
+	// Print with emoji (line already cleared in readline handler)
 	console.log(`🤤: ${processedInput}`);
 
 	try {
@@ -148,7 +149,7 @@ async function processTurn(userInput: string): Promise<void> {
 		// Add assistant response to history
 		conversationHistory.push({ role: "assistant", content: response.content });
 
-		console.log(`👻: ${response.content}\n`);
+		console.log(`✨: ${response.content}\n`);
 	} catch (error) {
 		console.error("Error:", error);
 		// Remove the user message from history since it failed
@@ -189,6 +190,9 @@ async function startInteractiveMode(): Promise<void> {
 			rl.prompt();
 			return;
 		}
+
+		// Clear the readline prompt line by moving up and clearing
+		process.stdout.write("\x1b[1A\r\x1b[K");
 
 		// Handle commands
 		if (trimmed.startsWith("/")) {

@@ -118,6 +118,14 @@ export class AIRequestBuilder {
 	}
 
 	/**
+	 * Set communication mode (yin/yang)
+	 */
+	communicationMode(mode: "yin" | "yang"): this {
+		this.contextBuilder.communicationMode(mode);
+		return this;
+	}
+
+	/**
 	 * Set conversation mode (chat, structured)
 	 */
 	mode(mode: "chat" | "structured"): this {

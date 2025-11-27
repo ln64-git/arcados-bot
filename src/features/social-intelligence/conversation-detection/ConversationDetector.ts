@@ -2541,6 +2541,37 @@ export class ConversationDetector {
 
       createdSegmentIds.push(segmentId);
 
+      // Trigger enrichment pipeline for significant conversations
+      try {
+        const { EnrichmentPipelineOrchestrator } = await import(
+          "../enrichment-pipeline/EnrichmentPipelineOrchestrator"
+        );
+        const orchestrator = EnrichmentPipelineOrchestrator.getInstance();
+
+        // Check significance
+        const isSignificant = await orchestrator.isConversationSignificant(
+          participants.length,
+          segmentMessages.length,
+          features?.keywords,
+        );
+
+        if (isSignificant) {
+          const significance =
+            participants.length >= 5
+              ? "high"
+              : participants.length >= 3
+                ? "medium"
+                : "low";
+
+          await orchestrator.enqueueConversation(segmentId, buffer.guildId, significance);
+        }
+      } catch (error) {
+        // Silently fail - enrichment trigger is non-critical
+        console.warn(
+          `🔸 Failed to trigger enrichment for conversation ${segmentId}: ${error}`,
+        );
+      }
+
       // Clear finalized conversations from activeConversations
       buffer.activeConversations = buffer.activeConversations.filter(
         (conv) =>

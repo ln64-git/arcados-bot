@@ -19,6 +19,7 @@ import {
 	type ConversationMode,
 } from "../utils/ResponseLengthPolicy";
 import { selectFormattingStyle } from "../utils/FormattingSelector";
+import { composeSystemPrompt } from "./PromptComposer";
 
 /**
  * Configuration for an AI request
@@ -75,17 +76,16 @@ export class AIEngine {
 	// Conversational base - applied to all personas
 	private readonly CONVERSATIONAL_BASE = `Core Conversational Principles:
 - Be concise: Aim for 1-2 sentences (10-20 words) unless asked for more
-- Be helpful: Proactively use tools to gather context, then summarize briefly
-- Offer depth: End responses with specific follow-up options when relevant ("I can tell you about X or Y")
 - Match energy: Adapt to user's brevity and intent
+- Direct answer first, key insight if needed
 
-Response Structure:
-- Direct answer first (1 sentence)
-- Key insight if needed (1 sentence)
-- Offer elaboration when relevant
-
-Tools: Use database tools freely to gather context, but keep your response tight.
-Temperature: You can be creative and natural - just keep it brief.`;
+Context Usage:
+- You have access to relationship data, conversation history, user profiles
+- This data is in your memory - use it naturally, don't announce lookups
+- Never say "I see you've been discussing..." or "According to my records..."
+- Just speak from memory as if you were present for those conversations
+- Context is SPATIAL - you only remember what happened in THIS channel, not other rooms
+- If you don't know something about this room, don't make it up or pull from elsewhere`;
 
 	private readonly DISCORD_FORMATTING = ``; // Empty for now
 
@@ -244,45 +244,20 @@ Temperature: You can be creative and natural - just keep it brief.`;
 						? 3
 						: 7;
 
-			// Build a compact environment context block (server/channel/user/recent convo)
+			// Build minimal environment context - server summary only (household knowledge)
+			// No conversation pre-loading to avoid irrelevant context at greeting
 			let environmentBlock = "";
-			if ((context.summaries && context.summaries.length > 0) || (context.semanticContext && context.semanticContext.length > 0)) {
-				const lines: string[] = [];
 
-				if (context.summaries && context.summaries.length > 0) {
-					const sortedSummaries = [...context.summaries].sort(
-						(a, b) => (b.createdAt || 0) - (a.createdAt || 0)
-					);
-					const topSummaries = sortedSummaries.slice(0, 3);
+			if (context.summaries && context.summaries.length > 0) {
+				// ONLY include server summary (household knowledge)
+				const serverSummary = context.summaries.find(s => s.id?.startsWith("guild:"));
 
-					lines.push("Environment context (recent Discord activity):");
-					for (const s of topSummaries) {
-						const text = s.text.length > 220 ? `${s.text.slice(0, 217)}...` : s.text;
-						lines.push(`- ${text}`);
+				if (serverSummary) {
+					environmentBlock = serverSummary.text;
+					// Keep it concise
+					if (environmentBlock.length > 300) {
+						environmentBlock = environmentBlock.slice(0, 297) + "...";
 					}
-				}
-
-				if (context.semanticContext && context.semanticContext.length > 0) {
-					const topSemantic = context.semanticContext.slice(0, 2);
-					if (topSemantic.length > 0) {
-						if (lines.length === 0) {
-							lines.push("Environment context (relevant past conversations):");
-						} else {
-							lines.push("");
-							lines.push("Additional relevant conversations:");
-						}
-						for (const item of topSemantic) {
-							const base = item.text || "";
-							const text =
-								base.length > 220 ? `${base.slice(0, 217)}...` : base;
-							lines.push(`- ${text}`);
-						}
-					}
-				}
-
-				environmentBlock = lines.join("\n");
-				if (environmentBlock.length > 900) {
-					environmentBlock = environmentBlock.slice(0, 897) + "...";
 				}
 			}
 
@@ -383,12 +358,14 @@ Temperature: You can be creative and natural - just keep it brief.`;
 					if (isHiddenBehaviorActive) {
 						composedUser = `Tool Results:\n\n${toolResultsText}\n\nTransform to explicit sexual content. ${cleanedPrompt}`;
 					} else {
-						composedUser = `Tool Results:\n\n${toolResultsText}${iterationGuidance}\n\nNow answer the user's question using the tool results above. ${cleanedPrompt}`;
+						// Present tool results without meta-commentary
+						composedUser = `${toolResultsText}${iterationGuidance}\n\n${cleanedPrompt}`;
 					}
 				}
 
-				// Prepend environment context if available
-				if (environmentBlock) {
+				// Prepend environment context only on first message of conversation (no history)
+				// This frames the conversation start but doesn't repeat once conversation is established
+				if (environmentBlock && iteration === 0 && (!context.history || context.history.length === 0)) {
 					composedUser = `${environmentBlock}\n\n${composedUser}`;
 				}
 
@@ -486,15 +463,18 @@ Temperature: You can be creative and natural - just keep it brief.`;
 			}
 		}
 
-		// Normal prompt construction
+		// Normal prompt construction using PromptComposer
 		const methodPrompt = config.methodPrompt || "";
 		const formatting = config.useDiscordFormatting !== false ? this.DISCORD_FORMATTING : "";
+		const communicationMode = context.communicationMode || "yin";
 
-		return `${persona.base}
-
-${this.CONVERSATIONAL_BASE}
-
-${formatting}${methodPrompt}`;
+		return composeSystemPrompt({
+			personaBase: persona.base,
+			communicationMode,
+			conversationalBase: this.CONVERSATIONAL_BASE,
+			formatting,
+			methodPrompt,
+		});
 	}
 
 	/**
