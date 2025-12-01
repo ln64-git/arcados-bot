@@ -7,7 +7,7 @@ import {
 } from "../providers/base/AIProvider";
 import { GrokProvider } from "../providers/GrokProvider";
 import { OpenAIProvider } from "../providers/OpenAIProvider";
-import { GeminiProvider } from "../providers/GeminiProvider";
+// import { GeminiProvider } from "../providers/GeminiProvider"; // Disabled - switching to OpenAI
 import { OllamaProvider } from "../providers/OllamaProvider";
 import { config } from "../../config";
 import {
@@ -1205,17 +1205,18 @@ Temperature: You can be creative and natural - just keep it brief.`;
     if (config.ollamaUrl) {
       this.providers.set("ollama", new OllamaProvider());
     }
-    if (config.geminiApiKey) {
-      try {
-        const geminiProvider = new GeminiProvider();
-        this.providers.set("gemini", geminiProvider);
-        this.providers.set("gemini-flash", geminiProvider); // Alias used by TopicDriftDetector
-      } catch (error) {
-        console.warn("🔸 Failed to initialize Gemini provider:", error);
-      }
-    } else {
-      console.warn("🔸 GEMINI_API_KEY not set – skipping Gemini provider");
-    }
+    // Gemini disabled - switching to OpenAI due to high API costs
+    // if (config.geminiApiKey) {
+    //   try {
+    //     const geminiProvider = new GeminiProvider();
+    //     this.providers.set("gemini", geminiProvider);
+    //     this.providers.set("gemini-flash", geminiProvider); // Alias used by TopicDriftDetector
+    //   } catch (error) {
+    //     console.warn("🔸 Failed to initialize Gemini provider:", error);
+    //   }
+    // } else {
+    //   console.warn("🔸 GEMINI_API_KEY not set – skipping Gemini provider");
+    // }
   }
 
   private getProvider(providerName: string): AIProvider {

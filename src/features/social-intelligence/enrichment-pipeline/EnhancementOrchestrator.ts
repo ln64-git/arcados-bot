@@ -445,12 +445,10 @@ Top recurring terms (by frequency): ${topicHintText || "none"}
 
 Summary:`;
 
-          // Try Gemini Flash first, fallback to Grok or OpenAI if available
-          let provider = "gemini-flash";
-          if (process.env.GROK_API_KEY) {
-            provider = "grok"; // Grok has better rate limits
-          } else if (process.env.OPENAI_API_KEY) {
-            provider = "openai";
+          // Try Grok first (better rate limits), fallback to Ollama
+          let provider = "grok";
+          if (!process.env.GROK_API_KEY && process.env.OLLAMA_URL) {
+            provider = "ollama";
           }
 
           // Retry logic for rate limits
@@ -471,7 +469,7 @@ Summary:`;
                 .chat()
                 .blocking()
                 .withContext(ctx)
-                .provider(provider as "gemini-flash" | "grok" | "openai")
+                .provider(provider as "grok" | "ollama")
                 .persona("casual")
                 .withoutTools() // Summaries don't need database tools
                 .generate(prompt);

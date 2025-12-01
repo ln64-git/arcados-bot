@@ -4,7 +4,7 @@ import { DatabaseTools } from "../tools/registry/DatabaseTools";
 import type { AIProvider } from "../providers/base/AIProvider";
 import { GrokProvider } from "../providers/GrokProvider";
 import { OpenAIProvider } from "../providers/OpenAIProvider";
-import { GeminiProvider } from "../providers/GeminiProvider";
+// import { GeminiProvider } from "../providers/GeminiProvider"; // Disabled - switching to OpenAI
 import { OllamaProvider } from "../providers/OllamaProvider";
 import { config } from "../../config";
 
@@ -75,10 +75,10 @@ export class AIFactory {
 			providers.set("openai", new OpenAIProvider());
 		}
 
-		// Gemini (used for social intelligence)
-		if (config.geminiApiKey) {
-			providers.set("gemini", new GeminiProvider());
-		}
+		// Gemini disabled - switching to OpenAI due to high API costs
+		// if (config.geminiApiKey) {
+		// 	providers.set("gemini", new GeminiProvider());
+		// }
 
 		// Ollama (local inference)
 		if (config.ollamaUrl) {

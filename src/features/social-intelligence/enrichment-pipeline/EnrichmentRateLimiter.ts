@@ -46,13 +46,13 @@ export class EnrichmentRateLimiter {
 	private readonly COST_PER_1K_INPUT_TOKENS = {
 		grok: 0.005, // $5 per 1M tokens
 		gemini: 0.00015, // $0.15 per 1M tokens (flash)
-		openai: 0.01, // $10 per 1M tokens (gpt-4o-mini)
+		ollama: 0, // Free (local inference)
 	};
 
 	private readonly COST_PER_1K_OUTPUT_TOKENS = {
 		grok: 0.015, // $15 per 1M tokens
 		gemini: 0.0006, // $0.60 per 1M tokens (flash)
-		openai: 0.03, // $30 per 1M tokens (gpt-4o-mini)
+		ollama: 0, // Free (local inference)
 	};
 
 	private stats: UsageStats;
@@ -121,7 +121,7 @@ export class EnrichmentRateLimiter {
 	public estimateCost(
 		inputTokens: number,
 		outputTokens: number,
-		provider: "grok" | "gemini" | "openai" = "grok",
+		provider: "grok" | "ollama" = "grok",
 	): CostEstimate {
 		const inputCost =
 			(inputTokens / 1000) * this.COST_PER_1K_INPUT_TOKENS[provider];

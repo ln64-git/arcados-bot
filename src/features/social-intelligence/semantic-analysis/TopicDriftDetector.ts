@@ -63,9 +63,9 @@ export class TopicDriftDetector {
   private readonly KEYWORD_HIGH_OVERLAP = 0.4; // High keyword overlap = same topic
   private readonly KEYWORD_LOW_OVERLAP = 0.15; // Low keyword overlap = different topic
 
-  // Use Gemini Flash for topic labeling (fast, free tier, good for utility work)
+  // Use Ollama (GPT-OSS) for topic labeling (switched from Gemini due to high API costs)
   // Final AI assistant responses use Grok
-  private readonly TOPIC_MODEL = "gemini-flash" as const;
+  private readonly TOPIC_MODEL = "ollama" as const;
   private readonly AI_USAGE_WINDOW_MS = 60 * 1000; // Track AI usage per minute
   private readonly AI_MAX_CALLS_PER_WINDOW = 20; // Max AI calls per window
   private readonly AI_THROTTLE_COOLDOWN_MS = 60 * 1000; // Cooldown after hitting limit
@@ -108,7 +108,7 @@ export class TopicDriftDetector {
     if (this.aiUsageHistory.length >= this.AI_MAX_CALLS_PER_WINDOW) {
       if (now - this.lastAiThrottleLog > this.AI_THROTTLE_LOG_INTERVAL_MS) {
         console.warn(
-          "🔸 TopicDriftDetector throttling Gemini usage to avoid rate limits."
+          "🔸 TopicDriftDetector throttling Ollama usage to avoid rate limits."
         );
         this.lastAiThrottleLog = now;
       }
@@ -192,7 +192,7 @@ Respond with ONLY the topic label, nothing else. Examples: "planning dinner", "g
         const result = await builder
           .chat()
           .blocking()
-          .provider("gemini-flash")
+          .provider("ollama")
           .persona("casual")
           .withoutTools()
           .generate(prompt);
@@ -626,7 +626,7 @@ Response format: Either "continue" OR "split: [2-5 word topic label]"`;
         const result = await builder
           .chat()
           .blocking()
-          .provider("gemini-flash")
+          .provider("ollama")
           .persona("casual")
           .withoutTools()
           .generate(prompt);
@@ -734,7 +734,7 @@ Be balanced - group related subtopics together, but split clearly different disc
         const result = await builder
           .chat()
           .blocking()
-          .provider("gemini-flash")
+          .provider("ollama")
           .persona("casual")
           .withoutTools()
           .generate(prompt);

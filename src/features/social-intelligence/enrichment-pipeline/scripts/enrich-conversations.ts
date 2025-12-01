@@ -619,16 +619,14 @@ Respond with a JSON object:
 Only return the JSON, nothing else.`;
 
 	try {
-		// Use Grok (no quota issues), fall back to others
-		const provider = process.env.GROK_API_KEY ? "grok" :
-		                 process.env.OPENAI_API_KEY ? "openai" :
-		                 process.env.GEMINI_API_KEY ? "gemini-flash" : "ollama";
+		// Use Grok (no quota issues), fall back to Ollama
+		const provider = process.env.GROK_API_KEY ? "grok" : "ollama";
 
 		const builder = new AIRequestBuilder(aiEngine);
 		const result = await builder
 			.chat()
 			.blocking()
-			.provider(provider as "grok" | "openai" | "gemini-flash")
+			.provider(provider as "grok" | "ollama")
 			.persona("casual")
 			.withoutTools() // Don't need database tools for this analysis
 			.generate(prompt);

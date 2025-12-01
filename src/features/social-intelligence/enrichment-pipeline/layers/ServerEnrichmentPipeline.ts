@@ -358,10 +358,8 @@ ${context}
 	private async generateDelta(prompt: string, guildId: string): Promise<string | null> {
 		let provider = "grok";
 		if (!process.env.GROK_API_KEY) {
-			if (process.env.GEMINI_API_KEY) {
-				provider = "gemini-flash";
-			} else if (process.env.OPENAI_API_KEY) {
-				provider = "openai";
+			if (process.env.OLLAMA_URL) {
+				provider = "ollama";
 			}
 		}
 
@@ -375,7 +373,7 @@ ${context}
 				.chat()
 				.blocking()
 				.withContext(ctx)
-				.provider(provider as "gemini-flash" | "grok" | "openai")
+				.provider(provider as "grok" | "ollama")
 				.persona("casual")
 				.withoutTools()
 				.generate(prompt);
