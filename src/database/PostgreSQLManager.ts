@@ -98,7 +98,7 @@ export interface RelationshipEntry {
 export interface UserProfileData {
   guild_id: string;
   user_id: string;
-  
+
   // AI profile data
   summary?: string;
   keywords?: string[];
@@ -106,12 +106,12 @@ export interface UserProfileData {
   notes?: string[];
   aliases?: string[];
   relationship_network?: RelationshipEntry[];
-  
+
   // Psychological profiling
   psych_profile?: any; // JSONB - Big 5, MBTI, etc.
   behavior_patterns?: any; // JSONB
   temporal_profile?: any; // JSONB
-  
+
   // Metadata
   created_at: Date;
   updated_at: Date;
@@ -236,7 +236,7 @@ export class PostgreSQLManager {
             "(e.g., 'apt-get install postgresql-XX-pgvector' or compile from source)"
           );
           this.vectorExtensionAvailable = false;
-          
+
           // If tables already have vector columns, we need to handle them
           // Check and potentially drop vector columns if extension isn't available
           try {
@@ -963,7 +963,7 @@ export class PostgreSQLManager {
       ];
 
       const result = await client.query(query, values);
-      
+
       // Update aliases if name changed or if this is a new member
       if (existing) {
         // Existing member - update aliases if name changed
@@ -1290,9 +1290,12 @@ export class PostgreSQLManager {
   ): Promise<DatabaseResult<RelationshipEntry[]>> {
     // Delegate to user_profiles table
     const profileResult = await this.getUserProfile(userId, guildId);
-    
+
     if (!profileResult.success) {
-      return profileResult as DatabaseResult<RelationshipEntry[]>;
+      return {
+        success: false,
+        error: profileResult.error,
+      };
     }
 
     if (!profileResult.data) {
@@ -1318,7 +1321,7 @@ export class PostgreSQLManager {
       };
     }
 
-    const guildId = parts[0];
+    const guildId = parts[0]!;
     const userId = parts.slice(1).join('_'); // Handle cases where user_id might contain underscores
 
     // Delegate to user_profiles table
@@ -1372,7 +1375,7 @@ export class PostgreSQLManager {
 
       const result = await client.query(query, values);
       const row = result.rows[0];
-      
+
       return {
         success: true,
         data: {
@@ -1418,7 +1421,7 @@ export class PostgreSQLManager {
 			`;
 
       const result = await client.query(query, [userId, guildId]);
-      
+
       if (result.rows.length === 0) {
         return { success: true, data: undefined };
       }
@@ -1475,10 +1478,13 @@ export class PostgreSQLManager {
 
       if (result.rowCount === 0) {
         // Create profile if it doesn't exist
+        const now = new Date();
         await this.upsertUserProfile({
           guild_id: guildId,
           user_id: userId,
           [field]: value,
+          created_at: now,
+          updated_at: now,
         } as UserProfileData);
       }
 
@@ -2326,7 +2332,7 @@ export class PostgreSQLManager {
       if (error?.code === '58P01' || error?.message?.includes('vector')) {
         // Mark extension as unavailable for future queries
         this.vectorExtensionAvailable = false;
-        
+
         // Try using information_schema to get column list and exclude vector columns
         try {
           // Use a more defensive query that avoids vector type resolution

@@ -493,10 +493,13 @@ export class LiveEventSync {
 
 			try {
 				// Fetch last known roles from DB
+				// Prioritize records with roles, then by most recent update
 				const rolesResult = await this.db.query(
 					`SELECT roles FROM members
 					 WHERE guild_id = $1 AND user_id = $2
-					 ORDER BY updated_at DESC
+					 ORDER BY 
+					   CASE WHEN array_length(roles, 1) IS NOT NULL THEN 0 ELSE 1 END,
+					   updated_at DESC
 					 LIMIT 1`,
 					[guildId, userId]
 				);
@@ -506,22 +509,57 @@ export class LiveEventSync {
 						? rolesResult.data[0].roles || []
 						: [];
 
+				// Filter out @everyone role (it's always present, not a real role)
+				const filteredRoles = roles.filter((roleId: string) => roleId !== member.guild.id);
+
 				// Restore roles if available
-				if (roles.length > 0) {
+				if (filteredRoles.length > 0) {
 					const me = member.guild.members.me;
-					const assignableIds = roles.filter((roleId: string) => {
+					const assignableIds = filteredRoles.filter((roleId: string) => {
 						const role: Role | undefined = member.guild.roles.cache.get(roleId);
-						if (!role) return false;
-						if (role.managed) return false;
+						if (!role) {
+							if (this.verbose) {
+								console.log(`🔸 Role ${roleId} no longer exists in guild, skipping`);
+							}
+							return false;
+						}
+						if (role.managed) {
+							if (this.verbose) {
+								console.log(`🔸 Role ${role.name} is managed (bot/integration), skipping`);
+							}
+							return false;
+						}
 						if (!me) return false;
-						return me.roles.highest.position > role.position;
+						if (me.roles.highest.position <= role.position) {
+							if (this.verbose) {
+								console.log(`🔸 Role ${role.name} is higher than bot's highest role, skipping`);
+							}
+							return false;
+						}
+						return true;
 					});
 
 					if (assignableIds.length > 0) {
-						await member.roles.add(
-							assignableIds,
-							"Reapplying previous roles on rejoin"
-						);
+						try {
+							await member.roles.add(
+								assignableIds,
+								"Reapplying previous roles on rejoin"
+							);
+							console.log(
+								`✅ Restored ${assignableIds.length} role(s) for ${member.user.username} (${member.user.id})`
+							);
+						} catch (error) {
+							console.error(
+								`🔸 Failed to restore roles for ${member.user.username}:`,
+								error
+							);
+						}
+					} else if (filteredRoles.length > 0) {
+						if (this.verbose) {
+							console.log(
+								`🔸 User ${member.user.username} had ${filteredRoles.length} role(s) but none were assignable`
+							);
+						}
 					}
 				}
 
@@ -568,7 +606,7 @@ export class LiveEventSync {
 	}
 
 	/**
-	 * Handle member remove (mark inactive)
+	 * Handle member remove (mark inactive and preserve roles)
 	 */
 	private async handleGuildMemberRemove(member: GuildMember): Promise<void> {
 		try {
@@ -578,11 +616,26 @@ export class LiveEventSync {
 			const releaseLock = await this.coordinator.acquireMemberLock(`${guildId}_${userId}`);
 
 			try {
-				await this.db.query(
-					`UPDATE members SET active = false, updated_at = NOW()
-					 WHERE guild_id = $1 AND user_id = $2`,
-					[guildId, userId]
+				// Save current roles before marking inactive
+				// This ensures we have the latest roles when they rejoin
+				const currentRoles = Array.from(member.roles.cache.keys()).filter(
+					(roleId) => roleId !== guildId // Exclude @everyone role
 				);
+
+				await this.db.query(
+					`UPDATE members 
+					 SET active = false, 
+					     roles = $3,
+					     updated_at = NOW()
+					 WHERE guild_id = $1 AND user_id = $2`,
+					[guildId, userId, currentRoles]
+				);
+
+				if (this.verbose && currentRoles.length > 0) {
+					console.log(
+						`🔹 Saved ${currentRoles.length} role(s) for ${member.user.username} before they left`
+					);
+				}
 			} finally {
 				releaseLock();
 			}
