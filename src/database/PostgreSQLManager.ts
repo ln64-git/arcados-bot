@@ -147,6 +147,7 @@ export interface MessageData {
 export class PostgreSQLManager {
   private pool: Pool | null = null;
   private isConnectedFlag = false;
+  private vectorExtensionAvailable = false;
 
   constructor() {
     if (!config.postgresUrl) {
@@ -173,8 +174,14 @@ export class PostgreSQLManager {
       });
 
       // Register pgvector types for every client from the pool
+      // Only register if extension is available (will be set during schema init)
       this.pool.on("connect", async (client) => {
-        await pgvector.registerType(client);
+        try {
+          await pgvector.registerType(client);
+        } catch (error: any) {
+          // Silently fail if vector extension isn't available
+          // The flag will be set correctly during schema initialization
+        }
       });
 
       // Test the connection
@@ -214,9 +221,46 @@ export class PostgreSQLManager {
     const client = await this.pool!.connect();
     try {
       // Enable pgvector extension for embeddings
-      await client.query(`
-        CREATE EXTENSION IF NOT EXISTS vector;
-      `);
+      // Gracefully handle if extension is not installed on the server
+      try {
+        await client.query(`
+          CREATE EXTENSION IF NOT EXISTS vector;
+        `);
+        this.vectorExtensionAvailable = true;
+      } catch (extError: any) {
+        if (extError?.code === '58P01' || extError?.message?.includes('vector')) {
+          console.warn(
+            "⚠️  pgvector extension not available on PostgreSQL server. " +
+            "Vector operations will be disabled. " +
+            "To enable: install pgvector on your PostgreSQL server " +
+            "(e.g., 'apt-get install postgresql-XX-pgvector' or compile from source)"
+          );
+          this.vectorExtensionAvailable = false;
+          
+          // If tables already have vector columns, we need to handle them
+          // Check and potentially drop vector columns if extension isn't available
+          try {
+            const hasVectorCol = await client.query(`
+              SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name = 'conversation_segments' 
+                AND column_name = 'embedding'
+                AND data_type = 'USER-DEFINED'
+              ) as has_embedding
+            `);
+            if (hasVectorCol.rows[0]?.has_embedding) {
+              console.warn(
+                "⚠️  Table 'conversation_segments' has vector column but extension unavailable. " +
+                "Queries may fail. Consider dropping the column or installing pgvector."
+              );
+            }
+          } catch (checkError) {
+            // Ignore check errors
+          }
+        } else {
+          throw extError; // Re-throw if it's a different error
+        }
+      }
 
       // Create tables if they don't exist
       await client.query(`
@@ -368,17 +412,20 @@ export class PostgreSQLManager {
       `);
 
       // Add embedding column if it doesn't exist (migration for existing databases)
-      await client.query(`
-        DO $$ 
-        BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns 
-            WHERE table_name = 'messages' AND column_name = 'embedding'
-          ) THEN
-            ALTER TABLE messages ADD COLUMN embedding vector(768);
-          END IF;
-        END $$;
-      `);
+      // Only add if vector extension is available
+      if (this.vectorExtensionAvailable) {
+        await client.query(`
+          DO $$ 
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM information_schema.columns 
+              WHERE table_name = 'messages' AND column_name = 'embedding'
+            ) THEN
+              ALTER TABLE messages ADD COLUMN embedding vector(768);
+            END IF;
+          END $$;
+        `);
+      }
 
       // Relationship edges - directed dyads for realtime updates
       await client.query(`
@@ -450,10 +497,13 @@ export class PostgreSQLManager {
 			`);
 
       // Add embedding column for semantic search (migration)
-      await client.query(`
-				ALTER TABLE conversation_segments
-				ADD COLUMN IF NOT EXISTS embedding vector(768)
-			`);
+      // Only add if vector extension is available
+      if (this.vectorExtensionAvailable) {
+        await client.query(`
+					ALTER TABLE conversation_segments
+					ADD COLUMN IF NOT EXISTS embedding vector(768)
+				`);
+      }
 
       // Relationship pairs - optional cache for quick undirected reads
       await client.query(`
@@ -625,12 +675,14 @@ export class PostgreSQLManager {
 				CREATE INDEX IF NOT EXISTS idx_guild_vocabulary_guild ON guild_vocabulary(guild_id);
 				CREATE INDEX IF NOT EXISTS idx_guild_vocabulary_term ON guild_vocabulary(term);
 				CREATE INDEX IF NOT EXISTS idx_guild_vocabulary_idf ON guild_vocabulary(guild_id, idf_score DESC);
+				${this.vectorExtensionAvailable ? `
 				CREATE INDEX IF NOT EXISTS messages_embedding_idx
 					ON messages USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
 					WHERE embedding IS NOT NULL;
 				CREATE INDEX IF NOT EXISTS conversation_segments_embedding_idx
 					ON conversation_segments USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
 					WHERE embedding IS NOT NULL;
+				` : ''}
 				CREATE INDEX IF NOT EXISTS idx_voice_sessions_guild_id ON voice_sessions(guild_id);
 				CREATE INDEX IF NOT EXISTS idx_voice_sessions_user_id ON voice_sessions(user_id);
 				CREATE INDEX IF NOT EXISTS idx_voice_sessions_channel_id ON voice_sessions(channel_id);
@@ -661,8 +713,11 @@ export class PostgreSQLManager {
 				CREATE INDEX IF NOT EXISTS idx_user_profiles_notes ON user_profiles USING GIN (notes);
 				CREATE INDEX IF NOT EXISTS idx_user_profiles_aliases ON user_profiles USING GIN (aliases);
 			`);
-    } catch (error) {
-      console.error("🔸 Failed to initialize PostgreSQL schema:", error);
+    } catch (error: any) {
+      // Only log as error if it's not a vector extension issue (which we already handled)
+      if (!(error?.code === '58P01' || error?.message?.includes('vector'))) {
+        console.error("🔸 Failed to initialize PostgreSQL schema:", error);
+      }
     } finally {
       client.release();
     }
@@ -2249,14 +2304,66 @@ export class PostgreSQLManager {
 
     const client = await this.pool!.connect();
     try {
+      // Always exclude embedding column to avoid vector extension errors
+      // Even if we don't select it, PostgreSQL may try to load the extension
+      // if the table has a vector column
       const query = `
-        SELECT * FROM conversation_segments
+        SELECT 
+          id, guild_id, channel_id, participants, start_time, end_time,
+          message_ids, message_count, features, summary, status, 
+          last_activity_at, created_at, is_voice_conversation, 
+          voice_channel_id, voice_participants, transcription_data,
+          topic_label, topic_confidence, parent_segment_id, split_reason
+        FROM conversation_segments
         WHERE guild_id = $1 AND status = 'active'
         ORDER BY last_activity_at DESC
       `;
       const result = await client.query(query, [guildId]);
       return { success: true, data: result.rows };
-    } catch (error) {
+    } catch (error: any) {
+      // If error is related to vector extension, the table likely has a vector column
+      // but the extension isn't available. Try using a subquery or different approach.
+      if (error?.code === '58P01' || error?.message?.includes('vector')) {
+        // Mark extension as unavailable for future queries
+        this.vectorExtensionAvailable = false;
+        
+        // Try using information_schema to get column list and exclude vector columns
+        try {
+          // Use a more defensive query that avoids vector type resolution
+          const query = `
+            SELECT 
+              id::text, guild_id::text, channel_id::text, 
+              participants, start_time, end_time,
+              message_ids, message_count, features, summary, status, 
+              last_activity_at, created_at, is_voice_conversation, 
+              voice_channel_id::text, voice_participants, transcription_data,
+              topic_label, topic_confidence, parent_segment_id::text, split_reason
+            FROM conversation_segments
+            WHERE guild_id = $1 AND status = 'active'
+            ORDER BY last_activity_at DESC
+          `;
+          const result = await client.query(query, [guildId]);
+          return { success: true, data: result.rows };
+        } catch (retryError: any) {
+          // If that still fails, try the simplest possible query
+          try {
+            const simpleQuery = `
+              SELECT id, guild_id, channel_id, participants, start_time, end_time,
+                     message_ids, message_count, features, summary, status, 
+                     last_activity_at, created_at
+              FROM conversation_segments
+              WHERE guild_id = $1 AND status = 'active'
+              ORDER BY last_activity_at DESC
+            `;
+            const result = await client.query(simpleQuery, [guildId]);
+            return { success: true, data: result.rows };
+          } catch (simpleError) {
+            // Last resort: return empty array with success
+            console.warn("⚠️  Could not load active conversations due to vector extension issues. Returning empty list.");
+            return { success: true, data: [] };
+          }
+        }
+      }
       console.error("🔸 Failed to load active conversations:", error);
       return {
         success: false,

@@ -50,6 +50,9 @@ export interface StreamSession {
 	provider?: string; // Provider name used for this session
 	// Discord streaming connection
 	streamConnection?: any; // Will be typed based on Discord Go Live implementation
+	// Enhanced fields for new architecture
+	playbackState?: import("./types/playback.js").PlaybackState;
+	searchResults?: SearchResult[]; // Cached for fuzzy selection
 }
 
 /**

@@ -10,6 +10,15 @@ import { STREAM_CONSTANTS, SELECTORS } from "../constants.js";
 export class MoviesProvider extends BaseProvider {
 	constructor() {
 		super("123movies", STREAM_CONSTANTS.MOVIES_BASE_URL, ["movie", "tv"]);
+		// 123movies supports all playback controls except nextEpisode
+		this.capabilities = {
+			pause: true,
+			resume: true,
+			seek: true,
+			skip: true,
+			restart: true,
+			nextEpisode: false,
+		};
 	}
 
 	/**

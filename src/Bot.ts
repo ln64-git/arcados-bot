@@ -16,8 +16,9 @@ import { MessageHandler } from "./handlers/chat";
 import { VoiceAssistantManager } from "./handlers/voice/VoiceAssistantManager";
 import { MediaPlayerManager } from "./features/media-player/MediaPlayerManager";
 import { VoiceConnectionManager } from "./handlers/voice/tts/services/VoiceConnectionManager";
-import { StreamPlayerManager } from "./features/stream-chrome/StreamPlayerManager";
 import { APICostTracker } from "./utils/APICostTracker";
+import { VoiceStateCoordinator } from "./features/voice-state/VoiceStateCoordinator";
+import { SyncCoordinator } from "./features/discord-sync/SyncCoordinator";
 
 export class Bot {
   public client: Client;
@@ -29,6 +30,11 @@ export class Bot {
   private messageHandler?: MessageHandler;
   private commandDeployer?: CommandDeployer;
   private voiceAssistant?: VoiceAssistantManager;
+  public voiceStateCoordinator?: VoiceStateCoordinator; // Public for slash commands
+  private syncCoordinator?: SyncCoordinator;
+
+  // Track if event handlers are already set up
+  private eventHandlersSetup = false;
 
   constructor() {
     this.client = new Client({
@@ -99,6 +105,12 @@ export class Bot {
    * Set up Discord event handlers
    */
   private setupEventHandlers(): void {
+    // Prevent duplicate event handler registration
+    if (this.eventHandlersSetup) {
+      console.log("🔸 Event handlers already set up, skipping");
+      return;
+    }
+
     // Ready event - initialize all features
     this.client.once("ready", async () => {
       console.log(`🔹 Logged in as ${this.client.user?.tag}`);
@@ -121,13 +133,25 @@ export class Bot {
       await this.messageHandler?.handleMessage(message);
     });
 
-    // Voice state updates - disconnect if everyone leaves
+    // Voice state updates
     this.client.on(
       "voiceStateUpdate",
       async (oldState: VoiceState, newState: VoiceState) => {
+        // Delegate to VoiceStateCoordinator first (spawn channels, session tracking)
+        if (this.voiceStateCoordinator) {
+          try {
+            await this.voiceStateCoordinator.handleStateUpdate(oldState, newState);
+          } catch (error) {
+            console.error("🔸 VoiceStateCoordinator error:", error);
+          }
+        }
+
+        // Then handle bot auto-disconnect
         await this.handleVoiceStateUpdate(oldState, newState);
       }
     );
+
+    this.eventHandlersSetup = true;
   }
 
   /**
@@ -155,14 +179,29 @@ export class Bot {
     // Initialize voice assistant
     // Handles voice channel interactions and real-time voice conversation
     this.voiceAssistant = VoiceAssistantManager.getInstance();
-    await this.voiceAssistant.initialize(this.client);
+    await this.voiceAssistant.initialize(this.client, this.db);
+
+    // Initialize voice state coordinator
+    // Handles spawn channel auto-creation, session tracking, and moderation
+    if (config.spawnChannelId) {
+      this.syncCoordinator = new SyncCoordinator(this.db, false);
+      this.voiceStateCoordinator = new VoiceStateCoordinator(
+        this.client,
+        this.db,
+        this.syncCoordinator,
+        config.spawnChannelId
+      );
+      // Attach to client for slash commands to access
+      (this.client as any).voiceStateCoordinator = this.voiceStateCoordinator;
+      console.log("✅ Voice state coordinator initialized");
+    }
 
     // Initialize media player
     const mediaPlayer = MediaPlayerManager.getInstance();
     mediaPlayer.initialize(this.client);
 
     // Initialize stream player
-    const streamPlayer = StreamPlayerManager.getInstance();
+    // const streamPlayer = StreamPlayerManager.getInstance();
     // await streamPlayer.initialize(this.client);
 
     // Initialize state sync service
@@ -357,8 +396,8 @@ export class Bot {
     }
 
     // Shutdown stream player
-    const streamPlayer = StreamPlayerManager.getInstance();
-    await streamPlayer.shutdown();
+    // const streamPlayer = StreamPlayerManager.getInstance();
+    // await streamPlayer.shutdown();
 
     // Cleanup voice assistant (stops Whisper server)
     if (this.voiceAssistant) {

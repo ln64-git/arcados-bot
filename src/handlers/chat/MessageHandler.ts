@@ -29,6 +29,10 @@ export class MessageHandler {
   private provider: string;
   private chatAI: ChatAIManager | null = null;
   private enginePromise: Promise<AIEngine> | null = null;
+  
+  // Deduplication: track recently processed messages to prevent duplicate responses
+  private recentMessageIds: Set<string> = new Set();
+  private readonly MESSAGE_DEDUP_WINDOW = 5000; // 5 seconds
 
   constructor(client: Client, db: PostgreSQLManager, provider = "grok") {
     this.client = client;
@@ -59,6 +63,27 @@ export class MessageHandler {
       if (message.author.bot || !message.guildId) {
         return;
       }
+
+      // Deduplication: prevent processing the same message twice
+      if (this.recentMessageIds.has(message.id)) {
+        console.log(`[MessageHandler] Skipping duplicate message ${message.id}`);
+        return;
+      }
+      
+      // Add to deduplication set
+      this.recentMessageIds.add(message.id);
+      
+      // Clean up old message IDs periodically
+      if (this.recentMessageIds.size > 1000) {
+        // Keep only the most recent 500 IDs (simple cleanup)
+        const ids = Array.from(this.recentMessageIds);
+        this.recentMessageIds = new Set(ids.slice(-500));
+      }
+      
+      // Remove message ID after dedup window expires
+      setTimeout(() => {
+        this.recentMessageIds.delete(message.id);
+      }, this.MESSAGE_DEDUP_WINDOW);
 
       const botUserId = this.client.user?.id;
       if (!botUserId) {
@@ -238,6 +263,24 @@ export class MessageHandler {
       return;
     }
 
+    // Check if stream tools were executed - if so, skip sending response
+    const executedTools = contentResponse.executedTools || [];
+    const streamTools = new Set([
+      "streamContent",
+      "selectStreamResult",
+      "stopStream",
+      "searchYouTube",
+      "searchJellyfin",
+    ]);
+    if (executedTools.some((name) => streamTools.has(name))) {
+      console.log(
+        `[MessageHandler] Stream tools executed (${executedTools.join(
+          ", "
+        )}), skipping response.`
+      );
+      return;
+    }
+
     // Send response using chunking (handles long responses automatically)
     const { message: reply, sentText } = await this.sendChunked(
       message,
@@ -396,6 +439,26 @@ export class MessageHandler {
     );
 
     if (!contentResponse?.success || !contentResponse.content) {
+      return;
+    }
+
+    // Check if stream tools were executed - if so, skip sending response
+    const executedTools = contentResponse.executedTools || [];
+    const streamTools = new Set([
+      "streamContent",
+      "selectStreamResult",
+      "stopStream",
+      "searchYouTube",
+      "searchJellyfin",
+    ]);
+    if (executedTools.some((name) => streamTools.has(name))) {
+      console.log(
+        `[MessageHandler] Stream tools executed (${executedTools.join(
+          ", "
+        )}), skipping response.`
+      );
+      // Still append user's turn to session for history
+      appendUserTurn(found.sessionId, resolvedContent);
       return;
     }
 

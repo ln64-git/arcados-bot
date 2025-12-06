@@ -1,10 +1,10 @@
 import { SlashCommandBuilder } from "discord.js";
 import type { Command } from "../../../types";
-import type { VoiceChannelManager } from "../VoiceChannelManager";
+import type { VoiceStateCoordinator } from "../VoiceStateCoordinator";
 
-// Extend the Client interface to include voiceChannelManager
+// Extend the Client interface to include voiceStateCoordinator
 interface BotClient {
-  voiceChannelManager?: VoiceChannelManager;
+  voiceStateCoordinator?: VoiceStateCoordinator;
 }
 
 export const deafenCommand: Command = {
@@ -47,13 +47,13 @@ export const deafenCommand: Command = {
       return;
     }
 
-    // Get the voice channel manager from the bot
+    // Get the voice state coordinator from the bot
     const bot = interaction.client as BotClient;
-    const voiceChannelManager = bot.voiceChannelManager;
+    const coordinator = bot.voiceStateCoordinator;
 
-    if (!voiceChannelManager) {
+    if (!coordinator) {
       await interaction.reply({
-        content: "🔸 Voice channel manager is not available.",
+        content: "🔸 Voice state coordinator is not available.",
         ephemeral: true,
       });
       return;
@@ -61,11 +61,11 @@ export const deafenCommand: Command = {
 
     try {
       // Check if this is a user channel and user is the owner
-      const ownerResult = await voiceChannelManager.getChannelOwner(
+      const currentOwner = await coordinator.getOwnershipService().getOwner(
         voiceChannel.id
       );
 
-      if (!ownerResult.success || !ownerResult.data) {
+      if (!currentOwner) {
         await interaction.reply({
           content: "🔸 This is not a user-owned voice channel.",
           ephemeral: true,
@@ -73,7 +73,7 @@ export const deafenCommand: Command = {
         return;
       }
 
-      if (ownerResult.data !== member.user.id) {
+      if (currentOwner !== member.user.id) {
         await interaction.reply({
           content: "🔸 You are not the owner of this channel.",
           ephemeral: true,
@@ -92,17 +92,11 @@ export const deafenCommand: Command = {
       }
 
       // Apply deafen
-      const deafenResult = await voiceChannelManager.applyDeafen(
+      await coordinator.getModerationService().deafen(
         voiceChannel.id,
-        targetUser.id
+        targetUser.id,
+        member.user.id
       );
-      if (!deafenResult.success) {
-        await interaction.reply({
-          content: `🔸 Failed to deafen user: ${deafenResult.error}`,
-          ephemeral: true,
-        });
-        return;
-      }
 
       await interaction.reply({
         content: `🔹 Deafened **${targetUser.displayName}** in this channel.`,

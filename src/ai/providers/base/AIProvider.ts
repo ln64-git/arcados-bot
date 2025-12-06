@@ -5,6 +5,12 @@ export interface AIResponse {
 	imageUrl?: string;
 	imageBuffer?: Buffer;
 	imageFilename?: string;
+	/**
+	 * Optional list of tool names that were executed while generating this response.
+	 * Callers (e.g. voice) can use this to react to tool usage, such as
+	 * suppressing TTS when media playback tools are invoked.
+	 */
+	executedTools?: string[];
 }
 
 export interface RateLimitInfo {

@@ -15,7 +15,7 @@ export class WhisperServerManager {
 	// Configuration
 	private readonly WHISPER_BINARY = "whisper-server";
 	private readonly WHISPER_MODEL_PATH =
-		"/home/ln64/.voicemode/services/whisper/models/ggml-medium.bin";
+		"/home/ln64/.voicemode/services/whisper/models/ggml-large-v3.bin"; // Using large-v3 for better accuracy
 	private readonly WHISPER_PORT = 8086;
 	private readonly STARTUP_TIMEOUT_MS = 30000; // 30 seconds to start
 	private readonly SHUTDOWN_TIMEOUT_MS = 5000; // 5 seconds to stop gracefully

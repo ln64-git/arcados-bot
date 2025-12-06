@@ -43,7 +43,25 @@ export class TriggerWordDetector {
         "ariel",
 				"aurea",
       ];
-			
+
+			// Add all case variations for each phonetic variation
+			for (const variation of phoneticVariations) {
+				this.variations.add(variation.toLowerCase());
+				this.variations.add(variation.charAt(0).toUpperCase() + variation.slice(1));
+				this.variations.add(variation.toUpperCase());
+			}
+		}
+
+		// Add common phonetic variations for "tamagami"
+		if (this.triggerWord === "tamagami") {
+			const phoneticVariations = [
+        "temagami",
+        "tamagomi",
+        "tamagomy",
+        "temogami",
+        "tamogami",
+      ];
+
 			// Add all case variations for each phonetic variation
 			for (const variation of phoneticVariations) {
 				this.variations.add(variation.toLowerCase());

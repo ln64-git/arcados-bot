@@ -1,10 +1,10 @@
 import { SlashCommandBuilder } from "discord.js";
 import type { Command } from "../../../types";
-import type { VoiceChannelManager } from "../VoiceChannelManager";
+import type { VoiceStateCoordinator } from "../VoiceStateCoordinator";
 
-// Extend the Client interface to include voiceChannelManager
+// Extend the Client interface to include voiceStateCoordinator
 interface BotClient {
-  voiceChannelManager?: VoiceChannelManager;
+  voiceStateCoordinator?: VoiceStateCoordinator;
 }
 
 export const claimCommand: Command = {
@@ -40,13 +40,13 @@ export const claimCommand: Command = {
       return;
     }
 
-    // Get the voice channel manager from the bot
+    // Get the voice state coordinator from the bot
     const bot = interaction.client as BotClient;
-    const voiceChannelManager = bot.voiceChannelManager;
+    const coordinator = bot.voiceStateCoordinator;
 
-    if (!voiceChannelManager) {
+    if (!coordinator) {
       await interaction.reply({
-        content: "🔸 Voice channel manager is not available.",
+        content: "🔸 Voice state coordinator is not available.",
         ephemeral: true,
       });
       return;
@@ -54,41 +54,35 @@ export const claimCommand: Command = {
 
     try {
       // Check if user can claim this channel
-      const canClaimResult = await voiceChannelManager.canUserClaim(
-        member.user.id,
-        voiceChannel.id
+      const canClaim = await coordinator.getOwnershipService().canUserClaim(
+        voiceChannel.id,
+        member.user.id
       );
-      if (!canClaimResult.success) {
+
+      if (!canClaim) {
         await interaction.reply({
-          content: `🔸 Failed to check claim eligibility: ${canClaimResult.error}`,
+          content: "🔸 You cannot claim this channel. It must be empty or have no current owner.",
           ephemeral: true,
         });
         return;
       }
 
-      if (!canClaimResult.data) {
-        await interaction.reply({
-          content: "🔸 You have never owned this channel before.",
-          ephemeral: true,
-        });
-        return;
-      }
-
-      // Reclaim the channel
-      const reclaimResult = await voiceChannelManager.reclaimChannel(
-        member.user.id,
-        voiceChannel.id
+      // Claim the channel
+      const claimed = await coordinator.getOwnershipService().claimChannel(
+        voiceChannel.id,
+        member.user.id
       );
-      if (!reclaimResult.success) {
+
+      if (!claimed) {
         await interaction.reply({
-          content: `🔸 Failed to reclaim channel: ${reclaimResult.error}`,
+          content: "🔸 Failed to claim channel.",
           ephemeral: true,
         });
         return;
       }
 
       await interaction.reply({
-        content: `🔹 Successfully reclaimed **${voiceChannel.name}**!`,
+        content: `🔹 Successfully claimed **${voiceChannel.name}**!`,
         ephemeral: false,
       });
     } catch (error) {

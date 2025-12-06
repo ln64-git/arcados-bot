@@ -200,6 +200,9 @@ Context Usage:
 		config: AIRequestConfig,
 		provider: AIProvider
 	): Promise<AIResponse> {
+		// Track which tools were executed during this request so callers
+		// (e.g. voice) can respond to tool usage like media playback.
+		const executedTools: string[] = [];
 		// Web search is opt-in only - enable only if explicitly requested
 		// Default: disabled (saves ~1000-4000 tokens per request)
 		if (config.enableWebSearch === undefined) {
@@ -396,14 +399,17 @@ Context Usage:
 				}
 
 				// Execute tool calls concurrently while preserving order
-				const executedTools = await Promise.all(
+				const executed = await Promise.all(
 					response.toolCalls.map(async (toolCall) => {
 						const toolResult = await this.executeTool(toolCall, context);
 						return { toolCall, toolResult };
 					})
 				);
 
-				for (const { toolCall, toolResult } of executedTools) {
+				for (const { toolCall, toolResult } of executed) {
+					// Record executed tool name for downstream consumers
+					executedTools.push(toolCall.name);
+
 					toolResults.push({
 						toolCallId: toolCall.id,
 						role: "tool",
@@ -419,6 +425,9 @@ Context Usage:
 			return {
 				success: true,
 				content: finalContent.trim() || "No response generated.",
+				executedTools: executedTools.length
+					? Array.from(new Set(executedTools))
+					: undefined,
 			};
 		} catch (error) {
 			console.error("Error in tool-enabled generation:", error);

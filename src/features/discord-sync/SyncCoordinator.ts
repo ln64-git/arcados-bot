@@ -17,6 +17,8 @@ export class SyncCoordinator {
 	private guildLocks = new Map<string, Promise<void>>();
 	private channelLocks = new Map<string, Promise<void>>();
 	private memberLocks = new Map<string, Promise<void>>();
+	private voiceStateLocks = new Map<string, Promise<void>>();
+	private spawnChannelLocks = new Map<string, Promise<void>>();
 
 	// Watermark protection: channelId -> last known watermark
 	private watermarks = new Map<string, string>();
@@ -53,6 +55,23 @@ export class SyncCoordinator {
 	 */
 	async acquireMemberLock(memberId: string): Promise<() => void> {
 		return this.acquireLock(this.memberLocks, memberId, "member");
+	}
+
+	/**
+	 * Acquire a voice state lock
+	 * Lock key format: "userId:guildId"
+	 */
+	async acquireVoiceStateLock(userGuildKey: string): Promise<() => void> {
+		return this.acquireLock(this.voiceStateLocks, userGuildKey, "voiceState");
+	}
+
+	/**
+	 * Acquire a spawn channel lock
+	 * Lock key format: "spawn:guildId"
+	 * Prevents race conditions when multiple users join spawn channel simultaneously
+	 */
+	async acquireSpawnChannelLock(guildKey: string): Promise<() => void> {
+		return this.acquireLock(this.spawnChannelLocks, guildKey, "spawnChannel");
 	}
 
 	/**

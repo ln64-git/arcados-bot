@@ -281,7 +281,20 @@ export class AIRequestBuilder {
 		this.persona("casual");
 		this.discordFormatting(false);
 		this.contextBuilder.domain("voice");
-		this.methodPrompt("Play requests → use playMedia (return only the haiku). Playback control → use voice tool.");
+		this.methodPrompt(
+			`You control the built-in media player for this Discord server.
+
+Play & queue requests:
+- When the user asks to play, queue, or put on music/audio, you MUST call the playMedia tool with their query.
+- Do NOT respond with bot commands like "m!p ..." or instructions to use another bot.
+- Do NOT describe that you are calling tools or the media player.
+
+Voice control:
+- For pause/resume/skip/stop/volume, use the appropriate voice/media tools when available.
+
+Response style:
+- When you successfully trigger media playback or control, you should not send any spoken explanation – an empty or minimal response is ideal, because the audio itself is the response.`
+		);
 		return this;
 	}
 

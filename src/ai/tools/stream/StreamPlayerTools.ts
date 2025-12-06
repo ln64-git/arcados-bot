@@ -4,6 +4,9 @@ import type {
   DatabaseToolResult,
 } from "../registry/DatabaseTools.js";
 import { StreamPlayerManager } from "../../../features/stream-chrome/StreamPlayerManager.js";
+import { StreamController } from "../../../features/stream-chrome/core/StreamController.js";
+import { PlaybackAction } from "../../../features/stream-chrome/types/playback.js";
+import { parseTimeString } from "../../../features/stream-chrome/utils/timeParser.js";
 import type { SearchResult } from "../../../features/stream-chrome/types.js";
 import type { VoiceChannel } from "discord.js";
 import { ChannelType } from "discord.js";
@@ -55,14 +58,20 @@ async function findVoiceChannel(
 export const streamContentTool: DatabaseTool = {
   name: "streamContent",
   description:
-    "Stream a movie or TV show to a Discord voice channel. Use this when the user asks to stream content (e.g., 'stream the simpsons', 'stream Apocalypse Now', 'play a movie'). The bot will search for the content and start streaming it to the voice channel.",
+    "Stream video content to Discord voice channel. Supports YouTube, Jellyfin, 123movies, Christmas movies. Use: 'stream the simpsons', 'stream xyz on youtube', 'stream christmas movie'. Can include provider in query like 'stream xyz on youtube' or specify provider parameter.",
   parameters: {
     type: "object",
     properties: {
       query: {
         type: "string",
         description:
-          "The movie or TV show name to stream (e.g., 'the simpsons', 'Apocalypse Now', 'Futurama')",
+          "Content to stream. Can include provider: 'xyz on youtube', 'simpsons s01e03', 'christmas movie'. Supports natural language queries.",
+      },
+      provider: {
+        type: "string",
+        description:
+          "Optional provider override: 'youtube', 'jellyfin', '123movies', 'christmas-movies'. If not specified, will auto-detect from query or use default.",
+        enum: ["youtube", "jellyfin", "123movies", "christmas-movies"],
       },
       channelId: {
         type: "string",
@@ -74,7 +83,7 @@ export const streamContentTool: DatabaseTool = {
   },
   async execute(params, context): Promise<string | DatabaseToolResult> {
     try {
-      const { query, channelId } = params;
+      const { query, channelId, provider } = params;
 
       if (!query || typeof query !== "string") {
         return {
@@ -131,12 +140,18 @@ export const streamContentTool: DatabaseTool = {
         );
       }
 
-      // Stream content
-      const streamManager = StreamPlayerManager.getInstance();
-      const result = await streamManager.streamContent({
+      // Use StreamController for new architecture
+      const controller = StreamController.getInstance();
+      
+      // Auto-detect provider based on query (ProviderRouter will handle this)
+      // ProviderRouter will detect "on youtube", "from jellyfin", etc.
+      // Also handles heuristic detection like "christmas" → christmas-movies
+      
+      const result = await controller.streamContent({
         guildId: context.guildId,
         voiceChannelId,
         query,
+        provider: provider as string | undefined, // Optional explicit provider override
       });
 
       if (result.success) {
@@ -148,12 +163,12 @@ export const streamContentTool: DatabaseTool = {
             )
             .join("\n");
 
-          const formattedMessage = `${result.message}\n\n${optionsText}\n\nReply with the number (1-${result.searchResults.length}) to select.\n\n[IMPORTANT: When the user replies with a number, you MUST immediately call the selectStreamResult tool with their selection.]`;
+          const formattedMessage = `${result.message}\n\n${optionsText}\n\nReply with the number (1-${result.searchResults.length}) or a description to select.\n\n[IMPORTANT: When the user replies with a selection, you MUST immediately call the selectContent tool with their selection.]`;
 
           return {
             success: true,
             formatted: formattedMessage,
-            summary: `Found ${result.searchResults.length} results. Waiting for user selection. When user replies with a number, call selectStreamResult tool.`,
+            summary: `Found ${result.searchResults.length} results. Waiting for user selection. When user replies with a selection, call selectContent tool.`,
             data: {
               searchResults: result.searchResults,
               requiresSelection: true,
@@ -183,24 +198,24 @@ export const streamContentTool: DatabaseTool = {
   },
 };
 
-export const selectStreamResultTool: DatabaseTool = {
-  name: "selectStreamResult",
+export const selectContentTool: DatabaseTool = {
+  name: "selectContent",
   description:
-    "IMPORTANT: Use this tool when the user replies with a number (like '1', '2', '3') or text containing a number (like 'option 2', 'the second one', 'number 2') after you have presented them with multiple search results for streaming. This tool selects which search result to stream based on the user's choice. Always call this tool immediately when the user provides a selection number.",
+    "IMPORTANT: Use this tool when the user replies with a selection after you have presented them with multiple search results for streaming. Supports numeric selection ('1', '2', 'option 3', 'the second one') and fuzzy name matching ('the one with homer', 'simpsons s01e03'). Always call this tool immediately when the user provides a selection.",
   parameters: {
     type: "object",
     properties: {
       selection: {
         type: "string",
         description:
-          "The user's selection - extract the number from their message (e.g., if they say '2' or 'option 2' or 'the second one', extract '2').",
+          "The user's selection - can be a number ('2', 'option 3'), ordinal text ('the second one'), or fuzzy description ('the one with homer', 'simpsons season 1 episode 3').",
       },
     },
     required: ["selection"],
   },
   async execute(params, context): Promise<string | DatabaseToolResult> {
     console.log(
-      "[StreamPlayerTools] selectStreamResult called with params:",
+      "[StreamPlayerTools] selectContent called with params:",
       params
     );
 
@@ -223,41 +238,19 @@ export const selectStreamResultTool: DatabaseTool = {
         };
       }
 
-      // Parse selection - extract number from text
-      const selectionMatch = selection.match(/\d+/);
-      if (!selectionMatch) {
-        console.error(
-          `[StreamPlayerTools] Could not extract number from selection: "${selection}"`
-        );
-        return {
-          success: false,
-          error: "Invalid selection format. Please provide a number.",
-        };
-      }
-
-      const selectionIndex = parseInt(selectionMatch[0], 10);
-      console.log(
-        `[StreamPlayerTools] Parsed selection index: ${selectionIndex}`
-      );
-
-      const streamManager = StreamPlayerManager.getInstance();
-      console.log(
-        `[StreamPlayerTools] Calling streamWithSelection for guild ${context.guildId}`
-      );
-      const result = await streamManager.streamWithSelection(
-        context.guildId,
-        selectionIndex
-      );
+      // Use StreamController for unified selection (supports both numeric and fuzzy)
+      const controller = StreamController.getInstance();
+      const result = await controller.selectContent(context.guildId, selection);
 
       console.log(
-        `[StreamPlayerTools] streamWithSelection result: success=${result.success}, message=${result.message}`
+        `[StreamPlayerTools] selectContent result: success=${result.success}, message=${result.message}`
       );
 
       if (result.success) {
         return {
           success: true,
           formatted: result.message,
-          summary: `Selected and started streaming option ${selectionIndex}`,
+          summary: `Selected and started streaming: "${selection}"`,
         };
       } else {
         return {
@@ -266,7 +259,7 @@ export const selectStreamResultTool: DatabaseTool = {
         };
       }
     } catch (error) {
-      console.error("[StreamPlayerTools] Error in selectStreamResult:", error);
+      console.error("[StreamPlayerTools] Error in selectContent:", error);
       return {
         success: false,
         error:
@@ -275,6 +268,9 @@ export const selectStreamResultTool: DatabaseTool = {
     }
   },
 };
+
+// Keep old name for backward compatibility
+export const selectStreamResultTool = selectContentTool;
 
 export const stopStreamTool: DatabaseTool = {
   name: "stopStream",
@@ -325,14 +321,14 @@ export const stopStreamTool: DatabaseTool = {
 export const searchYouTubeTool: DatabaseTool = {
   name: "searchYouTube",
   description:
-    "Search YouTube for videos. Use this when the user asks to find or search for a video on YouTube (e.g., 'find the video on youtube charlie the unicorn', 'search youtube for X', 'play video from youtube'). The bot will search YouTube, show results, and allow the user to select which video to stream. IMPORTANT: Call this tool ONCE when the user wants to search YouTube. The tool will automatically detect if the user is in a voice channel. If the user is not in a voice channel, the search will still work and you can ask them to join one when they select a video. Do NOT call this tool multiple times for the same request.",
+    "Search YouTube for videos and stream them to a voice channel. Use this when the user asks to stream, play, or search YouTube content (e.g., 'stream youtube', 'stream [query] from youtube', 'play youtube video', 'search youtube for X', 'find video on youtube'). If the user says just 'stream youtube' without a specific video query, you should ask them what they want to search for before calling this tool. IMPORTANT: Call this tool ONCE when the user wants to search YouTube. The tool will automatically detect if the user is in a voice channel. If the user is not in a voice channel, the search will still work and you can ask them to join one when they select a video. Do NOT call this tool multiple times for the same request.",
   parameters: {
     type: "object",
     properties: {
       query: {
         type: "string",
         description:
-          "The search query for YouTube (e.g., 'charlie the unicorn', 'funny cat videos', 'tutorial python')",
+          "The search query for YouTube (e.g., 'charlie the unicorn', 'funny cat videos', 'tutorial python'). This is required - if the user didn't specify what to search for, ask them first before calling this tool.",
       },
       channelId: {
         type: "string",
@@ -572,14 +568,14 @@ export const searchYouTubeTool: DatabaseTool = {
 export const searchJellyfinTool: DatabaseTool = {
   name: "searchJellyfin",
   description:
-    "Search Jellyfin for movies or TV shows and stream them to a Discord voice channel. Use this when the user asks to search or stream content from Jellyfin (e.g., 'search for the labyrinth on jellyfin', 'play movie from jellyfin', 'stream from jellyfin'). The bot will search Jellyfin, show results, and allow the user to select which content to stream.",
+    "Search Jellyfin for movies or TV shows and stream them to a Discord voice channel. Use this when the user asks to stream, play, or search Jellyfin content (e.g., 'stream jellyfin', 'stream [query] from jellyfin', 'play movie from jellyfin', 'search jellyfin for X'). If the user says just 'stream jellyfin' without a specific movie/show query, you should ask them what they want to search for before calling this tool.",
   parameters: {
     type: "object",
     properties: {
       query: {
         type: "string",
         description:
-          "The search query for Jellyfin (e.g., 'the labyrinth', 'apocalypse now', 'the simpsons')",
+          "The search query for Jellyfin (e.g., 'the labyrinth', 'apocalypse now', 'the simpsons'). This is required - if the user didn't specify what to search for, ask them first before calling this tool.",
       },
       channelId: {
         type: "string",
@@ -668,12 +664,12 @@ export const searchJellyfinTool: DatabaseTool = {
             )
             .join("\n");
 
-          const formattedMessage = `${result.message}\n\n${optionsText}\n\nReply with the number (1-${result.searchResults.length}) to select.\n\n[IMPORTANT: When the user replies with a number, you MUST immediately call the selectStreamResult tool with their selection.]`;
+          const formattedMessage = `${result.message}\n\n${optionsText}\n\nReply with the number (1-${result.searchResults.length}) or a description to select.\n\n[IMPORTANT: When the user replies with a selection, you MUST immediately call the selectContent tool with their selection.]`;
 
           return {
             success: true,
             formatted: formattedMessage,
-            summary: `Found ${result.searchResults.length} Jellyfin results. Waiting for user selection. When user replies with a number, call selectStreamResult tool.`,
+            summary: `Found ${result.searchResults.length} Jellyfin results. Waiting for user selection. When user replies with a selection, call selectContent tool.`,
             data: {
               searchResults: result.searchResults,
               requiresSelection: true,
@@ -703,13 +699,405 @@ export const searchJellyfinTool: DatabaseTool = {
   },
 };
 
+// Playback control tools
+export const pauseStreamTool: DatabaseTool = {
+  name: "pauseStream",
+  description:
+    "Pause the current stream. Use when user asks to pause, stop playback temporarily, or put stream on hold.",
+  parameters: {
+    type: "object",
+    properties: {},
+    required: [],
+  },
+  async execute(params, context): Promise<string | DatabaseToolResult> {
+    try {
+      if (!context.guildId) {
+        return {
+          success: false,
+          error: "Guild context required",
+        };
+      }
+
+      const controller = StreamController.getInstance();
+      const result = await controller.controlPlayback(
+        context.guildId,
+        PlaybackAction.PAUSE
+      );
+
+      if (result.success) {
+        return {
+          success: true,
+          formatted: "⏸️ Stream paused.",
+          summary: "Paused the current stream",
+        };
+      } else {
+        return {
+          success: false,
+          error: result.error || "Failed to pause stream",
+        };
+      }
+    } catch (error) {
+      console.error("[StreamPlayerTools] Error in pauseStream:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to pause stream",
+      };
+    }
+  },
+};
+
+export const resumeStreamTool: DatabaseTool = {
+  name: "resumeStream",
+  description:
+    "Resume, unpause, continue, or play the current stream. Use when user asks to resume, continue, unpause, or play after pausing.",
+  parameters: {
+    type: "object",
+    properties: {},
+    required: [],
+  },
+  async execute(params, context): Promise<string | DatabaseToolResult> {
+    try {
+      if (!context.guildId) {
+        return {
+          success: false,
+          error: "Guild context required",
+        };
+      }
+
+      const controller = StreamController.getInstance();
+      const result = await controller.controlPlayback(
+        context.guildId,
+        PlaybackAction.RESUME
+      );
+
+      if (result.success) {
+        return {
+          success: true,
+          formatted: "▶️ Stream resumed.",
+          summary: "Resumed the current stream",
+        };
+      } else {
+        return {
+          success: false,
+          error: result.error || "Failed to resume stream",
+        };
+      }
+    } catch (error) {
+      console.error("[StreamPlayerTools] Error in resumeStream:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to resume stream",
+      };
+    }
+  },
+};
+
+export const seekStreamTool: DatabaseTool = {
+  name: "seekStream",
+  description:
+    "Seek to a specific time in the stream. Use when user asks to go to a specific time like 'go to 5:30', 'seek to 1:30:00', 'jump to 90 seconds'.",
+  parameters: {
+    type: "object",
+    properties: {
+      time: {
+        type: "string",
+        description:
+          "Time to seek to. Supports formats: '5:30' (5 min 30 sec), '1:30:00' (1 hour 30 min), '90s' (90 seconds), '1h30m' (1 hour 30 min).",
+      },
+    },
+    required: ["time"],
+  },
+  async execute(params, context): Promise<string | DatabaseToolResult> {
+    try {
+      if (!context.guildId) {
+        return {
+          success: false,
+          error: "Guild context required",
+        };
+      }
+
+      const { time } = params;
+      if (!time || typeof time !== "string") {
+        return {
+          success: false,
+          error: "Time parameter is required",
+        };
+      }
+
+      const seconds = parseTimeString(time);
+      if (seconds === null) {
+        return {
+          success: false,
+          error: `Invalid time format: "${time}". Use formats like "5:30", "1:30:00", "90s", or "1h30m".`,
+        };
+      }
+
+      const controller = StreamController.getInstance();
+      const result = await controller.controlPlayback(
+        context.guildId,
+        PlaybackAction.SEEK,
+        { position: seconds }
+      );
+
+      if (result.success) {
+        return {
+          success: true,
+          formatted: `⏩ Seeked to ${time}.`,
+          summary: `Seeked stream to ${time}`,
+        };
+      } else {
+        return {
+          success: false,
+          error: result.error || "Failed to seek stream",
+        };
+      }
+    } catch (error) {
+      console.error("[StreamPlayerTools] Error in seekStream:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to seek stream",
+      };
+    }
+  },
+};
+
+export const skipForwardTool: DatabaseTool = {
+  name: "skipForward",
+  description:
+    "Skip forward N seconds in the stream. Use when user asks to skip ahead, fast forward, or jump forward.",
+  parameters: {
+    type: "object",
+    properties: {
+      seconds: {
+        type: "number",
+        description:
+          "Number of seconds to skip forward. Default is 10 if not specified.",
+      },
+    },
+    required: [],
+  },
+  async execute(params, context): Promise<string | DatabaseToolResult> {
+    try {
+      if (!context.guildId) {
+        return {
+          success: false,
+          error: "Guild context required",
+        };
+      }
+
+      const seconds = params.seconds || 10;
+      if (typeof seconds !== "number" || seconds < 0) {
+        return {
+          success: false,
+          error: "Seconds must be a positive number",
+        };
+      }
+
+      const controller = StreamController.getInstance();
+      const result = await controller.controlPlayback(
+        context.guildId,
+        PlaybackAction.SKIP_FORWARD,
+        { seconds }
+      );
+
+      if (result.success) {
+        return {
+          success: true,
+          formatted: `⏩ Skipped forward ${seconds} seconds.`,
+          summary: `Skipped forward ${seconds} seconds`,
+        };
+      } else {
+        return {
+          success: false,
+          error: result.error || "Failed to skip forward",
+        };
+      }
+    } catch (error) {
+      console.error("[StreamPlayerTools] Error in skipForward:", error);
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Failed to skip forward",
+      };
+    }
+  },
+};
+
+export const skipBackwardTool: DatabaseTool = {
+  name: "skipBackward",
+  description:
+    "Skip backward N seconds in the stream. Use when user asks to rewind, go back, or jump backward.",
+  parameters: {
+    type: "object",
+    properties: {
+      seconds: {
+        type: "number",
+        description:
+          "Number of seconds to skip backward. Default is 10 if not specified.",
+      },
+    },
+    required: [],
+  },
+  async execute(params, context): Promise<string | DatabaseToolResult> {
+    try {
+      if (!context.guildId) {
+        return {
+          success: false,
+          error: "Guild context required",
+        };
+      }
+
+      const seconds = params.seconds || 10;
+      if (typeof seconds !== "number" || seconds < 0) {
+        return {
+          success: false,
+          error: "Seconds must be a positive number",
+        };
+      }
+
+      const controller = StreamController.getInstance();
+      const result = await controller.controlPlayback(
+        context.guildId,
+        PlaybackAction.SKIP_BACKWARD,
+        { seconds }
+      );
+
+      if (result.success) {
+        return {
+          success: true,
+          formatted: `⏪ Skipped backward ${seconds} seconds.`,
+          summary: `Skipped backward ${seconds} seconds`,
+        };
+      } else {
+        return {
+          success: false,
+          error: result.error || "Failed to skip backward",
+        };
+      }
+    } catch (error) {
+      console.error("[StreamPlayerTools] Error in skipBackward:", error);
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Failed to skip backward",
+      };
+    }
+  },
+};
+
+export const restartStreamTool: DatabaseTool = {
+  name: "restartStream",
+  description:
+    "Restart the stream from the beginning. Use when user asks to restart, start over, or go back to the beginning.",
+  parameters: {
+    type: "object",
+    properties: {},
+    required: [],
+  },
+  async execute(params, context): Promise<string | DatabaseToolResult> {
+    try {
+      if (!context.guildId) {
+        return {
+          success: false,
+          error: "Guild context required",
+        };
+      }
+
+      const controller = StreamController.getInstance();
+      const result = await controller.controlPlayback(
+        context.guildId,
+        PlaybackAction.RESTART
+      );
+
+      if (result.success) {
+        return {
+          success: true,
+          formatted: "🔄 Stream restarted from the beginning.",
+          summary: "Restarted the stream",
+        };
+      } else {
+        return {
+          success: false,
+          error: result.error || "Failed to restart stream",
+        };
+      }
+    } catch (error) {
+      console.error("[StreamPlayerTools] Error in restartStream:", error);
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Failed to restart stream",
+      };
+    }
+  },
+};
+
+export const nextEpisodeTool: DatabaseTool = {
+  name: "nextEpisode",
+  description:
+    "Skip to the next episode (TV shows only, Jellyfin provider). Use when user asks for next episode, next, or skip to next episode.",
+  parameters: {
+    type: "object",
+    properties: {},
+    required: [],
+  },
+  async execute(params, context): Promise<string | DatabaseToolResult> {
+    try {
+      if (!context.guildId) {
+        return {
+          success: false,
+          error: "Guild context required",
+        };
+      }
+
+      const controller = StreamController.getInstance();
+      const result = await controller.controlPlayback(
+        context.guildId,
+        PlaybackAction.NEXT_EPISODE
+      );
+
+      if (result.success) {
+        return {
+          success: true,
+          formatted: "⏭️ Skipped to next episode.",
+          summary: "Skipped to next episode",
+        };
+      } else {
+        return {
+          success: false,
+          error:
+            result.error ||
+            "Next episode not supported. This feature is only available for TV shows on Jellyfin.",
+        };
+      }
+    } catch (error) {
+      console.error("[StreamPlayerTools] Error in nextEpisode:", error);
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Failed to skip to next episode",
+      };
+    }
+  },
+};
+
 /**
  * Export all stream player tools for registration
+ * New tools use StreamController, old tools kept for backward compatibility
  */
 export const streamPlayerTools: DatabaseTool[] = [
   streamContentTool,
+  selectContentTool,
+  selectStreamResultTool, // Backward compatibility alias
+  pauseStreamTool,
+  resumeStreamTool,
+  seekStreamTool,
+  skipForwardTool,
+  skipBackwardTool,
+  restartStreamTool,
+  nextEpisodeTool,
+  stopStreamTool,
+  // Deprecated tools (kept for backward compatibility)
   searchYouTubeTool,
   searchJellyfinTool,
-  selectStreamResultTool,
-  stopStreamTool,
 ];

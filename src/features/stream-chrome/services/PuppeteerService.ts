@@ -296,30 +296,41 @@ export class PuppeteerService {
     }
 
     try {
-      // Start virtual display first
-      await this.startVirtualDisplay();
+      // TEMPORARILY DISABLED: Start virtual display first
+      // await this.startVirtualDisplay();
+      console.log(
+        `[PuppeteerService] Virtual display DISABLED for debugging - using system display`
+      );
+
+      // Use system DISPLAY if available, otherwise default
+      if (!process.env.DISPLAY) {
+        process.env.DISPLAY = ":0"; // Default to main display
+      }
+      console.log(
+        `[PuppeteerService] Using system DISPLAY: ${process.env.DISPLAY}`
+      );
 
       // Ensure DISPLAY is set in process.env (Puppeteer will inherit it)
-      process.env.DISPLAY = this.virtualDisplay;
+      // process.env.DISPLAY = this.virtualDisplay;
 
-      // Wait a bit more to ensure Xvfb is fully ready
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // TEMPORARILY DISABLED: Wait a bit more to ensure Xvfb is fully ready
+      // await new Promise((resolve) => setTimeout(resolve, 500));
 
-      // Verify Xvfb is still running
-      if (!this.xvfbProcess || this.xvfbProcess.killed) {
-        throw new Error("Xvfb process died before browser launch");
-      }
+      // TEMPORARILY DISABLED: Verify Xvfb is still running
+      // if (!this.xvfbProcess || this.xvfbProcess.killed) {
+      //   throw new Error("Xvfb process died before browser launch");
+      // }
 
-      // Verify display socket exists
-      const displayNum = parseInt(this.virtualDisplay.replace(":", ""));
-      const socketPath = `/tmp/.X11-unix/X${displayNum}`;
-      if (!fs.existsSync(socketPath)) {
-        throw new Error(`Xvfb display socket not found at ${socketPath}`);
-      }
+      // TEMPORARILY DISABLED: Verify display socket exists
+      // const displayNum = parseInt(this.virtualDisplay.replace(":", ""));
+      // const socketPath = `/tmp/.X11-unix/X${displayNum}`;
+      // if (!fs.existsSync(socketPath)) {
+      //   throw new Error(`Xvfb display socket not found at ${socketPath}`);
+      // }
 
-      console.log(
-        `[PuppeteerService] Verified Xvfb is ready on ${this.virtualDisplay}`
-      );
+      // console.log(
+      //   `[PuppeteerService] Verified Xvfb is ready on ${this.virtualDisplay}`
+      // );
 
       // Use real Chrome profile (requires Chrome to be closed)
       const userDataDir = "/home/ln64/.config/google-chrome";
@@ -329,12 +340,12 @@ export class PuppeteerService {
       // Close Chrome if it's already running
       await this.closeRunningChrome(userDataDir);
 
-      // Force X11 by unsetting Wayland environment variables
+      // TEMPORARILY DISABLED: Force X11 by unsetting Wayland environment variables
       // On Wayland systems (like Hyprland), Chrome will try to use Wayland by default
       // We need to explicitly force it to use X11 via the virtual display
       const env: NodeJS.ProcessEnv = {
         ...process.env,
-        DISPLAY: this.virtualDisplay, // Explicitly set DISPLAY for Chrome
+        DISPLAY: process.env.DISPLAY || ":0", // Use system DISPLAY instead of virtual
         // Unset/override Wayland variables to force X11
         WAYLAND_DISPLAY: undefined, // Remove Wayland display
         XDG_SESSION_TYPE: "x11", // Force X11 session type
@@ -361,8 +372,8 @@ export class PuppeteerService {
         env,
         args: [
           // Force X11 backend (important for Wayland systems)
-          `--use-gl=swiftshader`, // Use software rendering (works better in virtual display)
-          `--disable-gpu`, // Disable GPU acceleration (not needed in virtual display)
+          // `--use-gl=swiftshader`, // Use software rendering (works better in virtual display)
+          // `--disable-gpu`, // Disable GPU acceleration (not needed in virtual display)
           // Enable screen/tab capturing capabilities
           `--enable-usermedia-screen-capturing`,
           `--allow-http-screen-capture`,
@@ -402,7 +413,7 @@ export class PuppeteerService {
         `[PuppeteerService] Browser initialized successfully with profile: ${userDataDir}`
       );
       console.log(
-        `[PuppeteerService] Browser running in virtual display ${this.virtualDisplay} (hidden from desktop)`
+        `[PuppeteerService] Browser running on system display ${process.env.DISPLAY} (virtual display disabled for debugging)`
       );
 
       // Verify browser is using virtual display
@@ -415,28 +426,28 @@ export class PuppeteerService {
           `[PuppeteerService] DISPLAY environment: ${process.env.DISPLAY}`
         );
 
-        // Check if Chrome process is actually using the virtual display
+        // TEMPORARILY DISABLED: Check if Chrome process is actually using the virtual display
         // by verifying the display is accessible
-        try {
-          // Try to verify by checking if we can connect to the display
-          const { stdout } = await execAsync(
-            `DISPLAY=${this.virtualDisplay} xdpyinfo -display ${this.virtualDisplay} 2>&1 || echo "FAIL"`
-          );
-          if (!stdout.includes("FAIL") && stdout.length > 0) {
-            console.log(
-              `[PuppeteerService] ✓ Verified virtual display ${this.virtualDisplay} is accessible`
-            );
-          } else {
-            console.log(
-              `[PuppeteerService] ⚠ Could not verify display with xdpyinfo (may not be installed or display not ready)`
-            );
-          }
-        } catch (error) {
-          // xdpyinfo might not be installed, that's okay
-          console.log(
-            `[PuppeteerService] Note: Could not verify display with xdpyinfo (may not be installed)`
-          );
-        }
+        // try {
+        //   // Try to verify by checking if we can connect to the display
+        //   const { stdout } = await execAsync(
+        //     `DISPLAY=${this.virtualDisplay} xdpyinfo -display ${this.virtualDisplay} 2>&1 || echo "FAIL"`
+        //   );
+        //   if (!stdout.includes("FAIL") && stdout.length > 0) {
+        //     console.log(
+        //       `[PuppeteerService] ✓ Verified virtual display ${this.virtualDisplay} is accessible`
+        //     );
+        //   } else {
+        //     console.log(
+        //       `[PuppeteerService] ⚠ Could not verify display with xdpyinfo (may not be installed or display not ready)`
+        //     );
+        //   }
+        // } catch (error) {
+        //   // xdpyinfo might not be installed, that's okay
+        //   console.log(
+        //     `[PuppeteerService] Note: Could not verify display with xdpyinfo (may not be installed)`
+        //   );
+        // }
       }
 
       // Handle browser crashes
@@ -447,8 +458,8 @@ export class PuppeteerService {
       });
     } catch (error) {
       console.error("[PuppeteerService] Failed to initialize browser:", error);
-      // Clean up virtual display on error
-      await this.stopVirtualDisplay();
+      // TEMPORARILY DISABLED: Clean up virtual display on error
+      // await this.stopVirtualDisplay();
       throw error;
     }
   }
@@ -522,12 +533,33 @@ export class PuppeteerService {
    * Close a page
    */
   async closePage(page: Page): Promise<void> {
+    // Check if page is already closed or browser disconnected
+    if (page.isClosed()) {
+      return; // Already closed, nothing to do
+    }
+
+    // Check if browser is still connected
+    if (this.browser && !this.browser.isConnected()) {
+      console.warn("[PuppeteerService] Browser disconnected, cannot close page");
+      return;
+    }
+
     try {
       if (!page.isClosed()) {
         await page.close();
       }
     } catch (error) {
-      console.error("[PuppeteerService] Error closing page:", error);
+      // Ignore errors if page is already closed or browser disconnected
+      if (
+        error instanceof Error &&
+        (error.message.includes("detached") ||
+          error.message.includes("Target closed") ||
+          error.message.includes("Connection closed"))
+      ) {
+        console.warn("[PuppeteerService] Page already closed/detached, skipping close");
+      } else {
+        console.error("[PuppeteerService] Error closing page:", error);
+      }
     }
   }
 

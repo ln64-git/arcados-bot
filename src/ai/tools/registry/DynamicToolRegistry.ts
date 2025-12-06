@@ -40,9 +40,9 @@ const DEFAULT_STRATEGY: ToolLoadStrategy = {
 	// Keyword-based tool selection
 	keywords: new Map([
 		// Media/playback keywords
-		["play", ["media"]],
-		["music", ["media"]],
-		["song", ["media"]],
+		["play", ["media", "stream"]], // Play can be for both media and streaming
+		["music", ["media", "stream"]], // Music can be from YouTube/Jellyfin
+		["song", ["media", "stream"]],
 		["pause", ["voice", "media"]],
 		["stop", ["voice", "media"]],
 		["resume", ["voice", "media"]],
@@ -53,6 +53,8 @@ const DEFAULT_STRATEGY: ToolLoadStrategy = {
 		["stream", ["stream"]],
 		["movie", ["stream"]],
 		["watch", ["stream"]],
+		["jellyfin", ["stream"]],
+		["youtube", ["stream"]],
 
 		// User/social keywords
 		["who is", ["user", "relationship"]],
@@ -86,7 +88,7 @@ const DEFAULT_STRATEGY: ToolLoadStrategy = {
 
 	// Domain-based tool selection
 	domain: new Map([
-		["voice", ["media", "voice"]], // Voice always gets media + voice tools
+		["voice", ["media", "voice", "stream"]], // Voice always gets media + voice + stream tools
 		["chat", ["user", "relationship", "conversation"]], // Chat gets social tools
 		["slash", []], // Slash commands load tools explicitly
 	]),

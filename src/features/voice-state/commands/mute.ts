@@ -1,10 +1,10 @@
 import { SlashCommandBuilder } from "discord.js";
 import type { Command } from "../../../types";
-import type { VoiceChannelManager } from "../VoiceChannelManager";
+import type { VoiceStateCoordinator } from "../VoiceStateCoordinator";
 
-// Extend the Client interface to include voiceChannelManager
+// Extend the Client interface to include voiceStateCoordinator
 interface BotClient {
-  voiceChannelManager?: VoiceChannelManager;
+  voiceStateCoordinator?: VoiceStateCoordinator;
 }
 
 export const muteCommand: Command = {
@@ -16,6 +16,12 @@ export const muteCommand: Command = {
         .setName("user")
         .setDescription("The user to mute")
         .setRequired(true)
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName("unmute")
+        .setDescription("Set to true to unmute instead")
+        .setRequired(false)
     ),
 
   async execute(interaction) {
@@ -47,13 +53,13 @@ export const muteCommand: Command = {
       return;
     }
 
-    // Get the voice channel manager from the bot
+    // Get the voice state coordinator from the bot
     const bot = interaction.client as BotClient;
-    const voiceChannelManager = bot.voiceChannelManager;
+    const coordinator = bot.voiceStateCoordinator;
 
-    if (!voiceChannelManager) {
+    if (!coordinator) {
       await interaction.reply({
-        content: "🔸 Voice channel manager is not available.",
+        content: "🔸 Voice state coordinator is not available.",
         ephemeral: true,
       });
       return;
@@ -61,11 +67,11 @@ export const muteCommand: Command = {
 
     try {
       // Check if this is a user channel and user is the owner
-      const ownerResult = await voiceChannelManager.getChannelOwner(
+      const currentOwner = await coordinator.getOwnershipService().getOwner(
         voiceChannel.id
       );
 
-      if (!ownerResult.success || !ownerResult.data) {
+      if (!currentOwner) {
         await interaction.reply({
           content: "🔸 This is not a user-owned voice channel.",
           ephemeral: true,
@@ -73,7 +79,7 @@ export const muteCommand: Command = {
         return;
       }
 
-      if (ownerResult.data !== member.user.id) {
+      if (currentOwner !== member.user.id) {
         await interaction.reply({
           content: "🔸 You are not the owner of this channel.",
           ephemeral: true,
@@ -91,23 +97,31 @@ export const muteCommand: Command = {
         return;
       }
 
-      // Apply mute
-      const muteResult = await voiceChannelManager.applyMute(
-        voiceChannel.id,
-        targetUser.id
-      );
-      if (!muteResult.success) {
-        await interaction.reply({
-          content: `🔸 Failed to mute user: ${muteResult.error}`,
-          ephemeral: true,
-        });
-        return;
-      }
+      // Get toggle option (true = unmute, false/default = mute)
+      const shouldUnmute = interaction.options.getBoolean("unmute") ?? false;
 
-      await interaction.reply({
-        content: `🔹 Muted **${targetUser.displayName}** in this channel.`,
-        ephemeral: false,
-      });
+      // Apply mute or unmute
+      if (shouldUnmute) {
+        await coordinator.getModerationService().unmute(
+          voiceChannel.id,
+          targetUser.id,
+          member.user.id
+        );
+        await interaction.reply({
+          content: `🔹 Unmuted **${targetUser.displayName}** in this channel.`,
+          ephemeral: false,
+        });
+      } else {
+        await coordinator.getModerationService().mute(
+          voiceChannel.id,
+          targetUser.id,
+          member.user.id
+        );
+        await interaction.reply({
+          content: `🔹 Muted **${targetUser.displayName}** in this channel.`,
+          ephemeral: false,
+        });
+      }
     } catch (error) {
       console.error("🔸 Error in mute command:", error);
       await interaction.reply({

@@ -4,6 +4,7 @@ import type {
 	User,
 	GuildMember,
 	Role,
+	VoiceState,
 } from "discord.js";
 import { Message } from "discord.js";
 import { RelationshipMapper } from "../social-intelligence/relationship-mapping/RelationshipMapper";
@@ -51,6 +52,7 @@ export class LiveEventSync {
 		reactionsSynced: 0,
 		membersSynced: 0,
 		duplicatesSkipped: 0,
+		voiceEventsProcessed: 0,
 	};
 
 	constructor(
@@ -121,6 +123,9 @@ export class LiveEventSync {
 		this.client.on("guildMemberRemove", (member) => {
 			this.handleGuildMemberRemove(member as GuildMember).catch(() => {});
 		});
+
+		// Voice state updates are now handled directly in Bot.ts via VoiceStateCoordinator
+		// No need for LiveEventSync to handle voice events
 
 		this.startRollupTimer();
 	}
@@ -585,6 +590,13 @@ export class LiveEventSync {
 			// Silent failure
 		}
 	}
+
+	/**
+	 * Handle voice state update (REMOVED - now handled in Bot.ts)
+	 *
+	 * Voice state handling has been moved to Bot.ts where VoiceStateCoordinator
+	 * is instantiated and manages all voice state events directly.
+	 */
 
 	/**
 	 * Get recent messages in channel for proximity detection

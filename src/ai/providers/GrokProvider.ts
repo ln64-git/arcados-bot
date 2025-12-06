@@ -173,11 +173,21 @@ export class GrokProvider extends BaseAIProvider {
     }
   }
 
-  // Tool calling support using Vercel AI SDK
+  // Tool calling support using Grok's tools API
   override async callTextAPIWithTools(
     systemPrompt: string,
     userPrompt: string,
-    tools: Array<{ name: string; description: string; parameters: any }>,
+    // NOTE: AIEngine currently passes OpenAI-style tools:
+    // { type: "function", function: { name, description, parameters } }
+    // We also gracefully accept already-normalized Grok tools that
+    // have name/description/parameters at the top level.
+    tools: Array<
+      | {
+          type: "function";
+          function: { name: string; description: string; parameters: any };
+        }
+      | { name: string; description: string; parameters: any }
+    >,
     toolResults?: ToolCallResponse[],
     runtimeConfig?: {
       maxTokens?: number;
@@ -234,12 +244,21 @@ export class GrokProvider extends BaseAIProvider {
 
       const functionTools =
         tools.length > 0
-          ? tools.map((tool) => ({
-              type: "function",
-              name: tool.name,
-              description: tool.description,
-              parameters: tool.parameters,
-            }))
+          ? tools.map((tool) => {
+              // Support both OpenAI-style ({ type, function: { ... } })
+              // and already-normalized ({ name, description, parameters }) tools
+              const fn: any =
+                (tool as any).function && typeof (tool as any).function === "object"
+                  ? (tool as any).function
+                  : tool;
+
+              return {
+                type: "function" as const,
+                name: fn.name,
+                description: fn.description,
+                parameters: fn.parameters,
+              };
+            })
           : [];
 
       const toolPayload =

@@ -20,8 +20,8 @@ export const AUDIO_CONSTANTS = {
   MAX_BUFFER_SIZE_BYTES: 5_760_000, // ~30s at 48kHz stereo 16-bit (5.76MB)
 
   // Audio level thresholds (filter silence/noise before transcription)
-  MIN_AUDIO_RMS: 500, // Minimum RMS (Root Mean Square) to consider audio as speech
-  // RMS of 500 corresponds to roughly -40dB, filters out echo/quiet hallucinations while accepting clear speech
+  MIN_AUDIO_RMS: 250, // Minimum RMS (Root Mean Square) to consider audio as speech (balanced sensitivity)
+  // RMS of 250 corresponds to roughly -48dB, good balance for picking up clear speech while filtering background noise
 } as const;
 
 /**
@@ -36,7 +36,7 @@ export const TRANSCRIPTION_CONSTANTS = {
   TRANSCRIPTION_CHECK_INTERVAL_MS: 500, // Check every 500ms
 
   // Prevent duplicate utterances within a short time window
-  DUPLICATE_TEXT_WINDOW_MS: 10000, // Ignore exact duplicates within ~10 seconds (prevents echo/hallucination re-processing)
+  DUPLICATE_TEXT_WINDOW_MS: 5000, // Ignore exact duplicates within ~5 seconds (reduced from 10s for better responsiveness)
 } as const;
 
 /**

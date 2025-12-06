@@ -71,7 +71,11 @@ export class VoiceAssistantManager {
   private enginePromise: Promise<AIEngine> | null = null;
   private mediaPlayer: MediaPlayerManager;
   private client?: Client;
+  private db?: any; // PostgreSQLManager instance (optional, for tool context)
   private logger: VoiceLogger;
+  // Track guilds where we paused media playback in order to speak a TTS response.
+  // After TTS finishes, we resume media automatically for those guilds.
+  private mediaPausedForTTS: Set<Snowflake> = new Set();
 
   // Transcription interval timers
   private transcriptionTimers: Map<Snowflake, NodeJS.Timeout> = new Map();
@@ -110,8 +114,9 @@ export class VoiceAssistantManager {
   // Track request start times for response time metrics (keyed by guildId:userId)
   private requestStartTimes: Map<string, number> = new Map();
 
-  // Feature flag for streaming TTS (set to true for low-latency streaming)
-  private useStreamingTTS = true;
+  // Feature flag for streaming TTS (set to false to enable tool calling)
+  // TODO: Implement streaming with tool support for low-latency tool execution
+  private useStreamingTTS = false;
   private recentUtterances: Map<
     Snowflake,
     { text: string; timestamp: number; userId?: string }
@@ -216,9 +221,11 @@ export class VoiceAssistantManager {
    * Initialize voice assistant with Discord client
    *
    * @param client Discord client
+   * @param db Optional PostgreSQL database manager for tool context
    */
-  public async initialize(client: Client): Promise<void> {
+  public async initialize(client: Client, db?: any): Promise<void> {
     this.client = client;
+    this.db = db;
 
     // Check configuration
     if (!config.voiceAssistantEnabled) {
@@ -903,13 +910,28 @@ export class VoiceAssistantManager {
       }
 
       // Check if trigger word is detected in this chunk
-      // If so, wait for complete utterance before processing to avoid cutting off queries
+      // For responsiveness, process immediately instead of waiting for full silence.
       if (triggerResult.detected) {
-        // Trigger word detected - mark that we're waiting for complete utterance
-        this.pendingTriggerDetections.set(session.guildId, true);
+        // Use the accumulated transcription buffer if available; it may contain
+        // a bit more context than this single chunk.
+        const textToProcess =
+          session.transcriptionBuffer.trim() || transcription.trim();
+
         this.logger.debug(
-          `[TRIGGER] Trigger word detected in chunk, waiting for complete utterance before processing`
+          `[TRIGGER] Trigger word detected, processing immediately: "${textToProcess}" for guild ${session.guildId}`
         );
+
+        // Clear any pending trigger flags for this guild
+        this.pendingTriggerDetections.delete(session.guildId);
+
+        // Optionally flush buffered audio to avoid building up long chunks
+        try {
+          this.audioProcessor.flushBuffer(session.sessionId);
+        } catch {
+          // Non-critical; ignore flush errors
+        }
+
+        await this.processTranscriptionBuffer(session, textToProcess);
         return;
       }
 
@@ -1990,14 +2012,20 @@ export class VoiceAssistantManager {
       }
 
       // Build AIContext for voice streaming
-      const baseContext = new AIContextBuilder()
+      const contextBuilder = new AIContextBuilder()
         .guild(session.guildId)
         .user(userId)
         .channel(session.channelId)
         .domain("voice")
         .streaming(true)
-        .withHistory(session.conversationHistory || [])
-        .build();
+        .withHistory(session.conversationHistory || []);
+
+      // Add database if available (needed for some tools)
+      if (this.db) {
+        contextBuilder.withDatabase(this.db);
+      }
+
+      const baseContext = contextBuilder.build();
 
       const context = await enrichAIContext(baseContext, {}, { query });
       this.logger.debug(`[STREAMING] Context enriched for guild ${session.guildId}`);
@@ -2213,6 +2241,18 @@ export class VoiceAssistantManager {
       const currentMode =
         this.sessionModes.get(session.guildId) || VoiceMode.COMMAND;
 
+      // If media is currently playing, pause it while we speak the response,
+      // then resume it afterward.
+      const mediaState = this.mediaPlayer.getState(session.guildId);
+      const wasMediaPlaying = mediaState.state === "playing";
+      if (wasMediaPlaying && !this.mediaPausedForTTS.has(session.guildId)) {
+        this.logger.info(
+          `Pausing media playback for TTS in guild ${session.guildId}`
+        );
+        this.mediaPlayer.pause(session.guildId);
+        this.mediaPausedForTTS.add(session.guildId);
+      }
+
       // Generate AI response with timeout
       const timeoutPromise = new Promise<AIResponse>((_, reject) => {
         setTimeout(
@@ -2232,6 +2272,11 @@ export class VoiceAssistantManager {
         .user(userId)
         .channel(session.channelId)
         .domain("voice");
+
+      // Add database if available (needed for some tools)
+      if (this.db) {
+        contextBuilder.withDatabase(this.db);
+      }
 
       let responsePromise: Promise<AIResponse>;
 
@@ -2285,6 +2330,25 @@ export class VoiceAssistantManager {
         throw new Error(response.error || "AI response generation failed");
       }
 
+      // If media playback tools were executed, we only want the music —
+      // skip speaking any textual response (like haikus or confirmations).
+      const executedTools = response.executedTools || [];
+      const mediaTools = new Set([
+        "playMedia",
+        "pauseMedia",
+        "resumeMedia",
+        "stopMedia",
+        "skipMedia",
+      ]);
+      if (executedTools.some((name) => mediaTools.has(name))) {
+        this.logger.info(
+          `Media control tools executed (${executedTools.join(
+            ", "
+          )}), skipping TTS response.`
+        );
+        return;
+      }
+
       const responseText = response.content;
 
       if (!responseText || responseText.trim().length === 0) {
@@ -2334,6 +2398,22 @@ export class VoiceAssistantManager {
         errorType,
         "I encountered an error processing your request. Please try again."
       );
+    } finally {
+      // If we paused media for this TTS response, resume it now.
+      if (this.mediaPausedForTTS.has(session.guildId)) {
+        this.mediaPausedForTTS.delete(session.guildId);
+        try {
+          this.logger.info(
+            `Resuming media playback after TTS in guild ${session.guildId}`
+          );
+          this.mediaPlayer.resume(session.guildId);
+        } catch (resumeError) {
+          this.logger.error(
+            "Failed to resume media playback after TTS:",
+            resumeError
+          );
+        }
+      }
     }
   }
 

@@ -312,6 +312,20 @@ export class MediaPlayerManager {
     const player = this.getPlayer(guildId);
     const state = this.getState(guildId);
 
+    // Ensure the media player's audio is subscribed to the voice connection.
+    // TTS or other systems may have temporarily subscribed a different player.
+    const session = this.connectionManager.getSession(guildId);
+    if (session?.connection) {
+      try {
+        session.connection.subscribe(player.getPlayer());
+      } catch (error) {
+        console.error(
+          "[MediaPlayerManager] Failed to resubscribe audio player on resume:",
+          error
+        );
+      }
+    }
+
     player.resume();
     state.state = PlaybackState.PLAYING;
 

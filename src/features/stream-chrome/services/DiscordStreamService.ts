@@ -107,7 +107,20 @@ export class DiscordStreamService {
 			await this.userAccountService.stopStreaming(guildId);
 			console.log(`[DiscordStreamService] Stopped Go Live stream for guild ${guildId}`);
 		} catch (error) {
-			console.error("[DiscordStreamService] Error stopping stream:", error);
+			// Ignore errors if frame/page is detached (already closed)
+			if (
+				error instanceof Error &&
+				(error.message.includes("detached") ||
+					error.message.includes("Target closed") ||
+					error.message.includes("Connection closed") ||
+					error.message.includes("disposed"))
+			) {
+				console.warn(
+					"[DiscordStreamService] Page/frame already detached, stream may already be stopped"
+				);
+			} else {
+				console.error("[DiscordStreamService] Error stopping stream:", error);
+			}
 		}
 	}
 
@@ -115,7 +128,24 @@ export class DiscordStreamService {
 	 * Sign out of Discord user account
 	 */
 	async signOut(): Promise<void> {
-		await this.userAccountService.signOut();
+		try {
+			await this.userAccountService.signOut();
+		} catch (error) {
+			// Ignore errors if frame/page is detached (already closed)
+			if (
+				error instanceof Error &&
+				(error.message.includes("detached") ||
+					error.message.includes("Target closed") ||
+					error.message.includes("Connection closed") ||
+					error.message.includes("disposed"))
+			) {
+				console.warn(
+					"[DiscordStreamService] Page/frame already detached, sign out may have already occurred"
+				);
+			} else {
+				console.error("[DiscordStreamService] Error signing out:", error);
+			}
+		}
 	}
 
 	/**

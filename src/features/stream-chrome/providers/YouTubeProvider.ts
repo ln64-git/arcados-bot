@@ -10,6 +10,15 @@ import { STREAM_CONSTANTS } from "../constants.js";
 export class YouTubeProvider extends BaseProvider {
 	constructor() {
 		super("youtube", "https://www.youtube.com", ["unknown"]);
+		// YouTube supports all playback controls except nextEpisode
+		this.capabilities = {
+			pause: true,
+			resume: true,
+			seek: true,
+			skip: true,
+			restart: true,
+			nextEpisode: false,
+		};
 	}
 
 	/**

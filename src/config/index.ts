@@ -75,6 +75,9 @@ export interface BotConfig {
   jellyfinServerUrl?: string; // Jellyfin server base URL
   jellyfinApiKey?: string; // API key for authentication
   jellyfinUserId?: string; // User ID (optional, can be derived from API key)
+
+  // Plex settings
+  plexServerUrl?: string; // Plex server base URL (e.g., http://localhost:32400)
 }
 
 function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
@@ -134,7 +137,11 @@ function validateConfig(): BotConfig {
     spawnChannelIds: process.env.SPAWN_CHANNEL_IDS
       ? process.env.SPAWN_CHANNEL_IDS.split(",").map((id) => id.trim())
       : undefined,
-    spawnChannelId: process.env.SPAWN_CHANNEL_ID || undefined,
+    spawnChannelId:
+      process.env.SPAWN_CHANNEL_ID ||
+      (process.env.SPAWN_CHANNEL_IDS
+        ? process.env.SPAWN_CHANNEL_IDS.split(",")[0]?.trim()
+        : undefined),
     excludedChannelIds: process.env.EXCLUDED_CHANNEL_IDS
       ? process.env.EXCLUDED_CHANNEL_IDS.split(",").map((id) => id.trim())
       : undefined,
@@ -228,6 +235,9 @@ function validateConfig(): BotConfig {
     jellyfinServerUrl: process.env.JELLYFIN_SERVER_URL || undefined,
     jellyfinApiKey: process.env.JELLYFIN_API_KEY || undefined,
     jellyfinUserId: process.env.JELLYFIN_USER_ID || undefined,
+
+    // Plex settings
+    plexServerUrl: process.env.PLEX_SERVER_URL || undefined,
   };
 
   // Validate node environment

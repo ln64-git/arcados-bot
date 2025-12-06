@@ -41,9 +41,25 @@ export class DiscordUserAccountService {
       throw new Error("Browser not initialized");
     }
 
+    // Check if browser is still connected
+    if (!this.browser.isConnected()) {
+      throw new Error(
+        "Browser disconnected. The browser connection was lost. Please try again."
+      );
+    }
+
     if (this.isLoggedIn && this.discordPage) {
-      console.log("[DiscordUserAccountService] Already signed in");
-      return;
+      // Verify the page is still valid
+      if (this.discordPage.isClosed()) {
+        console.log(
+          "[DiscordUserAccountService] Discord page was closed, re-signing in..."
+        );
+        this.discordPage = null;
+        this.isLoggedIn = false;
+      } else {
+        console.log("[DiscordUserAccountService] Already signed in");
+        return;
+      }
     }
 
     // Check if credentials are provided
@@ -51,13 +67,20 @@ export class DiscordUserAccountService {
       if (!config.streamPlayerUserToken) {
         throw new Error(
           "Discord user account credentials not configured. " +
-            "Set STREAM_PLAYER_USER_EMAIL and STREAM_PLAYER_USER_PASSWORD, " +
-            "or STREAM_PLAYER_USER_TOKEN in .env"
+          "Set STREAM_PLAYER_USER_EMAIL and STREAM_PLAYER_USER_PASSWORD, " +
+          "or STREAM_PLAYER_USER_TOKEN in .env"
         );
       }
     }
 
     try {
+      // Verify browser is still connected before creating page
+      if (!this.browser.isConnected()) {
+        throw new Error(
+          "Browser disconnected. Cannot create Discord page. Please try again."
+        );
+      }
+
       // Create new page for Discord
       this.discordPage = await this.browser.newPage();
 
@@ -204,577 +227,33 @@ export class DiscordUserAccountService {
     }
 
     try {
-      // Step 1: Click on the server/guild in the sidebar
+      // Step 1: Navigate to the voice channel (reuse existing function)
       console.log(
-        `[DiscordUserAccountService] Step 1: Clicking on server ${guildId} in sidebar...`
+        `[DiscordUserAccountService] Navigating to voice channel ${channelId}...`
       );
 
-      // First, wait for the sidebar to be visible
-      try {
-        await this.discordPage.waitForSelector(
-          '[class*="guild"], [class*="server"], [data-list-item-id*="guildsnav"]',
-          {
-            timeout: 10000,
-          }
-        );
-        console.log(`[DiscordUserAccountService] Sidebar is visible`);
-      } catch (error) {
-        console.warn(
-          `[DiscordUserAccountService] Sidebar not found, continuing anyway...`
-        );
-      }
+      // Check if we're already on the right channel page
+      const currentUrl = this.discordPage.url();
+      const expectedUrl = `https://discord.com/channels/${guildId}/${channelId}`;
 
-      // Helper function to click an element with multiple methods
-      const clickElement = async (element: any, description: string) => {
-        try {
-          // Method 1: Standard click
-          await element.click({ delay: 100 });
-          console.log(
-            `[DiscordUserAccountService] ${description} - Standard click succeeded`
-          );
-          return true;
-        } catch (error1) {
-          console.log(
-            `[DiscordUserAccountService] ${description} - Standard click failed, trying mouse events...`
-          );
-          try {
-            // Method 2: Mouse events
-            const box = await element.boundingBox();
-            if (box && this.discordPage) {
-              await this.discordPage.mouse.move(
-                box.x + box.width / 2,
-                box.y + box.height / 2
-              );
-              await delay(100);
-              await this.discordPage.mouse.down();
-              await delay(50);
-              await this.discordPage.mouse.up();
-              console.log(
-                `[DiscordUserAccountService] ${description} - Mouse click succeeded`
-              );
-              return true;
-            }
-          } catch (error2) {
-            console.log(
-              `[DiscordUserAccountService] ${description} - Mouse click failed, trying evaluate click...`
-            );
-            try {
-              // Method 3: Evaluate click
-              await element.evaluate((el: HTMLElement) => {
-                el.click();
-              });
-              console.log(
-                `[DiscordUserAccountService] ${description} - Evaluate click succeeded`
-              );
-              return true;
-            } catch (error3) {
-              console.error(
-                `[DiscordUserAccountService] ${description} - All click methods failed:`,
-                error3
-              );
-              return false;
-            }
-          }
-        }
-        return false;
-      };
-
-      // Try to find and click the server icon using Puppeteer's native methods
-      let serverClicked = false;
-
-      // Try exact selector first - the element with role="treeitem" and data-list-item-id
-      try {
-        const guildSelector = `[data-list-item-id="guildsnav___${guildId}"]`;
-        await this.discordPage.waitForSelector(guildSelector, {
-          timeout: 10000,
-          visible: true,
-        });
-        const guildElement = await this.discordPage.$(guildSelector);
-        if (guildElement) {
-          console.log(
-            `[DiscordUserAccountService] Found guild element with selector: ${guildSelector}`
-          );
-          // Scroll into view using evaluate
-          await guildElement.evaluate((el) =>
-            el.scrollIntoView({ behavior: "smooth", block: "center" })
-          );
-          await delay(1000); // Wait for scroll animation
-
-          // Try clicking the element itself first
-          serverClicked = await clickElement(guildElement, "Guild element");
-
-          // If direct click fails, try clicking the parent blobContainer
-          if (!serverClicked) {
-            console.log(
-              `[DiscordUserAccountService] Direct click failed, trying parent container...`
-            );
-            const parentInfo = await guildElement.evaluate((el) => {
-              // Find the parent blobContainer
-              let current = el.parentElement;
-              while (current) {
-                if (
-                  current.classList.contains("blobContainer") ||
-                  current.getAttribute("data-dnd-name")
-                ) {
-                  return {
-                    found: true,
-                    className: current.className,
-                    dataDndName: current.getAttribute("data-dnd-name"),
-                  };
-                }
-                current = current.parentElement;
-              }
-              return { found: false };
-            });
-
-            if (parentInfo.found) {
-              // Try to find and click the blobContainer using a different selector
-              const blobContainerSelector = `[data-dnd-name][data-list-item-id*="${guildId}"], .blobContainer[data-list-item-id*="${guildId}"]`;
-              try {
-                const blobContainer = await this.discordPage.$(
-                  blobContainerSelector
-                );
-                if (blobContainer) {
-                  await blobContainer.evaluate((el) =>
-                    el.scrollIntoView({ behavior: "smooth", block: "center" })
-                  );
-                  await delay(500);
-                  serverClicked = await clickElement(
-                    blobContainer,
-                    "BlobContainer parent"
-                  );
-                } else {
-                  // Try finding by data-dnd-name
-                  const allBlobContainers = await this.discordPage.$$(
-                    ".blobContainer, [data-dnd-name]"
-                  );
-                  for (const container of allBlobContainers) {
-                    const hasGuildId = await container.evaluate(
-                      (el, targetId) => {
-                        const dataId =
-                          el.getAttribute("data-list-item-id") || "";
-                        const dndName = el.getAttribute("data-dnd-name") || "";
-                        return (
-                          dataId.includes(targetId) ||
-                          el.querySelector(
-                            `[data-list-item-id*="${targetId}"]`
-                          ) !== null
-                        );
-                      },
-                      guildId
-                    );
-
-                    if (hasGuildId) {
-                      await container.evaluate((el) =>
-                        el.scrollIntoView({
-                          behavior: "smooth",
-                          block: "center",
-                        })
-                      );
-                      await delay(500);
-                      serverClicked = await clickElement(
-                        container,
-                        "BlobContainer by search"
-                      );
-                      if (serverClicked) break;
-                    }
-                  }
-                }
-              } catch (error) {
-                console.error(
-                  `[DiscordUserAccountService] Failed to click parent container:`,
-                  error
-                );
-              }
-            }
-          }
-        }
-      } catch (error) {
-        console.error(
-          `[DiscordUserAccountService] Exact selector failed:`,
-          error
-        );
-      }
-
-      // If exact selector failed, try finding by searching all guild elements
-      if (!serverClicked) {
-        console.log(
-          `[DiscordUserAccountService] Trying fallback search for guild element...`
-        );
-        const serverInfo = await this.discordPage.evaluate((targetGuildId) => {
-          // Try multiple selectors
-          const selectors = [
-            `[data-list-item-id="guildsnav___${targetGuildId}"]`,
-            `[data-list-item-id*="guildsnav"][data-list-item-id*="${targetGuildId}"]`,
-            `[data-list-item-id*="${targetGuildId}"]`,
-            `[data-dnd-name][data-list-item-id*="${targetGuildId}"]`,
-            `div[role="treeitem"][data-list-item-id*="${targetGuildId}"]`,
-          ];
-
-          for (const selector of selectors) {
-            const element = document.querySelector(selector);
-            if (element) {
-              // Also try to find parent blobContainer
-              let clickableElement = element as HTMLElement;
-              let parent = element.parentElement;
-              while (parent) {
-                if (
-                  parent.classList.contains("blobContainer") ||
-                  parent.getAttribute("data-dnd-name")
-                ) {
-                  clickableElement = parent as HTMLElement;
-                  break;
-                }
-                parent = parent.parentElement;
-              }
-
-              return {
-                found: true,
-                selector,
-                tagName: clickableElement.tagName,
-                dataId:
-                  clickableElement.getAttribute("data-list-item-id") ||
-                  element.getAttribute("data-list-item-id"),
-                className: clickableElement.className,
-                isParent: clickableElement !== element,
-              };
-            }
-          }
-
-          // Search all elements with data-list-item-id
-          const allGuildElements = document.querySelectorAll(
-            '[data-list-item-id*="guildsnav"], [role="treeitem"][data-list-item-id], [data-dnd-name]'
-          );
-          const matches: Array<{
-            dataId: string;
-            tagName: string;
-            className: string;
-            dataDndName: string;
-          }> = [];
-
-          for (const element of Array.from(allGuildElements).slice(0, 20)) {
-            const el = element as HTMLElement;
-            const dataId = el.getAttribute("data-list-item-id") || "";
-            const dataDndName = el.getAttribute("data-dnd-name") || "";
-            if (
-              dataId.includes(targetGuildId) ||
-              dataId.includes("guildsnav") ||
-              dataDndName
-            ) {
-              matches.push({
-                dataId,
-                tagName: el.tagName,
-                className: el.className || "",
-                dataDndName,
-              });
-            }
-          }
-
-          return {
-            found: false,
-            availableGuilds: matches,
-          };
-        }, guildId);
-
-        if (serverInfo.found) {
-          console.log(
-            `[DiscordUserAccountService] Found guild element via fallback:`,
-            serverInfo
-          );
-          // Click using the found selector
-          const element = await this.discordPage.$(serverInfo.selector!);
-          if (element) {
-            // If we found a parent container, try to get it
-            let clickableElement = element;
-            if (serverInfo.isParent) {
-              const parentHandle = await element.evaluateHandle((el) => {
-                let current = el.parentElement;
-                while (current) {
-                  if (
-                    current.classList.contains("blobContainer") ||
-                    current.getAttribute("data-dnd-name")
-                  ) {
-                    return current;
-                  }
-                  current = current.parentElement;
-                }
-                return el;
-              });
-              const parentElement = parentHandle.asElement();
-              if (parentElement) {
-                clickableElement = parentElement as any;
-              }
-            }
-
-            await clickableElement.evaluate((el) =>
-              el.scrollIntoView({ behavior: "smooth", block: "center" })
-            );
-            await delay(1000);
-            serverClicked = await clickElement(
-              clickableElement,
-              "Guild element via fallback"
-            );
-          }
-        } else {
-          console.warn(
-            `[DiscordUserAccountService] Could not find guild element for ${guildId}`
-          );
-          console.log(
-            `[DiscordUserAccountService] Available guild elements:`,
-            serverInfo.availableGuilds
-          );
-        }
-      }
-
-      if (serverClicked) {
-        console.log(
-          `[DiscordUserAccountService] Clicked on server, waiting for it to load...`
-        );
-        await delay(3000); // Wait for server to load
-
-        // Verify that server loaded by checking if channel list appeared
-        const serverLoaded = await this.discordPage.evaluate(() => {
-          return (
-            document.querySelector('[data-list-item-id*="channels"]') !== null
-          );
-        });
-
-        if (serverLoaded) {
-          console.log(
-            `[DiscordUserAccountService] ✓ Server loaded successfully (channel list visible)`
-          );
-        } else {
-          console.warn(
-            `[DiscordUserAccountService] ✗ Server may not have loaded (channel list not visible)`
-          );
-          // Take screenshot for debugging
-          await this.discordPage.screenshot({
-            path: `/tmp/discord-server-load-failed-${Date.now()}.png`,
-          });
-        }
+      if (!currentUrl.includes(`/channels/${guildId}/${channelId}`)) {
+        // Navigate to the channel using the existing function
+        await this.navigateToVoiceChannel(guildId, channelId);
       } else {
-        console.warn(
-          `[DiscordUserAccountService] Could not find server in sidebar, trying direct navigation...`
+        console.log(
+          `[DiscordUserAccountService] Already on correct channel page`
         );
-        // Take screenshot before fallback
-        await this.discordPage.screenshot({
-          path: `/tmp/discord-server-click-failed-${Date.now()}.png`,
-        });
-
-        // Fallback: navigate directly to the channel URL
-        const channelUrl = `https://discord.com/channels/${guildId}/${channelId}`;
-        await this.discordPage.goto(channelUrl, {
-          waitUntil: "networkidle2",
-          timeout: STREAM_CONSTANTS.PAGE_LOAD_TIMEOUT,
-        });
-        await delay(2000);
+        // Wait a bit for page to be ready
+        await delay(500);
       }
 
-      // Step 2: Find and click on the voice channel in the channel list
+      // Step 2: Join the voice channel
       console.log(
-        `[DiscordUserAccountService] Step 2: Looking for voice channel ${channelId}...`
+        `[DiscordUserAccountService] Attempting to join voice channel...`
       );
-
-      // Wait for channel list to be visible
-      try {
-        await this.discordPage.waitForSelector(
-          '[data-list-item-id*="channels"]',
-          {
-            timeout: 10000,
-          }
-        );
-      } catch (error) {
-        console.warn(
-          "[DiscordUserAccountService] Channel list not found, continuing anyway..."
-        );
-      }
-
-      const channelClicked = await this.discordPage.evaluate(
-        (targetChannelId) => {
-          // Find the channel element by data-list-item-id
-          // Format: data-list-item-id="channels___{channelId}"
-          // It's an <a> tag with role="button"
-          const channelSelector = `a[data-list-item-id="channels___${targetChannelId}"], [data-list-item-id="channels___${targetChannelId}"]`;
-          let channelElement = document.querySelector(
-            channelSelector
-          ) as HTMLElement;
-
-          if (channelElement) {
-            console.log(
-              `[DiscordUserAccountService] Found channel element with selector: ${channelSelector}`
-            );
-            // Scroll into view
-            channelElement.scrollIntoView({
-              behavior: "smooth",
-              block: "center",
-            });
-            channelElement.click();
-            return true;
-          }
-
-          // Alternative: search all channel elements (look for <a> tags specifically)
-          const channelLinks = document.querySelectorAll(
-            'a[data-list-item-id*="channels"], a[role="button"][data-list-item-id]'
-          );
-          for (const element of Array.from(channelLinks)) {
-            const el = element as HTMLElement;
-            const dataId = el.getAttribute("data-list-item-id") || "";
-            if (
-              dataId === `channels___${targetChannelId}` ||
-              dataId.includes(targetChannelId)
-            ) {
-              console.log(
-                `[DiscordUserAccountService] Found channel element by searching, clicking...`
-              );
-              el.scrollIntoView({ behavior: "smooth", block: "center" });
-              el.click();
-              return true;
-            }
-          }
-
-          // Also try finding by any element with the channel ID
-          const allElements = document.querySelectorAll("[data-list-item-id]");
-          for (const element of Array.from(allElements)) {
-            const el = element as HTMLElement;
-            const dataId = el.getAttribute("data-list-item-id") || "";
-            if (dataId === `channels___${targetChannelId}`) {
-              console.log(
-                `[DiscordUserAccountService] Found channel element by searching all elements, clicking...`
-              );
-              el.scrollIntoView({ behavior: "smooth", block: "center" });
-              el.click();
-              return true;
-            }
-          }
-
-          console.warn(
-            `[DiscordUserAccountService] Could not find channel element for ${targetChannelId}`
-          );
-          // Debug: log available channel elements
-          const availableChannels = Array.from(
-            document.querySelectorAll('[data-list-item-id*="channels"]')
-          )
-            .slice(0, 5)
-            .map((el) => ({
-              dataId: el.getAttribute("data-list-item-id"),
-              tagName: el.tagName,
-              ariaLabel: el.getAttribute("aria-label"),
-            }));
-          console.log(
-            `[DiscordUserAccountService] Available channel elements:`,
-            availableChannels
-          );
-          return false;
-        },
-        channelId
-      );
-
-      if (channelClicked) {
-        console.log(
-          `[DiscordUserAccountService] Clicked on voice channel, waiting for it to load...`
-        );
-        // Wait for scroll animation and navigation
-        await delay(1000);
-        // Wait for channel page to load
-        await delay(3000);
-
-        // Verify that voice channel page loaded
-        const voiceUILoaded = await this.discordPage.evaluate(() => {
-          // Check if we can see voice-related UI elements
-          const hasVoiceControls =
-            document.querySelector(
-              'button[aria-label*="voice" i], button[aria-label*="join" i], button[aria-label*="connect" i]'
-            ) !== null;
-          const hasDisconnectButton =
-            document.querySelector(
-              'button[aria-label*="disconnect" i], button[aria-label*="leave" i]'
-            ) !== null;
-          return hasVoiceControls || hasDisconnectButton;
-        });
-
-        if (voiceUILoaded) {
-          console.log(
-            `[DiscordUserAccountService] ✓ Voice channel UI loaded successfully`
-          );
-        } else {
-          console.warn(
-            `[DiscordUserAccountService] ✗ Voice channel UI may not have loaded`
-          );
-          // Take screenshot for debugging
-          await this.discordPage.screenshot({
-            path: `/tmp/discord-voice-ui-failed-${Date.now()}.png`,
-          });
-        }
-
-        // Check if we're now in the voice channel (clicking the channel should join automatically)
-        const isInChannel = await this.discordPage.evaluate(() => {
-          // Look for indicators that we're connected to voice
-          const indicators = [
-            'button[aria-label*="disconnect" i]',
-            'button[aria-label*="leave" i]',
-            '[class*="connected"]',
-            '[class*="joined"]',
-            '[class*="speaking"]',
-          ];
-          for (const selector of indicators) {
-            if (document.querySelector(selector)) {
-              return true;
-            }
-          }
-          return false;
-        });
-
-        if (isInChannel) {
-          console.log(
-            `[DiscordUserAccountService] ✓ Successfully joined voice channel by clicking channel element`
-          );
-        } else {
-          console.log(
-            `[DiscordUserAccountService] → Not yet in voice channel, will look for join button...`
-          );
-        }
-      } else {
-        console.warn(
-          `[DiscordUserAccountService] Could not find voice channel, trying direct navigation...`
-        );
-        // Take screenshot before fallback
-        await this.discordPage.screenshot({
-          path: `/tmp/discord-channel-click-failed-${Date.now()}.png`,
-        });
-
-        // Fallback: navigate directly to the channel URL
-        const channelUrl = `https://discord.com/channels/${guildId}/${channelId}`;
-        await this.discordPage.goto(channelUrl, {
-          waitUntil: "networkidle2",
-          timeout: STREAM_CONSTANTS.PAGE_LOAD_TIMEOUT,
-        });
-        await delay(2000);
-      }
 
       // Wait for voice channel UI to load
-      try {
-        await this.discordPage.waitForSelector(
-          '[class*="voice"], [class*="channel"], button',
-          {
-            timeout: 10000,
-          }
-        );
-      } catch (error) {
-        console.warn(
-          "[DiscordUserAccountService] Voice channel UI elements not found, continuing anyway..."
-        );
-      }
-
-      // Click "Join Voice" or "Connect" button
-      // Discord's UI may vary, so we'll try multiple approaches
-      let joined = false;
-
-      console.log(
-        "[DiscordUserAccountService] Attempting to join voice channel..."
-      );
-
-      // Wait a bit for page to fully load
-      await delay(2000);
+      await delay(500);
 
       // Close any modals or permission dialogs that might be blocking
       try {
@@ -817,155 +296,178 @@ export class DiscordUserAccountService {
         );
       }
 
-      joined = await this.discordPage.evaluate(() => {
-        // Get all buttons and clickable elements
-        const buttons = Array.from(
-          document.querySelectorAll("button, [role='button']")
-        );
-
-        // Try to find join button by various methods
-        let joinButton: HTMLElement | null = null;
-
-        // Method 1: By aria-label (most reliable)
-        for (const btn of buttons) {
-          const label = btn.getAttribute("aria-label")?.toLowerCase() || "";
-          if (
-            (label.includes("join") && label.includes("voice")) ||
-            label.includes("connect to voice") ||
-            label === "join voice channel" ||
-            label === "join call"
-          ) {
-            joinButton = btn as HTMLElement;
-            break;
+      // Check if already connected first
+      const isAlreadyConnected = await this.discordPage.evaluate(() => {
+        const indicators = [
+          'button[aria-label*="disconnect" i]',
+          'button[aria-label*="leave" i]',
+          '[class*="connected"]',
+          '[class*="joined"]',
+        ];
+        for (const selector of indicators) {
+          if (document.querySelector(selector)) {
+            return true;
           }
         }
+        return false;
+      });
 
-        // Method 2: By text content
-        if (!joinButton) {
+      if (isAlreadyConnected) {
+        console.log(
+          "[DiscordUserAccountService] ✓ Already connected to voice channel"
+        );
+      } else {
+        // Try to find and click join button
+        const joined = await this.discordPage.evaluate(() => {
+          // Get all buttons and clickable elements
+          const buttons = Array.from(
+            document.querySelectorAll("button, [role='button']")
+          );
+
+          // Try to find join button by various methods
+          let joinButton: HTMLElement | null = null;
+
+          // Method 1: By aria-label (most reliable)
           for (const btn of buttons) {
-            const text = btn.textContent?.toLowerCase().trim() || "";
+            const label = btn.getAttribute("aria-label")?.toLowerCase() || "";
             if (
-              text === "join voice" ||
-              text === "join" ||
-              text === "connect" ||
-              (text.includes("join") && text.includes("voice"))
+              (label.includes("join") && label.includes("voice")) ||
+              label.includes("connect to voice") ||
+              label === "join voice channel" ||
+              label === "join call"
             ) {
               joinButton = btn as HTMLElement;
               break;
             }
           }
-        }
 
-        // Method 3: Look in specific containers (Discord's UI structure)
-        if (!joinButton) {
-          // Look in the channel header area
-          const channelHeader = document.querySelector(
-            '[class*="header"], [class*="title"]'
-          );
-          if (channelHeader) {
-            const headerButtons = Array.from(
-              channelHeader.querySelectorAll("button")
-            );
-            for (const btn of headerButtons) {
-              const text = btn.textContent?.toLowerCase() || "";
-              const label = btn.getAttribute("aria-label")?.toLowerCase() || "";
-              if (text.includes("join") || label.includes("join")) {
-                joinButton = btn as HTMLElement;
-                break;
-              }
-            }
-          }
-        }
-
-        // Method 4: Look for buttons in voice channel area
-        if (!joinButton) {
-          const voiceAreas = document.querySelectorAll(
-            '[class*="voice"], [class*="channel"], [class*="container"]'
-          );
-          for (const voiceArea of Array.from(voiceAreas)) {
-            const areaButtons = Array.from(
-              voiceArea.querySelectorAll("button")
-            );
-            for (const btn of areaButtons) {
-              const text = btn.textContent?.toLowerCase() || "";
-              const label = btn.getAttribute("aria-label")?.toLowerCase() || "";
+          // Method 2: By text content
+          if (!joinButton) {
+            for (const btn of buttons) {
+              const text = btn.textContent?.toLowerCase().trim() || "";
               if (
-                text.includes("join") ||
-                text.includes("connect") ||
-                label.includes("join") ||
-                label.includes("connect")
+                text === "join voice" ||
+                text === "join" ||
+                text === "connect" ||
+                (text.includes("join") && text.includes("voice"))
               ) {
                 joinButton = btn as HTMLElement;
                 break;
               }
             }
-            if (joinButton) break;
           }
-        }
 
-        if (
-          joinButton &&
-          !(joinButton as HTMLButtonElement).disabled &&
-          joinButton.offsetParent !== null
-        ) {
-          console.log(
-            "[DiscordUserAccountService] Found join button, clicking..."
-          );
-          // Scroll into view if needed
-          joinButton.scrollIntoView({ behavior: "smooth", block: "center" });
-          joinButton.click();
-          return true;
-        }
+          // Method 3: Look in specific containers (Discord's UI structure)
+          if (!joinButton) {
+            // Look in the channel header area
+            const channelHeader = document.querySelector(
+              '[class*="header"], [class*="title"]'
+            );
+            if (channelHeader) {
+              const headerButtons = Array.from(
+                channelHeader.querySelectorAll("button")
+              );
+              for (const btn of headerButtons) {
+                const text = btn.textContent?.toLowerCase() || "";
+                const label = btn.getAttribute("aria-label")?.toLowerCase() || "";
+                if (text.includes("join") || label.includes("join")) {
+                  joinButton = btn as HTMLElement;
+                  break;
+                }
+              }
+            }
+          }
 
-        return false;
-      });
+          // Method 4: Look for buttons in voice channel area
+          if (!joinButton) {
+            const voiceAreas = document.querySelectorAll(
+              '[class*="voice"], [class*="channel"], [class*="container"]'
+            );
+            for (const voiceArea of Array.from(voiceAreas)) {
+              const areaButtons = Array.from(
+                voiceArea.querySelectorAll("button")
+              );
+              for (const btn of areaButtons) {
+                const text = btn.textContent?.toLowerCase() || "";
+                const label = btn.getAttribute("aria-label")?.toLowerCase() || "";
+                if (
+                  text.includes("join") ||
+                  text.includes("connect") ||
+                  label.includes("join") ||
+                  label.includes("connect")
+                ) {
+                  joinButton = btn as HTMLElement;
+                  break;
+                }
+              }
+              if (joinButton) break;
+            }
+          }
 
-      if (joined) {
-        console.log(
-          "[DiscordUserAccountService] Join button clicked, waiting for connection..."
-        );
-        // Wait a bit for scroll animation
-        await delay(500);
-        // Wait longer for connection to establish
-        await delay(5000);
-      } else {
-        console.warn(
-          "[DiscordUserAccountService] Could not find join button, trying alternative methods"
-        );
-
-        // Alternative: try clicking on voice channel area directly or using keyboard
-        console.log(
-          "[DiscordUserAccountService] Trying alternative join methods..."
-        );
-
-        // Try clicking the channel name/header
-        const clicked = await this.discordPage.evaluate(() => {
-          // Look for the channel name or header that might be clickable
-          const channelName = document.querySelector(
-            'h1, [class*="name"], [class*="title"]'
-          );
-          if (channelName) {
-            (channelName as HTMLElement).click();
+          if (
+            joinButton &&
+            !(joinButton as HTMLButtonElement).disabled &&
+            joinButton.offsetParent !== null
+          ) {
+            console.log(
+              "[DiscordUserAccountService] Found join button, clicking..."
+            );
+            // Scroll into view if needed
+            joinButton.scrollIntoView({ behavior: "smooth", block: "center" });
+            joinButton.click();
             return true;
           }
+
           return false;
         });
 
-        if (clicked) {
-          console.log("[DiscordUserAccountService] Clicked channel name");
-          await delay(2000);
-        }
+        if (joined) {
+          console.log(
+            "[DiscordUserAccountService] Join button clicked, waiting for connection..."
+          );
+          // Wait a bit for scroll animation
+          await delay(500);
+          // Wait longer for connection to establish
+          await delay(5000);
+        } else {
+          console.warn(
+            "[DiscordUserAccountService] Could not find join button, trying alternative methods"
+          );
 
-        // Try pressing Enter key (sometimes Discord responds to Enter in voice channels)
-        try {
-          await this.discordPage.keyboard.press("Enter");
-          await delay(1000);
-          console.log("[DiscordUserAccountService] Pressed Enter key");
-        } catch (error) {
-          // Ignore
-        }
+          // Alternative: try clicking on voice channel area directly or using keyboard
+          console.log(
+            "[DiscordUserAccountService] Trying alternative join methods..."
+          );
 
-        await delay(3000);
+          // Try clicking the channel name/header
+          const clicked = await this.discordPage.evaluate(() => {
+            // Look for the channel name or header that might be clickable
+            const channelName = document.querySelector(
+              'h1, [class*="name"], [class*="title"]'
+            );
+            if (channelName) {
+              (channelName as HTMLElement).click();
+              return true;
+            }
+            return false;
+          });
+
+          if (clicked) {
+            console.log("[DiscordUserAccountService] Clicked channel name");
+            await delay(2000);
+          }
+
+          // Try pressing Enter key (sometimes Discord responds to Enter in voice channels)
+          try {
+            await this.discordPage.keyboard.press("Enter");
+            await delay(1000);
+            console.log("[DiscordUserAccountService] Pressed Enter key");
+          } catch (error) {
+            // Ignore
+          }
+
+          await delay(3000);
+        }
       }
 
       // Verify we're connected by checking for connection indicators
@@ -1602,8 +1104,8 @@ export class DiscordUserAccountService {
         const allClickable = Array.from(
           document.querySelectorAll(
             'div[class*="card"], div[class*="source"], div[class*="tab"], div[class*="preview"], ' +
-              'div[class*="item"], button[class*="card"], button[class*="source"], ' +
-              '[role="option"], [role="button"]'
+            'div[class*="item"], button[class*="card"], button[class*="source"], ' +
+            '[role="option"], [role="button"]'
           )
         );
 
@@ -1683,25 +1185,25 @@ export class DiscordUserAccountService {
               // Look for tabs with minimal or empty text (likely about:blank)
               const textLower = tab.text.toLowerCase().trim();
               // Exclude Discord tabs (they usually have server/channel names)
-              const isDiscordTab = 
+              const isDiscordTab =
                 textLower.includes("discord") ||
                 textLower.includes("arcados") ||
                 textLower.includes("guild") ||
                 textLower.includes("channel");
-              
+
               // Prefer tabs with very short or empty text, but not Discord
               return !isDiscordTab && (textLower.length === 0 || textLower.length < 10);
             });
-            
+
             // If still not found, look for tabs that don't match common Discord patterns
             if (!selectedTab) {
               selectedTab = tabDetails.find((tab) => {
                 const textLower = tab.text.toLowerCase().trim();
-                return !textLower.includes("discord") && 
-                       !textLower.includes("arcados") &&
-                       !textLower.includes("guild") &&
-                       !textLower.includes("channel") &&
-                       !textLower.includes("voice");
+                return !textLower.includes("discord") &&
+                  !textLower.includes("arcados") &&
+                  !textLower.includes("guild") &&
+                  !textLower.includes("channel") &&
+                  !textLower.includes("voice");
               });
             }
           } else {
@@ -1744,9 +1246,9 @@ export class DiscordUserAccountService {
           selectedTab = tabDetails.find((tab) => {
             const textLower = tab.text.toLowerCase().trim();
             // Exclude Discord-related tabs
-            return textLower.length > 0 && 
-                   !textLower.includes("discord") &&
-                   !textLower.includes("arcados");
+            return textLower.length > 0 &&
+              !textLower.includes("discord") &&
+              !textLower.includes("arcados");
           });
         }
 
@@ -1908,6 +1410,12 @@ export class DiscordUserAccountService {
       return;
     }
 
+    // Check if page is still valid
+    if (this.discordPage.isClosed()) {
+      console.warn("[DiscordUserAccountService] Discord page already closed, skipping stop streaming");
+      return;
+    }
+
     try {
       // Look for "Stop Streaming" or "Disconnect" button
       await this.discordPage.evaluate(() => {
@@ -1939,6 +1447,13 @@ export class DiscordUserAccountService {
    */
   async signOut(): Promise<void> {
     if (!this.discordPage || !this.isLoggedIn) {
+      return;
+    }
+
+    // Check if page is still valid
+    if (this.discordPage.isClosed()) {
+      console.warn("[DiscordUserAccountService] Discord page already closed, skipping sign out");
+      this.isLoggedIn = false; // Mark as logged out
       return;
     }
 
@@ -1976,7 +1491,21 @@ export class DiscordUserAccountService {
       this.isLoggedIn = false;
       console.log("[DiscordUserAccountService] Signed out of Discord");
     } catch (error) {
-      console.error("[DiscordUserAccountService] Error signing out:", error);
+      // Ignore errors if page/frame is detached
+      if (
+        error instanceof Error &&
+        (error.message.includes("detached") ||
+          error.message.includes("Target closed") ||
+          error.message.includes("Connection closed") ||
+          error.message.includes("disposed"))
+      ) {
+        console.warn(
+          "[DiscordUserAccountService] Page/frame detached during sign out (may already be signed out)"
+        );
+        this.isLoggedIn = false; // Mark as logged out
+      } else {
+        console.error("[DiscordUserAccountService] Error signing out:", error);
+      }
     }
   }
 

@@ -154,6 +154,8 @@ export class ReconciliationSync {
 
     await this.reconcileConversationKeywords(guild);
 
+    await this.reconcileVoiceStates(guild);
+
     if (this.verbose) {
       console.log(`✅ ReconciliationSync: Completed for ${guild.name}`);
     }
@@ -1455,6 +1457,149 @@ export class ReconciliationSync {
     } catch (error) {
       // Silent failure - consolidation is optional
     }
+  }
+
+  /**
+   * Reconcile voice states (detect missing/stale states, fix discrepancies)
+   */
+  private async reconcileVoiceStates(guild: Guild): Promise<void> {
+    if (this.verbose) {
+      console.log(
+        `🔹 ReconciliationSync: Reconciling voice states for ${guild.name}`
+      );
+    }
+
+    // Get Discord truth
+    const discordStates = new Map<string, string>(); // userId → channelId
+    for (const [userId, voiceState] of guild.voiceStates.cache) {
+      if (voiceState.channelId) {
+        discordStates.set(userId, voiceState.channelId);
+      }
+    }
+
+    // Get DB states
+    const dbResult = await this.db.getActiveVoiceStates(guild.id);
+    if (!dbResult.success) {
+      console.error(
+        `🔸 ReconciliationSync: Failed to get DB voice states for ${guild.name}:`,
+        dbResult.error
+      );
+      return;
+    }
+
+    const dbStates = new Map<string, string>();
+    for (const state of dbResult.data || []) {
+      if (state.channel_id) {
+        dbStates.set(state.user_id, state.channel_id);
+      }
+    }
+
+    let fixedCount = 0;
+
+    // Fix: In Discord but missing/wrong in DB
+    for (const [userId, channelId] of discordStates) {
+      if (!dbStates.has(userId) || dbStates.get(userId) !== channelId) {
+        const key = `${userId}:${guild.id}`;
+        const releaseLock = await this.coordinator.acquireVoiceStateLock(key);
+
+        try {
+          // Check if recently updated (skip if LiveEventSync just handled it)
+          const recentCheck = await this.db.query(
+            `SELECT updated_at FROM voice_sessions
+             WHERE user_id = $1 AND guild_id = $2 AND active = true
+             AND updated_at > NOW() - INTERVAL '5 minutes'`,
+            [userId, guild.id]
+          );
+
+          if (recentCheck.success && recentCheck.data && recentCheck.data.length > 0) {
+            continue; // Recently updated by LiveEventSync
+          }
+
+          // Create missing session
+          const voiceState = guild.voiceStates.cache.get(userId);
+          if (voiceState) {
+            await this.createMissingVoiceSession(voiceState);
+            fixedCount++;
+          }
+        } finally {
+          releaseLock();
+        }
+      }
+    }
+
+    // Fix: In DB but not in Discord (stale)
+    for (const [userId, _] of dbStates) {
+      if (!discordStates.has(userId)) {
+        const key = `${userId}:${guild.id}`;
+        const releaseLock = await this.coordinator.acquireVoiceStateLock(key);
+
+        try {
+          // Finalize stale session
+          await this.db.query(
+            `UPDATE voice_sessions
+             SET left_at = NOW(), active = false,
+                 duration = EXTRACT(EPOCH FROM (NOW() - joined_at))::INTEGER
+             WHERE user_id = $1 AND guild_id = $2 AND active = true`,
+            [userId, guild.id]
+          );
+
+          // Delete stale state
+          await this.db.deleteVoiceState(`${guild.id}_${userId}`);
+          fixedCount++;
+        } finally {
+          releaseLock();
+        }
+      }
+    }
+
+    if (fixedCount > 0) {
+      console.log(
+        `🔹 Reconciliation: Fixed ${fixedCount} voice state discrepancies in ${guild.name}`
+      );
+    }
+  }
+
+  /**
+   * Create a missing voice session during reconciliation
+   */
+  private async createMissingVoiceSession(voiceState: any): Promise<void> {
+    const { v4: uuidv4 } = await import("uuid");
+
+    const sessionId = uuidv4();
+    const user = voiceState.member?.user;
+    if (!user) return;
+
+    // Create voice session
+    await this.db.createVoiceSession({
+      id: sessionId,
+      guild_id: voiceState.guild.id,
+      user_id: user.id,
+      channel_id: voiceState.channelId,
+      joined_at: new Date(),
+      duration: 0,
+      time_muted: 0,
+      time_deafened: 0,
+      time_streaming: 0,
+      active: true,
+      is_grandfathered: false,
+      applied_moderation: {},
+    });
+
+    // Create voice state
+    await this.db.upsertVoiceState({
+      id: `${voiceState.guild.id}_${user.id}`,
+      guild_id: voiceState.guild.id,
+      user_id: user.id,
+      channel_id: voiceState.channelId,
+      session_id: sessionId,
+      self_mute: voiceState.selfMute || false,
+      self_deaf: voiceState.selfDeaf || false,
+      server_mute: voiceState.mute || false,
+      server_deaf: voiceState.deaf || false,
+      streaming: voiceState.streaming || false,
+      self_video: voiceState.selfVideo || false,
+      joined_at: new Date(),
+    });
   }
 
   /**
