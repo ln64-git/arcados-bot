@@ -1,0 +1,12 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "bun",
+			"script": "bun run src/main.ts",
+			"problemMatcher": [],
+			"label": "bun: start",
+			"detail": "bun run src/main.ts - package.json"
+		}
+	]
+}
