@@ -235,11 +235,10 @@ export class VoiceAssistantManager {
 
     // Start Whisper server if configured for local transcription
     if (config.whisperUrl) {
-      this.logger.info("Starting local Whisper server...");
       const started = await this.whisperServer.start();
       if (!started) {
         this.logger.warn(
-          "Failed to start Whisper server. Transcription may not work properly."
+          "⚠️  Whisper server failed to start. Transcription may not work."
         );
       }
     }

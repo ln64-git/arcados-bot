@@ -69,10 +69,7 @@ export class WhisperServerManager {
 				return false;
 			}
 
-			console.log("🎤 Starting Whisper server...");
-			console.log(`🎤 Binary: ${this.WHISPER_BINARY}`);
-			console.log(`🎤 Model: ${this.WHISPER_MODEL_PATH}`);
-			console.log(`🎤 Port: ${this.WHISPER_PORT}`);
+			// Whisper configuration (logged on successful start)
 
 			// Kill any existing Whisper processes on this port
 			await this.killExistingProcesses();
@@ -101,9 +98,6 @@ export class WhisperServerManager {
 			const isReady = await this.waitForServerReady();
 
 			if (isReady) {
-				console.log(
-					`🎤 Server started successfully on port ${this.WHISPER_PORT}`
-				);
 				this.isStarting = false;
 				return true;
 			} else {

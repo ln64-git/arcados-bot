@@ -186,3 +186,7 @@ dist
 
 # API cost tracking data
 api-costs/
+
+# Ignore all log files
+log/
+

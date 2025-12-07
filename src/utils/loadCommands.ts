@@ -72,7 +72,7 @@ async function loadCommandsFromDirectory(
 		return;
 	}
 
-	console.log(`🔹 Loading ${commandFiles.length} commands from ${source}`);
+	// Silently load commands (will be summarized in Bot.ts)
 
 	// Load commands in parallel for better performance
 	const loadPromises = commandFiles.map(async (file) => {

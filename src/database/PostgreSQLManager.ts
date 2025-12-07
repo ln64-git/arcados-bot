@@ -789,7 +789,10 @@ export class PostgreSQLManager {
 					nsfw = EXCLUDED.nsfw,
 					parent_id = EXCLUDED.parent_id,
 					active = EXCLUDED.active,
-					updated_at = NOW()
+					updated_at = NOW(),
+					-- Preserve voice channel ownership fields if already set
+					is_user_channel = COALESCE(channels.is_user_channel, false),
+					current_owner_id = channels.current_owner_id
 				RETURNING *
 			`;
 

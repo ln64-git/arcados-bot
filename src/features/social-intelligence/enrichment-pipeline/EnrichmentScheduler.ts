@@ -31,12 +31,10 @@ export class EnrichmentScheduler {
 	 * Start the enrichment scheduler
 	 */
 	public async start() {
-		console.log("🕐 Starting enrichment scheduler...");
-
 		// Daily at 2 AM: Process conversation enrichments
 		this.jobs.push(
 			cron.schedule("0 2 * * *", async () => {
-				console.log("\n⏰ [Scheduled] Running conversation enrichments...");
+				console.log("⏰ Running scheduled conversation enrichments");
 				try {
 					await this.orchestrator.processPendingEnrichments(10);
 				} catch (error) {
@@ -48,7 +46,7 @@ export class EnrichmentScheduler {
 		// Every Monday at 3 AM: Process user profile enrichments (weekly)
 		this.jobs.push(
 			cron.schedule("0 3 * * 1", async () => {
-				console.log("\n⏰ [Scheduled] Running user profile enrichments...");
+				console.log("⏰ Running scheduled user profile enrichments");
 				try {
 					await this.orchestrator.processPendingEnrichments(10);
 				} catch (error) {
@@ -60,7 +58,7 @@ export class EnrichmentScheduler {
 		// First day of each month at 4 AM: Process guild summaries
 		this.jobs.push(
 			cron.schedule("0 4 1 * *", async () => {
-				console.log("\n⏰ [Scheduled] Running guild summary enrichments...");
+				console.log("⏰ Running scheduled guild summary enrichments");
 				try {
 					await this.orchestrator.processPendingEnrichments(5);
 				} catch (error) {
@@ -68,11 +66,6 @@ export class EnrichmentScheduler {
 				}
 			}),
 		);
-
-		console.log("✅ Enrichment scheduler started");
-		console.log("   - Conversations: daily at 2 AM");
-		console.log("   - User profiles: Mondays at 3 AM");
-		console.log("   - Guild summaries: 1st of month at 4 AM");
 	}
 
 	/**

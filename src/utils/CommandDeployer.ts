@@ -28,21 +28,14 @@ export class CommandDeployer {
 
     if (guildId) {
       // Fast guild-specific deployment for testing
-      console.log(
-        `🔹 Deploying ${commandData.length} commands to guild ${guildId}...`
-      );
       await this.rest.put(Routes.applicationGuildCommands(appId, guildId), {
         body: commandData,
       });
     } else {
       // Global deployment (takes up to an hour)
-      console.log(
-        `🔹 Deploying ${commandData.length} commands globally (may take up to 1 hour)...`
-      );
       await this.rest.put(Routes.applicationCommands(appId), {
         body: commandData,
       });
-      console.log("✅ Global commands deployed successfully");
     }
   }
 }

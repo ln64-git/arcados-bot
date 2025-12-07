@@ -19,6 +19,7 @@ import { VoiceConnectionManager } from "./handlers/voice/tts/services/VoiceConne
 import { APICostTracker } from "./utils/APICostTracker";
 import { VoiceStateCoordinator } from "./features/voice-state/VoiceStateCoordinator";
 import { SyncCoordinator } from "./features/discord-sync/SyncCoordinator";
+import { DeletedMessageLogger } from "./utils/DeletedMessageLogger";
 
 export class Bot {
   public client: Client;
@@ -54,14 +55,13 @@ export class Bot {
    * Initialize the bot and all features
    */
   async init(): Promise<void> {
+
     // Initialize API cost tracker (must be done early)
     const costTracker = APICostTracker.getInstance();
-    console.log("🔹 API cost tracking initialized");
 
     // Connect to database
     const dbConnected = await this.db.connect();
     if (dbConnected) {
-      console.log("🔹 PostgreSQL connected successfully");
 
       // Initialize enrichment pipeline
       try {
@@ -81,14 +81,10 @@ export class Bot {
         const scheduler = EnrichmentScheduler.getInstance();
         await scheduler.start();
 
-        console.log("✅ Enrichment pipeline initialized");
       } catch (error) {
-        console.warn("⚠️  Failed to initialize enrichment pipeline:", error);
       }
     } else {
-      console.log(
-        "🔸 PostgreSQL connection failed, some commands may not work"
-      );
+      console.error("❌ Failed to connect to database");
     }
 
     // Set up event handlers
@@ -113,7 +109,6 @@ export class Bot {
 
     // Ready event - initialize all features
     this.client.once("ready", async () => {
-      console.log(`🔹 Logged in as ${this.client.user?.tag}`);
       await this.initializeFeatures();
     });
 
@@ -131,6 +126,37 @@ export class Bot {
     // Message events (for AI assistant)
     this.client.on("messageCreate", async (message) => {
       await this.messageHandler?.handleMessage(message);
+    });
+
+    // Message deletion tracking
+    this.client.on("messageDelete", async (message) => {
+      // Only log messages with content (ignore system messages, embeds, etc.)
+      if (!message.content && message.attachments.size === 0) {
+        return;
+      }
+
+      const deletedLogger = DeletedMessageLogger.getInstance();
+      deletedLogger.logDeletedMessage({
+        messageId: message.id,
+        content: message.content || "",
+        sender: {
+          id: message.author?.id || "unknown",
+          username: message.author?.username || "unknown",
+          displayName: message.author?.displayName || message.author?.username || "unknown",
+        },
+        channel: {
+          id: message.channel.id,
+          name: "name" in message.channel ? (message.channel.name || "unknown") : "DM",
+        },
+        timestamp: message.createdAt.toISOString(),
+        deletedAt: new Date().toISOString(),
+        attachments: Array.from(message.attachments.values()).map((att) => ({
+          url: att.url,
+          filename: att.name || "unknown",
+          size: att.size,
+          contentType: att.contentType || undefined,
+        })),
+      });
     });
 
     // Voice state updates
@@ -158,31 +184,25 @@ export class Bot {
    * Initialize all feature services
    */
   private async initializeFeatures(): Promise<void> {
-    console.log("🔹 Initializing features...");
-
     // Initialize conversation detection workflow
-    // Handles relationship mapping, conversation detection, and maintenance
     this.conversationWorkflow = new ConversationWorkflowManager(
       this.client,
       this.db,
       {
         guildId: config.guildId,
-        verbose: false, // Set to true for debugging
+        verbose: false,
       }
     );
     await this.conversationWorkflow.start();
 
     // Initialize message handler
-    // Handles AI assistant interactions
     this.messageHandler = new MessageHandler(this.client, this.db);
 
     // Initialize voice assistant
-    // Handles voice channel interactions and real-time voice conversation
     this.voiceAssistant = VoiceAssistantManager.getInstance();
     await this.voiceAssistant.initialize(this.client, this.db);
 
     // Initialize voice state coordinator
-    // Handles spawn channel auto-creation, session tracking, and moderation
     if (config.spawnChannelId) {
       this.syncCoordinator = new SyncCoordinator(this.db, false);
       this.voiceStateCoordinator = new VoiceStateCoordinator(
@@ -191,24 +211,13 @@ export class Bot {
         this.syncCoordinator,
         config.spawnChannelId
       );
-      // Attach to client for slash commands to access
       (this.client as any).voiceStateCoordinator = this.voiceStateCoordinator;
-      console.log("✅ Voice state coordinator initialized");
     }
 
     // Initialize media player
     const mediaPlayer = MediaPlayerManager.getInstance();
     mediaPlayer.initialize(this.client);
 
-    // Initialize stream player
-    // const streamPlayer = StreamPlayerManager.getInstance();
-    // await streamPlayer.initialize(this.client);
-
-    // Initialize state sync service
-    // Handles real-time Discord state synchronization
-
-
-    console.log("✅ All features initialized successfully");
   }
 
   /**

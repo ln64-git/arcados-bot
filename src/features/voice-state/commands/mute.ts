@@ -25,19 +25,20 @@ export const muteCommand: Command = {
     ),
 
   async execute(interaction) {
+    // Defer reply immediately to acknowledge the interaction
+    await interaction.deferReply({ ephemeral: false });
+
     if (!interaction.guild || !interaction.member) {
-      await interaction.reply({
+      await interaction.editReply({
         content: "🔸 This command can only be used in a server.",
-        ephemeral: true,
       });
       return;
     }
 
     const member = interaction.member;
     if (!("voice" in member)) {
-      await interaction.reply({
+      await interaction.editReply({
         content: "🔸 This command requires a guild member.",
-        ephemeral: true,
       });
       return;
     }
@@ -46,9 +47,8 @@ export const muteCommand: Command = {
     const voiceChannel = member.voice.channel;
 
     if (!voiceChannel) {
-      await interaction.reply({
+      await interaction.editReply({
         content: "🔸 You must be in a voice channel to use this command.",
-        ephemeral: true,
       });
       return;
     }
@@ -58,9 +58,8 @@ export const muteCommand: Command = {
     const coordinator = bot.voiceStateCoordinator;
 
     if (!coordinator) {
-      await interaction.reply({
+      await interaction.editReply({
         content: "🔸 Voice state coordinator is not available.",
-        ephemeral: true,
       });
       return;
     }
@@ -72,17 +71,15 @@ export const muteCommand: Command = {
       );
 
       if (!currentOwner) {
-        await interaction.reply({
+        await interaction.editReply({
           content: "🔸 This is not a user-owned voice channel.",
-          ephemeral: true,
         });
         return;
       }
 
       if (currentOwner !== member.user.id) {
-        await interaction.reply({
+        await interaction.editReply({
           content: "🔸 You are not the owner of this channel.",
-          ephemeral: true,
         });
         return;
       }
@@ -90,9 +87,8 @@ export const muteCommand: Command = {
       // Check if target is in the channel
       const targetMember = voiceChannel.members.get(targetUser.id);
       if (!targetMember) {
-        await interaction.reply({
+        await interaction.editReply({
           content: "🔸 The target user is not in this voice channel.",
-          ephemeral: true,
         });
         return;
       }
@@ -107,9 +103,8 @@ export const muteCommand: Command = {
           targetUser.id,
           member.user.id
         );
-        await interaction.reply({
+        await interaction.editReply({
           content: `🔹 Unmuted **${targetUser.displayName}** in this channel.`,
-          ephemeral: false,
         });
       } else {
         await coordinator.getModerationService().mute(
@@ -117,16 +112,14 @@ export const muteCommand: Command = {
           targetUser.id,
           member.user.id
         );
-        await interaction.reply({
+        await interaction.editReply({
           content: `🔹 Muted **${targetUser.displayName}** in this channel.`,
-          ephemeral: false,
         });
       }
     } catch (error) {
       console.error("🔸 Error in mute command:", error);
-      await interaction.reply({
+      await interaction.editReply({
         content: "🔸 An error occurred while trying to mute the user.",
-        ephemeral: true,
       });
     }
   },
