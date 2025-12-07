@@ -14,7 +14,7 @@
  * - Uses repository for all database operations
  */
 
-import type { VoiceState } from "discord.js";
+import type { VoiceState, Client } from "discord.js";
 import { v4 as uuidv4 } from "uuid";
 import type { VoiceDataRepository } from "../repositories/VoiceDataRepository";
 import type {
@@ -32,7 +32,10 @@ export class VoiceSessionService {
 	// Track state change timers (debounced analytics)
 	private stateChangeTimers = new Map<string, NodeJS.Timeout>(); // userId:guildId -> Timer
 
-	constructor(private repository: VoiceDataRepository) {}
+	constructor(
+		private repository: VoiceDataRepository,
+		private client?: Client,
+	) {}
 
 	/**
 	 * Start a new voice session
@@ -104,7 +107,9 @@ export class VoiceSessionService {
 			timestamp: new Date(),
 		});
 
-		console.log(`✅ [SESSION] Started session ${sessionId} for ${userId}`);
+		const displayName = voiceState.member?.displayName || "Unknown";
+		const channelName = voiceState.channel?.name || "Unknown";
+		console.log(`✅ [SESSION] ${displayName} joined ${channelName}`);
 
 		return sessionId;
 	}
@@ -171,8 +176,31 @@ export class VoiceSessionService {
 		this.sessionStartTimes.delete(key);
 		this.clearStateChangeTimer(key);
 
+		// Get user and channel names for better logging
+		let displayName = "Unknown";
+		let channelName = "Unknown";
+
+		if (this.client) {
+			try {
+				const guild = this.client.guilds.cache.get(guildId);
+				if (guild) {
+					const member = await guild.members.fetch(userId).catch(() => null);
+					if (member) {
+						displayName = member.displayName;
+					}
+
+					const channel = guild.channels.cache.get(session.channel_id);
+					if (channel && "name" in channel) {
+						channelName = channel.name || "Unknown";
+					}
+				}
+			} catch {
+				// Fallback to IDs if fetch fails
+			}
+		}
+
 		console.log(
-			`✅ [SESSION] Finalized session ${session.id} for ${userId} (duration: ${duration}s)`,
+			`✅ [SESSION] ${displayName} left ${channelName} (${duration}s)`,
 		);
 
 		return summary;

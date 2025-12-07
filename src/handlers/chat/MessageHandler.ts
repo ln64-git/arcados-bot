@@ -102,7 +102,6 @@ export class MessageHandler {
       // Check for stream selection first (even if not a reply)
       // Only match single digits or small numbers (1-99) to avoid matching Discord IDs
       const rawContent = message.content.trim();
-      console.log(`[MessageHandler] Raw message content: "${rawContent}"`);
       const numberMatch = rawContent.match(/^\s*(\d{1,2})\s*$/);
       if (numberMatch && numberMatch[1]) {
         const selectionNumber = parseInt(numberMatch[1], 10);

@@ -793,9 +793,10 @@ Response style:
       // Iterate through all hidden behaviors to check for triggers
       for (const behavior of Object.values(HIDDEN_BEHAVIORS)) {
         const matchedVariation = behavior.variations.find((variation) => {
-          return new RegExp(`\\b${variation}\\b`, "i").test(promptLower) ||
-            new RegExp(`\\b${variation}[?!.,;:]*\\b`, "i").test(promptLower) ||
-            promptLower.includes(variation);
+          // Only match complete words with word boundaries (strict matching)
+          const exactWordRegex = new RegExp(`\\b${variation}\\b`, "i");
+          const wordWithPunctuationRegex = new RegExp(`\\b${variation}[?!.,;:]*\\b`, "i");
+          return exactWordRegex.test(promptLower) || wordWithPunctuationRegex.test(promptLower);
         });
 
         if (matchedVariation) {

@@ -49,7 +49,7 @@ export class VoiceStateCoordinator {
 		this.repository = new VoiceDataRepository(db);
 
 		// Create services
-		this.sessionService = new VoiceSessionService(this.repository);
+		this.sessionService = new VoiceSessionService(this.repository, client);
 		this.spawnChannelService = new SpawnChannelService(
 			client,
 			this.repository,
@@ -71,10 +71,6 @@ export class VoiceStateCoordinator {
 	): Promise<void> {
 		const user = oldState.member?.user || newState.member?.user;
 		if (!user) return;
-
-		console.log(
-			`🔹 [VOICE] ${user.username}: ${oldState.channelId || "none"} -> ${newState.channelId || "none"}`,
-		);
 
 		// Route based on event type
 		if (oldState.channelId !== newState.channelId) {
@@ -129,7 +125,6 @@ export class VoiceStateCoordinator {
 			newState,
 		);
 
-		console.log(`✅ [VOICE] Session started for ${user.username} in ${channelId}`);
 	}
 
 	/**
@@ -148,7 +143,6 @@ export class VoiceStateCoordinator {
 			);
 		}
 
-		console.log(`✅ [VOICE] Session ended for ${user.username}`);
 	}
 
 	/**
