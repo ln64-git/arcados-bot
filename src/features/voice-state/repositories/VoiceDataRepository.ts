@@ -290,10 +290,11 @@ export class VoiceDataRepository {
 	 * Record a voice history event
 	 */
 	async recordHistory(event: VoiceHistoryData): Promise<void> {
-		// Generate short ID if not provided (max 50 chars for DB)
+		// Generate unique ID if not provided (max 50 chars for DB)
+		// Include random suffix to prevent collisions when multiple events occur in same millisecond
 		const eventId =
 			event.id ||
-			`${event.event_type}_${event.user_id.slice(-8)}_${Date.now().toString(36)}`;
+			`${event.event_type}_${event.user_id.slice(-8)}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 
 		const result = await this.db.query(
 			`INSERT INTO voice_history (
@@ -377,18 +378,19 @@ export class VoiceDataRepository {
 	 */
 	async insertChannel(channel: ChannelData): Promise<void> {
 		const result = await this.db.query(
-			`INSERT INTO channels (
-				id, guild_id, name, type, parent_id, position,
-				is_user_channel, current_owner_id
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			ON CONFLICT (id) DO UPDATE SET
-				name = EXCLUDED.name,
-				-- Preserve is_user_channel if already true, otherwise use new value
-				is_user_channel = CASE 
-					WHEN channels.is_user_channel = true THEN true
-					ELSE EXCLUDED.is_user_channel
-				END,
-				current_owner_id = EXCLUDED.current_owner_id`,
+		`INSERT INTO channels (
+			id, guild_id, name, type, parent_id, position,
+			is_user_channel, current_owner_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (id) DO UPDATE SET
+			name = EXCLUDED.name,
+			-- Preserve is_user_channel if already true, otherwise use new value
+			is_user_channel = CASE 
+				WHEN channels.is_user_channel = true THEN true
+				ELSE EXCLUDED.is_user_channel
+			END,
+			-- Preserve current_owner_id if already set, otherwise use new value
+			current_owner_id = COALESCE(channels.current_owner_id, EXCLUDED.current_owner_id)`,
 			[
 				channel.id,
 				channel.guild_id,
@@ -685,14 +687,19 @@ export class VoiceDataRepository {
 	 * Record a moderation event
 	 */
 	async recordModerationEvent(event: ModerationEvent): Promise<void> {
+		// Generate unique ID (max 50 chars for DB)
+		const eventId = `moderation_${event.user_id.slice(-8)}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+		
 		const result = await this.db.query(
 			`INSERT INTO voice_history (
-				guild_id, user_id, channel_id, event_type, timestamp, self_mute, self_deaf, server_mute, server_deaf
+				id, guild_id, user_id, channel_id, event_type, timestamp, self_mute, self_deaf, server_mute, server_deaf
 			) VALUES (
-				(SELECT guild_id FROM channels WHERE id = $1),
-				$2, $1, 'moderation', $3, false, false, $4, $5
+				$1,
+				(SELECT guild_id FROM channels WHERE id = $2),
+				$3, $2, 'moderation', $4, false, false, $5, $6
 			)`,
 			[
+				eventId,
 				event.channel_id,
 				event.user_id,
 				event.timestamp,

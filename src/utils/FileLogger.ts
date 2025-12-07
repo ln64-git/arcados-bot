@@ -23,6 +23,7 @@ export class FileLogger {
 	private currentLogPath: string;
 	private writeStream: fs.WriteStream | null = null;
 	private maxLogs = 8; // current.log + 7 archived logs
+	private streamReady = false; // Track if stream is ready for writes
 
 	private constructor() {
 		this.logDir = path.join(process.cwd(), "log");
@@ -103,22 +104,30 @@ Started: ${new Date().toISOString()}
 		this.writeStream = fs.createWriteStream(this.currentLogPath, {
 			flags: "a", // Append mode
 			encoding: "utf8",
+			autoClose: false, // Keep stream open
+		});
+
+		// Mark stream as ready when opened
+		this.writeStream.on("open", () => {
+			this.streamReady = true;
 		});
 
 		// Handle stream errors
 		this.writeStream.on("error", (error) => {
-			console.error("🔸 FileLogger write stream error:", error);
+			// Use process.stderr.write directly to avoid recursion
+			process.stderr.write(`🔸 FileLogger write stream error: ${error}\n`);
+			this.streamReady = false;
 		});
+
+		// Stream is ready immediately after creation (synchronous open)
+		// But we'll mark it as ready on the 'open' event for safety
+		this.streamReady = true;
 	}
 
 	/**
 	 * Write log entry to current.log
 	 */
 	log(message: string): void {
-		if (!this.writeStream) {
-			return;
-		}
-
 		// Format: HH:MM:SS.mmm (compact, readable)
 		const now = new Date();
 		const hours = now.getHours().toString().padStart(2, "0");
@@ -129,8 +138,31 @@ Started: ${new Date().toISOString()}
 
 		const logEntry = `[${timestamp}] ${message}\n`;
 
-		// Write to file
-		this.writeStream.write(logEntry);
+		// Try to write via stream first (preferred method)
+		if (this.writeStream && this.streamReady) {
+			try {
+				const written = this.writeStream.write(logEntry);
+				
+				// If write buffer is full, the write will be queued automatically
+				// The stream will emit 'drain' when ready for more data
+				if (!written) {
+					// Buffer is full, but write is queued - stream will handle it
+					// We don't need to do anything here as the write is already queued
+				}
+				return; // Successfully wrote via stream
+			} catch (error) {
+				// Stream write failed, fall through to fallback
+			}
+		}
+
+		// Fallback: write directly to file if stream isn't ready or write failed
+		// This ensures we don't lose messages during initialization or stream errors
+		try {
+			fs.appendFileSync(this.currentLogPath, logEntry, "utf8");
+		} catch (error) {
+			// Ignore fallback errors to avoid recursion
+			// Message is lost, but at least we don't crash
+		}
 	}
 
 	/**
@@ -141,7 +173,15 @@ Started: ${new Date().toISOString()}
 			return;
 		}
 
-		this.writeStream.write(`${message}\n`);
+		const logEntry = `${message}\n`;
+
+		// Write to file - use try/catch for synchronous errors
+		try {
+			this.writeStream.write(logEntry);
+		} catch (error) {
+			// Handle synchronous write errors
+			process.stderr.write(`🔸 FileLogger write error: ${error}\n`);
+		}
 	}
 
 	/**

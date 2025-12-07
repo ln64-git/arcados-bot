@@ -27,6 +27,8 @@ import { SpawnChannelError } from "../types/index";
 
 export class SpawnChannelService {
 	private spawnChannelId?: string;
+	// Track recently created channels to prevent premature cleanup
+	private recentlyCreatedChannels = new Map<string, number>(); // channelId -> timestamp
 
 	constructor(
 		private client: Client,
@@ -80,6 +82,7 @@ export class SpawnChannelService {
 			}
 
 			// Clean up any existing channels for this user
+			// Do this BEFORE creating a new channel to avoid confusion
 			await this.cleanupExistingChannels(member);
 
 			// Create new channel
@@ -140,12 +143,34 @@ export class SpawnChannelService {
 
 		await this.repository.insertChannel(channelData);
 
+		// Mark channel as recently created to prevent premature cleanup
+		this.recentlyCreatedChannels.set(newChannel.id, Date.now());
+
+		// Clean up old "recently created" entries (older than 10 seconds)
+		const tenSecondsAgo = Date.now() - 10000;
+		for (const [channelId, timestamp] of this.recentlyCreatedChannels.entries()) {
+			if (timestamp < tenSecondsAgo) {
+				this.recentlyCreatedChannels.delete(channelId);
+			}
+		}
+
 		// Move user into new channel
 		try {
 			await member.voice.setChannel(newChannel.id);
+
+			// Verify user is actually in the channel (wait a bit for Discord to update)
+			// This prevents race conditions where cleanup runs before Discord updates member list
+			await new Promise(resolve => setTimeout(resolve, 500));
+
+			// Double-check the user is in the channel
+			const freshChannel = guild.channels.cache.get(newChannel.id) as VoiceChannel | undefined;
+			if (!freshChannel || !freshChannel.members.has(member.id)) {
+				throw new Error("User not found in channel after move");
+			}
 		} catch (error) {
 			// If move fails, delete the channel
 			console.error("🔸 [SPAWN] Failed to move user to new channel:", error);
+			this.recentlyCreatedChannels.delete(newChannel.id);
 			await newChannel.delete();
 			throw new SpawnChannelError("Failed to move user to new channel", error);
 		}
@@ -153,9 +178,15 @@ export class SpawnChannelService {
 		// Record ownership
 		await this.repository.recordOwnership(guild.id, newChannel.id, member.id);
 
-		console.log(
-			`✅ [SPAWN] Created channel '${channelName}' (ID: ${newChannel.id})`,
-		);
+		// Verify ownership was set correctly
+		const verifiedOwner = await this.repository.getCurrentOwner(newChannel.id);
+		if (verifiedOwner !== member.id) {
+			console.error(`🔸 [SPAWN] Ownership verification failed! Expected ${member.id}, got ${verifiedOwner}`);
+			// Try to fix it
+			await this.repository.updateChannel(newChannel.id, {
+				current_owner_id: member.id,
+			});
+		}
 
 		return newChannel;
 	}
@@ -164,25 +195,52 @@ export class SpawnChannelService {
 	 * Cleanup empty user channel
 	 *
 	 * Detects user channels by database flag and deletes if empty
+	 * Prevents cleanup of recently created channels to avoid race conditions
+	 * BUT: If channel is truly empty (no members), allow cleanup even if recently created
 	 */
 	async cleanupEmptyChannel(channel: VoiceChannel): Promise<boolean> {
+		// Check if channel is empty first - if it has members, don't delete regardless of age
+		const isEmpty = channel.members.size === 0;
+
+		// Don't cleanup channels that were just created (within last 3 seconds) UNLESS they're empty
+		// This prevents race conditions where cleanup runs before user is moved
+		// But if the channel is truly empty, we can clean it up even if recently created
+		if (this.recentlyCreatedChannels.has(channel.id) && !isEmpty) {
+			const createdTime = this.recentlyCreatedChannels.get(channel.id)!;
+			const age = Date.now() - createdTime;
+			if (age < 3000) {
+				console.log(`🔹 [SPAWN] Skipping cleanup of recently created channel ${channel.name} (${age}ms old, has ${channel.members.size} members)`);
+				return false;
+			}
+			// Channel is old enough and has members, remove from tracking
+			this.recentlyCreatedChannels.delete(channel.id);
+		}
+
 		// Check if this is a user channel in the database
 		const isUserChannel = await this.repository.isUserChannel(channel.id);
 		if (!isUserChannel) {
 			return false;
 		}
 
-		// Check if channel is empty
-		if (channel.members.size > 0) {
+		// Check if channel is empty (double-check after potential delay)
+		if (!isEmpty) {
 			return false;
 		}
 
+		// If channel is empty, remove from recently created tracking (it's safe to delete)
+		if (this.recentlyCreatedChannels.has(channel.id)) {
+			this.recentlyCreatedChannels.delete(channel.id);
+		}
+
 		try {
-			const channelName = channel.name;
 			await channel.delete();
-			console.log(`✅ [SPAWN] Deleted empty channel ${channelName}`);
 			return true;
-		} catch (error) {
+		} catch (error: any) {
+			// Ignore "Unknown Channel" errors (channel already deleted)
+			if (error?.code === 10003) {
+				this.recentlyCreatedChannels.delete(channel.id);
+				return false; // Channel already deleted, consider it cleaned up
+			}
 			console.error(`🔸 [SPAWN] Failed to delete channel ${channel.name}:`, error);
 			return false;
 		}
@@ -191,20 +249,78 @@ export class SpawnChannelService {
 	/**
 	 * Cleanup existing channels for a user
 	 *
-	 * Removes any existing user channels to prevent duplicates
+	 * Removes any existing user channels owned by this user to prevent duplicates
+	 * Checks both by name (for backwards compatibility) and by database ownership
 	 */
 	private async cleanupExistingChannels(member: GuildMember): Promise<void> {
 		const guild = member.guild;
-		const existingChannels = guild.channels.cache.filter(
+
+		// Find channels by name (for backwards compatibility)
+		const channelsByName = guild.channels.cache.filter(
 			(ch) =>
 				ch.isVoiceBased() && ch.name === `${member.displayName}'s Channel`,
 		);
 
-		for (const channel of existingChannels.values()) {
+		// Also find channels owned by this user in the database
+		const allVoiceChannels = guild.channels.cache.filter(
+			(ch) => ch.isVoiceBased(),
+		) as Map<string, VoiceChannel>;
+
+		const channelsToDelete: VoiceChannel[] = [];
+
+		// Check each voice channel to see if it's owned by this user
+		for (const channel of allVoiceChannels.values()) {
+			const owner = await this.repository.getCurrentOwner(channel.id);
+			if (owner === member.id) {
+				channelsToDelete.push(channel);
+			}
+		}
+
+		// Also add channels found by name (in case they're not in DB yet)
+		for (const channel of channelsByName.values()) {
+			if (!channelsToDelete.includes(channel)) {
+				channelsToDelete.push(channel);
+			}
+		}
+
+		// Delete all found channels (but only if they're empty)
+		for (const channel of channelsToDelete) {
 			try {
-				await channel.delete();
-				console.log(`✅ [SPAWN] Deleted existing channel ${channel.name}`);
-			} catch (error) {
+				// Double-check channel still exists and is empty before deleting
+				const freshChannel = guild.channels.cache.get(channel.id) as VoiceChannel | undefined;
+				if (!freshChannel) {
+					// Channel already deleted, remove from tracking if present
+					this.recentlyCreatedChannels.delete(channel.id);
+					continue;
+				}
+
+				// Don't delete recently created channels (they might be the one we're about to use)
+				if (this.recentlyCreatedChannels.has(channel.id)) {
+					const createdTime = this.recentlyCreatedChannels.get(channel.id)!;
+					const age = Date.now() - createdTime;
+					if (age < 5000) {
+						console.log(`🔹 [SPAWN] Skipping deletion of recently created channel ${freshChannel.name}`);
+						continue;
+					}
+				}
+
+				// Only delete if empty (user might have moved to it)
+				// Also check that the member is NOT in this channel (they should be in spawn)
+				if (freshChannel.members.size === 0 && !freshChannel.members.has(member.id)) {
+					await freshChannel.delete();
+					this.recentlyCreatedChannels.delete(channel.id); // Remove from tracking
+					console.log(`✅ [SPAWN] Deleted existing channel ${freshChannel.name} (owned by ${member.displayName})`);
+				} else if (freshChannel.members.has(member.id)) {
+					console.log(`🔹 [SPAWN] Skipping deletion of ${freshChannel.name} - user is in this channel`);
+				} else {
+					console.log(`🔹 [SPAWN] Skipping deletion of ${freshChannel.name} - has ${freshChannel.members.size} members`);
+				}
+			} catch (error: any) {
+				// Ignore "Unknown Channel" errors (channel already deleted)
+				if (error?.code === 10003) {
+					this.recentlyCreatedChannels.delete(channel.id);
+					continue;
+				}
 				console.error(
 					"🔸 [SPAWN] Failed to delete existing channel:",
 					error,

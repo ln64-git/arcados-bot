@@ -103,8 +103,12 @@ export class VoiceStateCoordinator {
 
 		// Ensure the channel exists in database before creating session
 		// This prevents foreign key constraint violations
+		// Check if channel already exists to preserve ownership and user_channel flag
 		if (newState.channel?.isVoiceBased()) {
 			const channel = newState.channel as VoiceChannel;
+			const isUserChannel = await this.repository.isUserChannel(channel.id);
+			const existingOwner = await this.repository.getCurrentOwner(channel.id);
+
 			await this.repository.insertChannel({
 				id: channel.id,
 				guild_id: newState.guild.id,
@@ -112,8 +116,8 @@ export class VoiceStateCoordinator {
 				type: channel.type,
 				parent_id: channel.parentId,
 				position: channel.position,
-				is_user_channel: false, // Will be updated if it's actually a user channel
-				current_owner_id: null,
+				is_user_channel: isUserChannel, // Preserve existing value if it's a user channel
+				current_owner_id: existingOwner, // Preserve existing owner if set
 			});
 		}
 
@@ -133,14 +137,32 @@ export class VoiceStateCoordinator {
 	private async handleVoiceLeave(oldState: VoiceState): Promise<void> {
 		const user = oldState.member!.user;
 
-		// Finalize session
+		// Don't cleanup spawn channel (it's a permanent channel)
+		const isSpawnChannel = oldState.channelId &&
+			this.spawnChannelService.isSpawnChannel(oldState.channelId);
+
+		// Finalize session (if one exists)
 		await this.sessionService.finalizeSession(user.id, oldState.guild.id);
 
-		// Cleanup empty channel if it's a user channel
-		if (oldState.channel?.isVoiceBased()) {
-			await this.spawnChannelService.cleanupEmptyChannel(
-				oldState.channel as VoiceChannel,
-			);
+		// Only cleanup if this is NOT a spawn channel
+		// Spawn channel leaves happen when users are moved to new channels, so we shouldn't cleanup
+		if (oldState.channel?.isVoiceBased() && !isSpawnChannel) {
+			// Add a delay to allow switch/join events to process first
+			// This prevents race conditions where leave is processed before the user is moved
+			await new Promise(resolve => setTimeout(resolve, 2000));
+
+			// Re-check if user is still in the channel (they might have been moved, not left)
+			const currentVoiceState = oldState.guild.members.cache.get(user.id)?.voice;
+			if (currentVoiceState?.channelId === oldState.channelId) {
+				// User is still in this channel, don't cleanup
+				return;
+			}
+
+			// Re-check if channel still exists and is empty
+			const channel = oldState.guild.channels.cache.get(oldState.channelId!) as VoiceChannel | undefined;
+			if (channel && channel.members.size === 0) {
+				await this.spawnChannelService.cleanupEmptyChannel(channel);
+			}
 		}
 
 	}
@@ -153,47 +175,62 @@ export class VoiceStateCoordinator {
 		newState: VoiceState,
 	): Promise<void> {
 		const user = newState.member!.user;
-		const session = await this.sessionService.getActiveSession(
-			user.id,
-			newState.guild.id,
-		);
 
-		if (session) {
-			// Ensure the new channel exists in database before updating session
-			// This prevents foreign key constraint violations
-			if (newState.channel?.isVoiceBased()) {
-				const channel = newState.channel as VoiceChannel;
-				await this.repository.insertChannel({
-					id: channel.id,
-					guild_id: newState.guild.id,
-					name: channel.name,
-					type: channel.type,
-					parent_id: channel.parentId,
-					position: channel.position,
-					is_user_channel: false, // Will be updated if it's actually a user channel
-					current_owner_id: null,
-				});
-			}
+		// If switching from spawn channel, create session for new channel
+		// (spawn channel joins don't create sessions, they just create channels)
+		const isFromSpawn = oldState.channelId &&
+			this.spawnChannelService.isSpawnChannel(oldState.channelId);
 
-			await this.sessionService.recordChannelSwitch(
+		if (isFromSpawn && newState.channel?.isVoiceBased()) {
+			// User was moved from spawn to new channel - create session
+			await this.handleVoiceJoin(newState);
+		} else {
+			// Normal channel switch - update existing session
+			const session = await this.sessionService.getActiveSession(
 				user.id,
 				newState.guild.id,
-				oldState.channelId!,
-				newState.channelId!,
-				session.id,
 			);
+
+			if (session) {
+				// Ensure the new channel exists in database before updating session
+				// This prevents foreign key constraint violations
+				// Check if channel already exists to preserve ownership and user_channel flag
+				if (newState.channel?.isVoiceBased()) {
+					const channel = newState.channel as VoiceChannel;
+					const isUserChannel = await this.repository.isUserChannel(channel.id);
+					const existingOwner = await this.repository.getCurrentOwner(channel.id);
+
+					await this.repository.insertChannel({
+						id: channel.id,
+						guild_id: newState.guild.id,
+						name: channel.name,
+						type: channel.type,
+						parent_id: channel.parentId,
+						position: channel.position,
+						is_user_channel: isUserChannel, // Preserve existing value if it's a user channel
+						current_owner_id: existingOwner, // Preserve existing owner if set
+					});
+				}
+
+				await this.sessionService.recordChannelSwitch(
+					user.id,
+					newState.guild.id,
+					oldState.channelId!,
+					newState.channelId!,
+					session.id,
+				);
+			}
 		}
 
-		// Cleanup old channel if empty
-		if (oldState.channel?.isVoiceBased()) {
-			await this.spawnChannelService.cleanupEmptyChannel(
-				oldState.channel as VoiceChannel,
-			);
+		// Cleanup old channel if empty (but not if it's spawn channel)
+		if (oldState.channel?.isVoiceBased() && !isFromSpawn) {
+			// Verify channel is actually empty before cleanup
+			const oldChannel = oldState.guild.channels.cache.get(oldState.channelId!) as VoiceChannel | undefined;
+			if (oldChannel && oldChannel.members.size === 0) {
+				await this.spawnChannelService.cleanupEmptyChannel(oldChannel);
+			}
 		}
 
-		console.log(
-			`✅ [VOICE] ${user.username} switched channels (${oldState.channelId} → ${newState.channelId})`,
-		);
 	}
 
 	/**
