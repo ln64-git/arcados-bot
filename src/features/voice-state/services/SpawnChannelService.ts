@@ -26,6 +26,7 @@ import type { VoiceChannelPreferences, ChannelData } from "../types/index";
 import { SpawnChannelError } from "../types/index";
 import type { ChannelOwnershipService } from "./ChannelOwnershipService";
 import type { BlockEnforcementService } from "./BlockEnforcementService";
+import { VoiceLogger } from "./helpers/VoiceLogger";
 
 export class SpawnChannelService {
 	private spawnChannelId?: string;
@@ -178,9 +179,15 @@ export class SpawnChannelService {
 			}
 		} catch (error) {
 			// If move fails, delete the channel
-			console.error("🔸 [SPAWN] Failed to move user to new channel:", error);
+			VoiceLogger.error("SPAWN", "Failed to move user to new channel", error);
 			this.recentlyCreatedChannels.delete(newChannel.id);
 			await newChannel.delete();
+			// Delete from database to prevent ghost channels
+			try {
+				await this.repository.deleteChannel(newChannel.id);
+			} catch (dbError) {
+				// Ignore - channel creation failed anyway
+			}
 			throw new SpawnChannelError("Failed to move user to new channel", error);
 		}
 
@@ -218,7 +225,7 @@ export class SpawnChannelService {
 			const createdTime = this.recentlyCreatedChannels.get(channel.id)!;
 			const age = Date.now() - createdTime;
 			if (age < 3000) {
-				console.log(`🔹 [SPAWN] Skipping cleanup of recently created channel ${channel.name} (${age}ms old, has ${channel.members.size} members)`);
+				VoiceLogger.info("SPAWN", `Skipping cleanup of recently created channel ${channel.name} (${age}ms old, has ${channel.members.size} members)`);
 				return false;
 			}
 			// Channel is old enough and has members, remove from tracking
@@ -242,16 +249,31 @@ export class SpawnChannelService {
 		}
 
 		try {
+			// Delete from Discord first
 			await channel.delete();
-			console.log(`✅ [SPAWN] Deleted empty channel ${channel.name}`);
+			
+			// Delete from database to prevent ghost channels
+			try {
+				await this.repository.deleteChannel(channel.id);
+			} catch (dbError) {
+				// Log but don't fail - Discord deletion succeeded
+				VoiceLogger.error("SPAWN", `Failed to delete channel ${channel.name} from database`, dbError);
+			}
+			
 			return true;
 		} catch (error: any) {
 			// Ignore "Unknown Channel" errors (channel already deleted)
 			if (error?.code === 10003) {
 				this.recentlyCreatedChannels.delete(channel.id);
+				// Try to clean up database record even if Discord channel is already gone
+				try {
+					await this.repository.deleteChannel(channel.id);
+				} catch (dbError) {
+					// Ignore - channel might not exist in DB either
+				}
 				return false; // Channel already deleted, consider it cleaned up
 			}
-			console.error(`🔸 [SPAWN] Failed to delete channel ${channel.name}:`, error);
+			VoiceLogger.error("SPAWN", `Failed to delete channel ${channel.name}`, error);
 			return false;
 		}
 	}
@@ -370,7 +392,7 @@ export class SpawnChannelService {
 					const createdTime = this.recentlyCreatedChannels.get(channel.id)!;
 					const age = Date.now() - createdTime;
 					if (age < 5000) {
-						console.log(`🔹 [SPAWN] Skipping deletion of recently created channel ${freshChannel.name}`);
+						VoiceLogger.info("SPAWN", `Skipping deletion of recently created channel ${freshChannel.name}`);
 						continue;
 					}
 				}
@@ -379,12 +401,18 @@ export class SpawnChannelService {
 				// Also check that the member is NOT in this channel (they should be in spawn)
 				if (freshChannel.members.size === 0 && !freshChannel.members.has(member.id)) {
 					await freshChannel.delete();
+					// Delete from database to prevent ghost channels
+					try {
+						await this.repository.deleteChannel(freshChannel.id);
+					} catch (dbError) {
+						VoiceLogger.error("SPAWN", `Failed to delete channel ${freshChannel.name} from database`, dbError);
+					}
 					this.recentlyCreatedChannels.delete(channel.id); // Remove from tracking
-					console.log(`✅ [SPAWN] Deleted existing channel ${freshChannel.name} (owned by ${member.displayName})`);
+					VoiceLogger.spawn(`Deleted existing channel ${freshChannel.name} (owned by ${member.displayName})`);
 				} else if (freshChannel.members.has(member.id)) {
-					console.log(`🔹 [SPAWN] Skipping deletion of ${freshChannel.name} - user is in this channel`);
+					VoiceLogger.info("SPAWN", `Skipping deletion of ${freshChannel.name} - user is in this channel`);
 				} else {
-					console.log(`🔹 [SPAWN] Skipping deletion of ${freshChannel.name} - has ${freshChannel.members.size} members`);
+					VoiceLogger.info("SPAWN", `Skipping deletion of ${freshChannel.name} - has ${freshChannel.members.size} members`);
 				}
 			} catch (error: any) {
 				// Ignore "Unknown Channel" errors (channel already deleted)
@@ -409,7 +437,7 @@ export class SpawnChannelService {
 		preferences: VoiceChannelPreferences,
 	): Promise<void> {
 		await this.repository.updateUserPreferences(userId, guildId, preferences);
-		console.log(`✅ [SPAWN] Updated preferences for ${userId}`);
+		// Don't log - reduces log spam for frequent preference updates
 	}
 
 	/**

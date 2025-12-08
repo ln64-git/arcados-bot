@@ -12,7 +12,7 @@
  * - Testable permission management in isolation
  */
 
-import type { PermissionOverwriteOptions, VoiceChannel } from "discord.js";
+import type { PermissionOverwriteOptions, VoiceChannel, Guild } from "discord.js";
 import { VoiceLogger } from "./VoiceLogger";
 
 export interface PermissionResult {
@@ -22,6 +22,15 @@ export interface PermissionResult {
 }
 
 export class PermissionOverrideHelper {
+	/**
+	 * Get user display name from guild
+	 */
+	private static getUserDisplayName(guild: Guild | undefined, userId: string): string {
+		if (!guild) return userId;
+		const member = guild.members.cache.get(userId);
+		return member?.displayName || userId;
+	}
+
 	/**
 	 * Apply permission overrides to multiple channels for a single user
 	 *
@@ -47,19 +56,56 @@ export class PermissionOverrideHelper {
 
 		for (const channel of channels) {
 			try {
-				await channel.permissionOverwrites.edit(userId, permissions);
-				result.success++;
-				if (logContext === "BLOCK") {
-					VoiceLogger.block(`Applied permissions to ${channel.name} for user ${userId}`);
-				} else if (logContext === "BAN" || logContext === "MODERATION") {
-					VoiceLogger.moderation(`Applied permissions to ${channel.name} for user ${userId}`);
-				} else {
-					VoiceLogger.info(logContext, `Applied permissions to ${channel.name} for user ${userId}`);
+				// Validate user ID format (Discord snowflake)
+				if (!userId || typeof userId !== "string" || userId.length < 17) {
+					VoiceLogger.warn(logContext, `Invalid user ID format: ${userId}`);
+					result.failed++;
+					result.errors.push({ id: channel.id, error: new Error("Invalid user ID format") });
+					continue;
 				}
-			} catch (error) {
+
+				// Try to resolve user ID to a User object (required by Discord.js)
+				let user = channel.guild.members.cache.get(userId)?.user;
+				if (!user) {
+					// User not in cache, try to fetch
+					try {
+						const member = await channel.guild.members.fetch(userId).catch(() => null);
+						user = member?.user;
+					} catch {
+						// User doesn't exist or can't be fetched
+					}
+				}
+
+				// If we still can't resolve the user, skip this permission override
+				if (!user) {
+					// User doesn't exist in this guild, skip silently
+					result.failed++;
+					result.errors.push({ id: channel.id, error: new Error("User not found in guild") });
+					continue;
+				}
+
+				// Apply permissions using the resolved User object
+				await channel.permissionOverwrites.edit(user, permissions);
+				result.success++;
+				// Only log for non-BLOCK contexts to reduce log spam
+				// Block permissions are applied frequently and don't need individual logs
+				if (logContext !== "BLOCK") {
+					const userName = this.getUserDisplayName(channel.guild, userId);
+					const channelName = channel.name || channel.id;
+					if (logContext === "BAN" || logContext === "MODERATION") {
+						VoiceLogger.moderation(`Applied permissions to ${channelName} for ${userName}`);
+					} else {
+						VoiceLogger.info(logContext, `Applied permissions to ${channelName} for ${userName}`);
+					}
+				}
+			} catch (error: any) {
 				result.failed++;
 				result.errors.push({ id: channel.id, error });
-				VoiceLogger.error(logContext, `Failed to apply permissions to channel ${channel.name}`, error);
+				// Only log if it's not a common Discord error (like channel/user not found, invalid type)
+				if (error?.code !== 10003 && error?.code !== 10013 && error?.code !== 50035 && error?.code !== "InvalidType") {
+					const channelName = channel.name || channel.id;
+					VoiceLogger.error(logContext, `Failed to apply permissions to channel ${channelName}`, error);
+				}
 			}
 		}
 
@@ -91,19 +137,57 @@ export class PermissionOverrideHelper {
 
 		for (const userId of userIds) {
 			try {
-				await channel.permissionOverwrites.edit(userId, permissions);
-				result.success++;
-				if (logContext === "BLOCK") {
-					VoiceLogger.block(`Applied permissions to ${channel.name} for user ${userId}`);
-				} else if (logContext === "BAN" || logContext === "MODERATION") {
-					VoiceLogger.moderation(`Applied permissions to ${channel.name} for user ${userId}`);
-				} else {
-					VoiceLogger.info(logContext, `Applied permissions to ${channel.name} for user ${userId}`);
+				// Validate user ID format (Discord snowflake)
+				if (!userId || typeof userId !== "string" || userId.length < 17) {
+					VoiceLogger.warn(logContext, `Invalid user ID format: ${userId}`);
+					result.failed++;
+					result.errors.push({ id: userId, error: new Error("Invalid user ID format") });
+					continue;
 				}
-			} catch (error) {
+
+				// Try to resolve user ID to a User object (required by Discord.js)
+				// First try from guild members cache, then try fetching
+				let user = channel.guild.members.cache.get(userId)?.user;
+				if (!user) {
+					// User not in cache, try to fetch
+					try {
+						const member = await channel.guild.members.fetch(userId).catch(() => null);
+						user = member?.user;
+					} catch {
+						// User doesn't exist or can't be fetched
+					}
+				}
+
+				// If we still can't resolve the user, skip this permission override
+				if (!user) {
+					// User doesn't exist in this guild, skip silently
+					result.failed++;
+					result.errors.push({ id: userId, error: new Error("User not found in guild") });
+					continue;
+				}
+
+				// Apply permissions using the resolved User object
+				await channel.permissionOverwrites.edit(user, permissions);
+				result.success++;
+				// Only log for non-BLOCK contexts to reduce log spam
+				// Block permissions are applied frequently and don't need individual logs
+				if (logContext !== "BLOCK") {
+					const userName = this.getUserDisplayName(channel.guild, userId);
+					const channelName = channel.name || channel.id;
+					if (logContext === "BAN" || logContext === "MODERATION") {
+						VoiceLogger.moderation(`Applied permissions to ${channelName} for ${userName}`);
+					} else {
+						VoiceLogger.info(logContext, `Applied permissions to ${channelName} for ${userName}`);
+					}
+				}
+			} catch (error: any) {
 				result.failed++;
 				result.errors.push({ id: userId, error });
-				VoiceLogger.error(logContext, `Failed to apply permissions for user ${userId}`, error);
+				// Only log if it's not a common Discord error (like user not found, invalid type)
+				if (error?.code !== 10013 && error?.code !== 50035 && error?.code !== "InvalidType") {
+					const userName = this.getUserDisplayName(channel.guild, userId);
+					VoiceLogger.error(logContext, `Failed to apply permissions for ${userName}`, error);
+				}
 			}
 		}
 
@@ -134,17 +218,24 @@ export class PermissionOverrideHelper {
 			try {
 				await channel.permissionOverwrites.delete(userId);
 				result.success++;
-				if (logContext === "BLOCK") {
-					VoiceLogger.block(`Removed permissions from ${channel.name} for user ${userId}`);
-				} else if (logContext === "BAN" || logContext === "MODERATION") {
-					VoiceLogger.moderation(`Removed permissions from ${channel.name} for user ${userId}`);
-				} else {
-					VoiceLogger.info(logContext, `Removed permissions from ${channel.name} for user ${userId}`);
+				// Only log for non-BLOCK contexts to reduce log spam
+				if (logContext !== "BLOCK") {
+					const userName = this.getUserDisplayName(channel.guild, userId);
+					const channelName = channel.name || channel.id;
+					if (logContext === "BAN" || logContext === "MODERATION") {
+						VoiceLogger.moderation(`Removed permissions from ${channelName} for ${userName}`);
+					} else {
+						VoiceLogger.info(logContext, `Removed permissions from ${channelName} for ${userName}`);
+					}
 				}
-			} catch (error) {
+			} catch (error: any) {
 				result.failed++;
 				result.errors.push({ id: channel.id, error });
-				VoiceLogger.error(logContext, `Failed to remove permissions from channel ${channel.name}`, error);
+				// Only log errors for non-BLOCK contexts or non-common errors
+				if (logContext !== "BLOCK" || (error?.code !== 10013 && error?.code !== 50035 && error?.code !== "InvalidType")) {
+					const channelName = channel.name || channel.id;
+					VoiceLogger.error(logContext, `Failed to remove permissions from channel ${channelName}`, error);
+				}
 			}
 		}
 
@@ -175,17 +266,23 @@ export class PermissionOverrideHelper {
 			try {
 				await channel.permissionOverwrites.delete(userId);
 				result.success++;
-				if (logContext === "BLOCK") {
-					VoiceLogger.block(`Removed permissions from ${channel.name} for user ${userId}`);
-				} else if (logContext === "BAN" || logContext === "MODERATION") {
-					VoiceLogger.moderation(`Removed permissions from ${channel.name} for user ${userId}`);
-				} else {
-					VoiceLogger.info(logContext, `Removed permissions from ${channel.name} for user ${userId}`);
+				// Only log for non-BLOCK contexts to reduce log spam
+				if (logContext !== "BLOCK") {
+					const userName = this.getUserDisplayName(channel.guild, userId);
+					const channelName = channel.name || channel.id;
+					if (logContext === "BAN" || logContext === "MODERATION") {
+						VoiceLogger.moderation(`Removed permissions from ${channelName} for ${userName}`);
+					} else {
+						VoiceLogger.info(logContext, `Removed permissions from ${channelName} for ${userName}`);
+					}
 				}
 			} catch (error) {
 				result.failed++;
 				result.errors.push({ id: userId, error });
-				VoiceLogger.error(logContext, `Failed to remove permissions for user ${userId}`, error);
+				// Only log errors for non-BLOCK contexts or non-common errors
+				if (logContext !== "BLOCK" || (error?.code !== 10013 && error?.code !== 50035 && error?.code !== "InvalidType")) {
+					VoiceLogger.error(logContext, `Failed to remove permissions for user ${userId}`, error);
+				}
 			}
 		}
 
@@ -210,17 +307,41 @@ export class PermissionOverrideHelper {
 		logContext: string,
 	): Promise<boolean> {
 		try {
-			await channel.permissionOverwrites.edit(userId, permissions);
-			if (logContext === "BLOCK") {
-				VoiceLogger.block(`Applied permissions to ${channel.name} for user ${userId}`);
-			} else if (logContext === "BAN" || logContext === "MODERATION") {
-				VoiceLogger.moderation(`Applied permissions to ${channel.name} for user ${userId}`);
-			} else {
-				VoiceLogger.info(logContext, `Applied permissions to ${channel.name} for user ${userId}`);
+			// Try to resolve user ID to a User object
+			let user = channel.guild.members.cache.get(userId)?.user;
+			if (!user) {
+				try {
+					const member = await channel.guild.members.fetch(userId).catch(() => null);
+					user = member?.user;
+				} catch {
+					// User doesn't exist
+				}
+			}
+
+			if (!user) {
+				// User not found in guild, can't apply permissions
+				return false;
+			}
+
+			await channel.permissionOverwrites.edit(user, permissions);
+			// Only log for non-BLOCK contexts to reduce log spam
+			if (logContext !== "BLOCK") {
+				const userName = this.getUserDisplayName(channel.guild, userId);
+				const channelName = channel.name || channel.id;
+				if (logContext === "BAN" || logContext === "MODERATION") {
+					VoiceLogger.moderation(`Applied permissions to ${channelName} for ${userName}`);
+				} else {
+					VoiceLogger.info(logContext, `Applied permissions to ${channelName} for ${userName}`);
+				}
 			}
 			return true;
-		} catch (error) {
-			VoiceLogger.error(logContext, `Failed to apply permissions to ${channel.name} for user ${userId}`, error);
+		} catch (error: any) {
+			// Only log if it's not a common Discord error
+			if (error?.code !== 10013 && error?.code !== 50035 && error?.code !== "InvalidType") {
+				const userName = this.getUserDisplayName(channel.guild, userId);
+				const channelName = channel.name || channel.id;
+				VoiceLogger.error(logContext, `Failed to apply permissions to ${channelName} for ${userName}`, error);
+			}
 			return false;
 		}
 	}
@@ -242,16 +363,21 @@ export class PermissionOverrideHelper {
 	): Promise<boolean> {
 		try {
 			await channel.permissionOverwrites.delete(userId);
-			if (logContext === "BLOCK") {
-				VoiceLogger.block(`Removed permissions from ${channel.name} for user ${userId}`);
-			} else if (logContext === "BAN" || logContext === "MODERATION") {
-				VoiceLogger.moderation(`Removed permissions from ${channel.name} for user ${userId}`);
-			} else {
-				VoiceLogger.info(logContext, `Removed permissions from ${channel.name} for user ${userId}`);
+			// Only log for non-BLOCK contexts to reduce log spam
+			if (logContext !== "BLOCK") {
+				const userName = this.getUserDisplayName(channel.guild, userId);
+				const channelName = channel.name || channel.id;
+				if (logContext === "BAN" || logContext === "MODERATION") {
+					VoiceLogger.moderation(`Removed permissions from ${channelName} for ${userName}`);
+				} else {
+					VoiceLogger.info(logContext, `Removed permissions from ${channelName} for ${userName}`);
+				}
 			}
 			return true;
 		} catch (error) {
-			VoiceLogger.error(logContext, `Failed to remove permissions from ${channel.name} for user ${userId}`, error);
+			const userName = this.getUserDisplayName(channel.guild, userId);
+			const channelName = channel.name || channel.id;
+			VoiceLogger.error(logContext, `Failed to remove permissions from ${channelName} for ${userName}`, error);
 			return false;
 		}
 	}

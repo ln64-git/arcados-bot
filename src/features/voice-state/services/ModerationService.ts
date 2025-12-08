@@ -19,12 +19,13 @@ import type { VoiceDataRepository } from "../repositories/VoiceDataRepository";
 import type { ModerationEvent } from "../types/index";
 import { ModerationError } from "../types/index";
 import { PermissionOverrideHelper } from "./helpers/PermissionOverrideHelper";
+import { VoiceLogger } from "./helpers/VoiceLogger";
 
 export class ModerationService {
 	constructor(
 		private client: Client,
 		private repository: VoiceDataRepository,
-	) {}
+	) { }
 
 	/**
 	 * Mute a user in a voice channel
@@ -144,11 +145,6 @@ export class ModerationService {
 				await member.voice.setDeaf(false);
 			}
 
-			const displayName = member.displayName || userId;
-			const channelName = channel.name || channelId;
-			console.log(
-				`✅ [MODERATION] Applied preferences for ${displayName} in ${channelName}`,
-			);
 		} catch (error) {
 			console.error("🔸 [MODERATION] Failed to apply preferences:", error);
 		}
@@ -216,7 +212,7 @@ export class ModerationService {
 				"MODERATION",
 			);
 		} catch (error) {
-			console.error("🔸 [MODERATION] Failed to apply ban permissions:", error);
+			VoiceLogger.error("MODERATION", "Failed to apply ban permissions", error);
 		}
 	}
 
@@ -235,17 +231,16 @@ export class ModerationService {
 				moderatorId,
 			);
 
-			// Resolve channel objects
+			// Resolve channel objects, filtering out deleted channels
 			const channels: VoiceChannel[] = [];
 			for (const data of channelData) {
 				try {
 					const channel = await this.getVoiceChannel(data.id);
-					channels.push(channel);
+					if (channel) {
+						channels.push(channel);
+					}
 				} catch (error) {
-					console.error(
-						`🔸 [MODERATION] Could not find channel ${data.id}:`,
-						error,
-					);
+					// Channel was deleted, skip silently
 				}
 			}
 
@@ -256,10 +251,7 @@ export class ModerationService {
 				"MODERATION",
 			);
 		} catch (error) {
-			console.error(
-				"🔸 [MODERATION] Failed to remove ban permissions:",
-				error,
-			);
+			VoiceLogger.error("MODERATION", "Failed to remove ban permissions", error);
 		}
 	}
 
@@ -291,10 +283,7 @@ export class ModerationService {
 				"MODERATION",
 			);
 		} catch (error) {
-			console.error(
-				"🔸 [MODERATION] Failed to sync ban permissions for new channel:",
-				error,
-			);
+			VoiceLogger.error("MODERATION", "Failed to sync ban permissions for new channel", error);
 		}
 	}
 
@@ -347,7 +336,9 @@ export class ModerationService {
 				timestamp: new Date(),
 			});
 
-			console.log(`✅ [MODERATION] Applied ${action} to ${userId} in ${channelId}`);
+			const userName = member.displayName || userId;
+			const channelName = channel.name || channelId;
+			VoiceLogger.moderation(`Applied ${action} to ${userName} in ${channelName}`);
 		} catch (error) {
 			throw new ModerationError(`Failed to ${action} user`, error);
 		}

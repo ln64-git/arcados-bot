@@ -28,7 +28,7 @@ export class BlockEnforcementService {
 	constructor(
 		private client: Client,
 		private repository: VoiceDataRepository,
-	) {}
+	) { }
 
 	/**
 	 * Check if user can join channel based on blocks
@@ -151,7 +151,8 @@ export class BlockEnforcementService {
 				blockerId,
 			);
 
-			VoiceLogger.block(`Applying block permissions to ${channelData.length} channels owned by ${blockerId}`);
+			const blockerName = await this.getMemberName(blockerId, guildId);
+			VoiceLogger.block(`Applying block permissions to ${channelData.length} channels owned by ${blockerName}`);
 
 			// Resolve channel objects
 			const channels: VoiceChannel[] = [];
@@ -201,8 +202,6 @@ export class BlockEnforcementService {
 			const ownerPrefs = await this.repository.getUserPreferences(ownerId, guildId);
 			const blockedUsers = (ownerPrefs.blocked_users as string[]) || [];
 
-			VoiceLogger.block(`Syncing block permissions for channel ${channel.name} (owner: ${ownerId}, ${blockedUsers.length} blocked users)`);
-
 			// Apply permissions using helper
 			await PermissionOverrideHelper.applyToUsers(
 				channel,
@@ -237,8 +236,6 @@ export class BlockEnforcementService {
 				guildId,
 				blockerId,
 			);
-
-			VoiceLogger.block(`Removing block permissions from ${channelData.length} channels owned by ${blockerId}`);
 
 			// Resolve channel objects
 			const channels: VoiceChannel[] = [];
@@ -304,12 +301,32 @@ export class BlockEnforcementService {
 
 			// Try to apply permission override
 			try {
-				await channel.permissionOverwrites.edit(blockedId, {
+				// Resolve user ID to User object
+				let user = channel.guild.members.cache.get(blockedId)?.user;
+				if (!user) {
+					try {
+						const member = await channel.guild.members.fetch(blockedId).catch(() => null);
+						user = member?.user;
+					} catch {
+						// User doesn't exist in guild
+					}
+				}
+
+				if (!user) {
+					// User not found in guild, skip
+					return;
+				}
+
+				await channel.permissionOverwrites.edit(user, {
 					Connect: false,
 				});
-				VoiceLogger.block(`Applied Connect: false to active channel ${channel.name} for user ${blockedId}`);
-			} catch (error) {
-				VoiceLogger.error("BLOCK", `Failed to apply permissions to active channel ${channel.name}`, error);
+				// Don't log - reduces log spam for frequent block operations
+			} catch (error: any) {
+				// Only log if it's not a common Discord error
+				if (error?.code !== 10013 && error?.code !== 50035 && error?.code !== "InvalidType") {
+					const channelName = channel.name || channel.id;
+					VoiceLogger.error("BLOCK", `Failed to apply permissions to active channel ${channelName}`, error);
+				}
 			}
 		} catch (error) {
 			VoiceLogger.error("BLOCK", "Failed to apply active channel blocks", error);
@@ -343,9 +360,10 @@ export class BlockEnforcementService {
 			// Try to remove permission override
 			try {
 				await channel.permissionOverwrites.delete(blockedId);
-				VoiceLogger.block(`Removed permissions from active channel ${channel.name} for user ${blockedId}`);
+				// Don't log - reduces log spam for frequent block operations
 			} catch (error) {
-				VoiceLogger.error("BLOCK", `Failed to remove permissions from active channel ${channel.name}`, error);
+				const channelName = channel.name || channel.id;
+				VoiceLogger.error("BLOCK", `Failed to remove permissions from active channel ${channelName}`, error);
 			}
 		} catch (error) {
 			VoiceLogger.error("BLOCK", "Failed to remove active channel blocks", error);
@@ -386,7 +404,10 @@ export class BlockEnforcementService {
 			for (const blockedUserId of blockedUsers) {
 				try {
 					await channel.permissionOverwrites.delete(blockedUserId);
-					VoiceLogger.block(`Cleaned up permissions for ${blockedUserId} on ${channel.name} (user ${userId} left)`);
+					const blockedName = await this.getMemberName(blockedUserId, guildId);
+					const userName = await this.getMemberName(userId, guildId);
+					const channelName = channel.name || channel.id;
+					VoiceLogger.block(`Cleaned up permissions for ${blockedName} on ${channelName} (${userName} left)`);
 				} catch (error) {
 					// Permission might not exist, that's fine
 				}

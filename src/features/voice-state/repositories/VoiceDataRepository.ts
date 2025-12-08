@@ -413,6 +413,23 @@ export class VoiceDataRepository {
 	}
 
 	/**
+	 * Delete a channel from the database
+	 *
+	 * Removes channel record and cascades to related records (sessions, history, etc.)
+	 * Does NOT delete user preferences (voice_channel_preferences table)
+	 */
+	async deleteChannel(channelId: string): Promise<void> {
+		const result = await this.db.query(
+			`DELETE FROM channels WHERE id = $1`,
+			[channelId],
+		);
+
+		if (!result.success) {
+			throw new VoiceDataError("Failed to delete channel", result.error);
+		}
+	}
+
+	/**
 	 * Update channel properties
 	 */
 	async updateChannel(

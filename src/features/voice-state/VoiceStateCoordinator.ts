@@ -250,7 +250,6 @@ export class VoiceStateCoordinator {
 				// Check if the leaving user was the owner
 				const ownerId = await this.repository.getCurrentOwner(channel.id);
 				if (ownerId === user.id) {
-					VoiceLogger.ownership(`Channel owner ${user.displayName} left ${channel.name}`);
 					// Handle ownership transfer if channel still has members
 					if (channel.members.size > 0) {
 						await this.spawnChannelService.handleOwnerLeave(channel, user.id);
@@ -516,7 +515,9 @@ export class VoiceStateCoordinator {
 					updatedPrefs,
 				);
 
-				VoiceLogger.info("VOICE", `Updated preferences for user ${ownerId} based on Discord UI changes`);
+				const owner = newChannel.guild.members.cache.get(ownerId);
+				const ownerName = owner?.displayName || ownerId;
+				VoiceLogger.info("VOICE", `Updated preferences for ${ownerName} based on Discord UI changes`);
 			}
 
 			// Also update channel in database to keep it in sync
