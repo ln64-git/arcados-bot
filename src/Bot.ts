@@ -82,6 +82,7 @@ export class Bot {
         await scheduler.start();
 
       } catch (error) {
+        console.error("🔸 Error initializing enrichment pipeline:", error);
       }
     } else {
       console.error("❌ Failed to connect to database");
@@ -93,7 +94,7 @@ export class Bot {
     // Login to Discord
     await this.client.login(config.botToken);
 
-    // Deploy commands
+    // Deploy commands (with retry)
     await this.deployCommands();
   }
 

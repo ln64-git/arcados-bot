@@ -86,7 +86,15 @@ async function loadCommandsFromDirectory(
 		}
 
 		try {
-			const commandModule = await import(pathToFileURL(filePath).toString());
+			// Add timeout to prevent hanging on import
+			const importPromise = import(pathToFileURL(filePath).toString());
+			const timeoutPromise = new Promise<never>((_, reject) => {
+				setTimeout(() => {
+					reject(new Error(`Import timeout for ${file}`));
+				}, 10000); // 10 second timeout per file
+			});
+
+			const commandModule = await Promise.race([importPromise, timeoutPromise]);
 			commandCache.set(cacheKey, commandModule);
 			return commandModule;
 		} catch (error) {
