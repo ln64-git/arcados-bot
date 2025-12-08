@@ -89,7 +89,7 @@ export class FileLogger {
 		// Create new current.log with header
 		const header = `
 
-		
+
 🌿 Arcados Bot - New Session                   
 Started: ${new Date().toISOString()}                
 
