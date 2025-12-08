@@ -2673,7 +2673,6 @@ export class VoiceAssistantManager {
 
     // Stop Whisper server if it's running
     if (this.whisperServer.isRunning()) {
-      this.logger.info("Stopping Whisper server...");
       await this.whisperServer.stop();
     }
   }

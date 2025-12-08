@@ -121,8 +121,6 @@ export class WhisperServerManager {
 			return;
 		}
 
-		console.log("🎤 Stopping Whisper server...");
-
 		// Clear startup timeout if still pending
 		if (this.startupTimeout) {
 			clearTimeout(this.startupTimeout);
@@ -151,13 +149,12 @@ export class WhisperServerManager {
 			// Wait for process to exit
 			process.once("exit", () => {
 				clearTimeout(forceKillTimeout);
-				console.log("🎤 ✓ Server stopped");
+				console.log("🔹 Whisper Server stopped");
 				this.whisperProcess = null;
 				resolve();
 			});
 
 			// Send SIGTERM for graceful shutdown
-			console.log(`🎤 Sending SIGTERM to PID ${pid}...`);
 			process.kill("SIGTERM");
 		});
 	}
@@ -204,6 +201,16 @@ export class WhisperServerManager {
 		];
 
 		const shouldSuppress = (text: string): boolean => {
+			// Suppress noisy shutdown messages
+			if (
+				text.includes("Caught signal") ||
+				text.includes("whisper_print_timings") ||
+				text.includes("shutting down gracefully") ||
+				text.includes("whisper server listening") ||
+				text.includes("Received second interrupt")
+			) {
+				return true;
+			}
 			return suppressPatterns.some((pattern) => pattern.test(text));
 		};
 
@@ -230,7 +237,11 @@ export class WhisperServerManager {
 
 		// Handle process exit
 		process.on("exit", (code, signal) => {
-			if (code !== 0 && code !== null) {
+			// Suppress exit messages during normal shutdown (SIGTERM/SIGINT or null signal)
+			// Exit code 1 with null signal is common during graceful shutdown
+			const isNormalShutdown = signal === "SIGTERM" || signal === "SIGINT" || (signal === null && code === 1);
+
+			if (code !== 0 && code !== null && !isNormalShutdown) {
 				console.error(
 					`🎤 Process exited with code ${code} (signal: ${signal})`
 				);

@@ -248,12 +248,10 @@ export function interceptConsole(): void {
 
 	// Handle graceful shutdown
 	process.on("SIGTERM", () => {
-		logger.log("Received SIGTERM, shutting down gracefully...");
 		logger.close();
 	});
 
 	process.on("SIGINT", () => {
-		logger.log("Received SIGINT, shutting down gracefully...");
 		logger.close();
 	});
 

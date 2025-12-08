@@ -406,13 +406,10 @@ export class Bot {
    * Gracefully shutdown the bot and all features
    */
   async shutdown(): Promise<void> {
-    console.log("🔹 Shutting down bot...");
-
     // Flush API cost tracking data
     try {
       const costTracker = APICostTracker.getInstance();
       await costTracker.shutdown();
-      console.log("🔹 API cost tracking data flushed");
     } catch (error) {
       console.error("🔸 Error flushing cost tracking:", error);
     }
