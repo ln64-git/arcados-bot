@@ -44,7 +44,7 @@ async function main() {
 
   if (dbResult.success && dbResult.data && dbResult.data.length > 0) {
     const msg = dbResult.data[0];
-    console.log("✅ Message EXISTS in database");
+    console.log("🔹 Message EXISTS in database");
     console.log(`   ID: ${msg.id}`);
     console.log(`   Guild: ${msg.guild_id}`);
     console.log(`   Channel: ${msg.channel_id}`);
@@ -54,7 +54,7 @@ async function main() {
       console.log(`   Edited: ${msg.edited_at}`);
     }
     console.log(`   Active: ${msg.active ? 'Yes' : 'No'}`);
-    console.log(`   Has Embedding: ${msg.has_embedding ? '✅' : '❌'}`);
+    console.log(`   Has Embedding: ${msg.has_embedding ? '🔹' : '❌'}`);
     if (msg.referenced_message_id) {
       console.log(`   Referenced Message: ${msg.referenced_message_id}`);
     }
@@ -66,7 +66,7 @@ async function main() {
   }
 
   console.log("\n" + "=".repeat(80));
-  console.log("✅ Check complete\n");
+  console.log("🔹 Check complete\n");
 
   await db.disconnect();
 }

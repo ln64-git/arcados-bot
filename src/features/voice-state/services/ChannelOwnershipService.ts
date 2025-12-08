@@ -79,7 +79,7 @@ export class ChannelOwnershipService {
 					const oldOwner = voiceChannel.guild.members.cache.get(currentOwnerId);
 					const oldOwnerName = oldOwner?.displayName || currentOwnerId;
 					console.log(
-						`✅ [OWNERSHIP] Removed Manage Channel from previous owner ${oldOwnerName}`,
+						`🔹 [OWNERSHIP] Removed Manage Channel from previous owner ${oldOwnerName}`,
 					);
 				}
 
@@ -91,11 +91,11 @@ export class ChannelOwnershipService {
 				const newOwner = voiceChannel.guild.members.cache.get(newOwnerId);
 				const newOwnerName = newOwner?.displayName || newOwnerId;
 				console.log(
-					`✅ [OWNERSHIP] Granted Manage Channel to new owner ${newOwnerName}`,
+					`🔹 [OWNERSHIP] Granted Manage Channel to new owner ${newOwnerName}`,
 				);
 
 				console.log(
-					`✅ [OWNERSHIP] Transferred ownership of ${voiceChannel.name} to ${newOwnerName}`,
+					`🔹 [OWNERSHIP] Transferred ownership of ${voiceChannel.name} to ${newOwnerName}`,
 				);
 			} catch (error) {
 				console.error(
@@ -135,7 +135,7 @@ export class ChannelOwnershipService {
 		if (nextOwner) {
 			await this.transferOwnership(channelId, nextOwner);
 			console.log(
-				`✅ [OWNERSHIP] Ownership transferred to ${nextOwner} after ${userId} renounced`,
+				`🔹 [OWNERSHIP] Ownership transferred to ${nextOwner} after ${userId} renounced`,
 			);
 		} else {
 			// No one else in channel, clear owner
@@ -143,7 +143,7 @@ export class ChannelOwnershipService {
 				current_owner_id: null,
 			});
 			console.log(
-				`✅ [OWNERSHIP] Ownership cleared for ${channelId} (no members left)`,
+				`🔹 [OWNERSHIP] Ownership cleared for ${channelId} (no members left)`,
 			);
 		}
 	}
@@ -225,7 +225,7 @@ export class ChannelOwnershipService {
 			}
 
 			console.log(
-				`✅ [OWNERSHIP] Marked ${members.length} members as grandfathered in channel ${channelId}`,
+				`🔹 [OWNERSHIP] Marked ${members.length} members as grandfathered in channel ${channelId}`,
 			);
 		} catch (error) {
 			console.error(
@@ -273,7 +273,7 @@ export class ChannelOwnershipService {
 
 			await channel.setName(channelName);
 			console.log(
-				`✅ [OWNERSHIP] Renamed channel to "${channelName}" for new owner ${ownerId}`,
+				`🔹 [OWNERSHIP] Renamed channel to "${channelName}" for new owner ${ownerId}`,
 			);
 		} catch (error) {
 			console.error("🔸 [OWNERSHIP] Failed to rename channel:", error);

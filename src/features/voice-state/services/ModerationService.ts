@@ -111,7 +111,7 @@ export class ModerationService {
 			const session = await this.repository.getActiveSession(userId, guildId);
 			if (session?.is_grandfathered) {
 				console.log(
-					`✅ [MODERATION] User ${userId} is grandfathered - skipping moderation preferences`,
+					`🔹 [MODERATION] User ${userId} is grandfathered - skipping moderation preferences`,
 				);
 				return;
 			}

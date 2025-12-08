@@ -465,7 +465,7 @@ Context Usage:
 
 				if (matched) {
 					console.log(
-						`[HIDDEN BEHAVIOR] ✅ ${behavior.name.toUpperCase()} ACTIVATED`
+						`[HIDDEN BEHAVIOR] 🔹 ${behavior.name.toUpperCase()} ACTIVATED`
 					);
 					return behavior.prompt; // Completely replace system prompt
 				}

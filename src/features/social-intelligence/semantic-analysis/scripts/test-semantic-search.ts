@@ -20,7 +20,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("✅ Connected to PostgreSQL\n");
+  console.log("🔹 Connected to PostgreSQL\n");
 
   // Get guild ID from environment
   const guildId = process.env.GUILD_ID || "1254694808228986912";
@@ -127,13 +127,13 @@ async function main() {
     );
 
     if (indexCheck.success && indexCheck.data && indexCheck.data.length > 0) {
-      console.log("   ✅ Vector index exists:");
+      console.log("   🔹 Vector index exists:");
       console.log(`   ${indexCheck.data[0].indexdef}\n`);
     } else {
       console.log("   ⚠️  Vector index not found\n");
     }
 
-    console.log("\n✅ All tests complete!");
+    console.log("\n🔹 All tests complete!");
   } catch (error) {
     console.error("❌ Test failed:", error);
     process.exit(1);

@@ -234,7 +234,7 @@ async function main() {
   console.log(`  • Servers: ${servers.data?.length || 0}`);
 
   await db.disconnect();
-  console.log("\n✅ Analysis complete!\n");
+  console.log("\n🔹 Analysis complete!\n");
 }
 
 main().catch((error) => {

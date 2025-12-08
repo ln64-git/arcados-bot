@@ -15,7 +15,7 @@ async function runEnrichmentMigration() {
 	try {
 		// Connect to PostgreSQL
 		await postgresManager.connect();
-		console.log("✅ Connected to PostgreSQL\n");
+		console.log("🔹 Connected to PostgreSQL\n");
 
 		// Read migration file
 		const migrationPath = join(
@@ -32,7 +32,7 @@ async function runEnrichmentMigration() {
 		const result = await postgresManager.query(migrationSQL);
 
 		if (result.success) {
-			console.log("✅ Migration completed successfully!\n");
+			console.log("🔹 Migration completed successfully!\n");
 			console.log("Changes applied:");
 			console.log("  - Added enrichment columns to conversation_segments");
 			console.log("  - Added enrichment columns to user_profiles");

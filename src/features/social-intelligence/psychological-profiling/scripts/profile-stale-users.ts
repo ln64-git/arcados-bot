@@ -47,7 +47,7 @@ async function main() {
 	const staleUserIds = await profiler.detectStaleProfiles(guildId);
 
 	if (staleUserIds.length === 0) {
-		console.log("✅ No stale profiles found. All users are up to date!");
+		console.log("🔹 No stale profiles found. All users are up to date!");
 		await db.close();
 		process.exit(0);
 	}
@@ -84,7 +84,7 @@ async function main() {
 	const duration = stats.duration_seconds || 0;
 
 	console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-	console.log("✅ STALE PROFILE UPDATE COMPLETE");
+	console.log("🔹 STALE PROFILE UPDATE COMPLETE");
 	console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 	console.log(`   Success Rate: ${successCount}/${staleUserIds.length} users`);
 	console.log(`   Duration: ${duration.toFixed(1)}s`);

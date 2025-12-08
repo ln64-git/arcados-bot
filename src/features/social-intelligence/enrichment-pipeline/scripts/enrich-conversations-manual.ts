@@ -118,7 +118,7 @@ async function main() {
 	console.log(`\n🔄 Processing enrichment queue...\n`);
 	await orchestrator.processPendingEnrichments(conversations.length);
 
-	console.log(`\n✅ Enrichment complete!`);
+	console.log(`\n🔹 Enrichment complete!`);
 	console.log(`   Enqueued: ${enriched}`);
 	console.log(`   Failed: ${failed}`);
 

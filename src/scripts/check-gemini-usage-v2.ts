@@ -241,12 +241,12 @@ async function main() {
   console.log("     • Server/guild-level summaries");
 
   console.log("\n  💡 To prevent future charges:");
-  console.log("     • Gemini is now disabled ✅");
+  console.log("     • Gemini is now disabled 🔹");
   console.log("     • All features now use OpenAI (GPT-4o-mini) instead");
   console.log("     • OpenAI is ~60% cheaper than Gemini for this workload");
 
   await db.disconnect();
-  console.log("\n✅ Analysis complete!\n");
+  console.log("\n🔹 Analysis complete!\n");
 }
 
 main().catch((error) => {

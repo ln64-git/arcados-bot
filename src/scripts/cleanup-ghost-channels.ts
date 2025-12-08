@@ -42,7 +42,7 @@ async function cleanupGhostChannels() {
 
 	try {
 		await client.login(token);
-		console.log("✅ Discord client logged in");
+		console.log("🔹 Discord client logged in");
 
 		// Wait for client to be ready
 		await new Promise((resolve) => {
@@ -107,7 +107,7 @@ async function cleanupGhostChannels() {
 		console.log(`\n👻 Found ${ghostChannels.length} ghost channels`);
 
 		if (ghostChannels.length === 0) {
-			console.log("✅ No ghost channels to clean up!");
+			console.log("🔹 No ghost channels to clean up!");
 			return;
 		}
 
@@ -146,15 +146,15 @@ async function cleanupGhostChannels() {
 			}
 		}
 
-		console.log(`\n✅ Deleted ${deleted}/${ghostChannels.length} ghost channels`);
-		console.log("✅ User preferences preserved");
+		console.log(`\n🔹 Deleted ${deleted}/${ghostChannels.length} ghost channels`);
+		console.log("🔹 User preferences preserved");
 	} catch (error) {
 		console.error("❌ Error during cleanup:", error);
 		process.exit(1);
 	} finally {
 		await client.destroy();
 		await db.disconnect();
-		console.log("✅ Cleanup complete");
+		console.log("🔹 Cleanup complete");
 	}
 }
 

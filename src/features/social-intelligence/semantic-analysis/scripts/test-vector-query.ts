@@ -117,7 +117,7 @@ async function main() {
       console.log(`      ✗ Error: ${error.message}`);
     }
 
-    console.log("\n✅ Test complete!");
+    console.log("\n🔹 Test complete!");
   } catch (error) {
     console.error("❌ Test failed:", error);
     process.exit(1);

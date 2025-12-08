@@ -234,7 +234,7 @@ export class ServerEnrichmentPipeline {
 			await this.rateLimiter.trackCost(costEstimate.estimatedCost, "guild");
 
 			console.log(
-				`✅ Enriched guild ${guildId} (${topConversations.length} conversations, ${topRelationships.length} relationships)`,
+				`🔹 Enriched guild ${guildId} (${topConversations.length} conversations, ${topRelationships.length} relationships)`,
 			);
 		} catch (error) {
 			console.error(`❌ Error enriching guild ${guildId}:`, error);

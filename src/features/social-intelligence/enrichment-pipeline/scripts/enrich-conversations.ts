@@ -153,7 +153,7 @@ async function main() {
 		channelFilter
 	);
 
-	console.log(`\n✅ Loaded:`);
+	console.log(`\n🔹 Loaded:`);
 	console.log(`   Messages: ${messages.length}`);
 	console.log(`   Conversations: ${conversations.length}`);
 	console.log(`   Orphan messages: ${orphanMessages.length}`);
@@ -198,7 +198,7 @@ async function main() {
 			if (!dryRun && action.confidence >= 0.7) {
 				console.log(`   ⚙️  Applying action...`);
 				await applyAction(action, group, guildId);
-				console.log(`   ✅ Applied`);
+				console.log(`   🔹 Applied`);
 			} else if (action.confidence < 0.7) {
 				console.log(`   ⚠️  Confidence too low, skipping`);
 			}
@@ -232,7 +232,7 @@ async function main() {
 		);
 		
 		const deletedCount = deleteResult.success && deleteResult.data ? deleteResult.data.length : 0;
-		console.log(`   ✅ Deleted ${deletedCount} 2-message conversations`);
+		console.log(`   🔹 Deleted ${deletedCount} 2-message conversations`);
 		
 		// Step 2: Enrich all remaining conversations
 		console.log(`\n   🔧 Enriching all conversations...`);
@@ -315,7 +315,7 @@ async function main() {
 				}
 			}
 			
-			console.log(`\n   ✅ Enriched ${enrichedCount} conversations`);
+			console.log(`\n   🔹 Enriched ${enrichedCount} conversations`);
 			console.log(`   📝 Keywords extracted/refreshed: ${enrichedCount}`);
 			
 			// Generate or regenerate summaries
@@ -341,7 +341,7 @@ async function main() {
 				
 				try {
 					const stats = await orchestrator.enhance(guildId);
-					console.log(`   ✅ Generated ${stats.summariesGenerated} summaries`);
+					console.log(`   🔹 Generated ${stats.summariesGenerated} summaries`);
 				} catch (error) {
 					console.error(`   ⚠️  Summary generation failed:`, error);
 				}
@@ -372,11 +372,11 @@ async function main() {
 			`\n💡 This was a dry run. Run without --dry-run to apply changes.`
 		);
 	} else {
-		console.log(`\n✅ Changes applied to database`);
+		console.log(`\n🔹 Changes applied to database`);
 	}
 
 	console.log(`\n${"=".repeat(80)}`);
-	console.log("✅ Enrichment complete\n");
+	console.log("🔹 Enrichment complete\n");
 
 	await db.disconnect();
 }
@@ -1050,7 +1050,7 @@ async function createConversationFromOrphans(
 		]
 	);
 
-	console.log(`   ✅ Created new conversation ${newConvId} with ${orphanIds.length} messages`);
+	console.log(`   🔹 Created new conversation ${newConvId} with ${orphanIds.length} messages`);
 
 	// Trigger enrichment to generate keywords and summary
 	const socialIntelligence = new SocialIntelligence(db);

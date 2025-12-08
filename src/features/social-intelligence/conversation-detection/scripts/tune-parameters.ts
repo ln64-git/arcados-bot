@@ -319,7 +319,7 @@ async function main() {
 	console.log("  npm run regenerate:conversations 24 --clear");
 
 	console.log("\n" + "=".repeat(80));
-	console.log("✅ Analysis complete\n");
+	console.log("🔹 Analysis complete\n");
 
 	await db.disconnect();
 }

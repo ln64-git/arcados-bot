@@ -41,7 +41,7 @@ export const streamCommand: Command = {
 
 				await streamManager.stopStream(interaction.guildId!);
 				await interaction.editReply({
-					content: "✅ Stream stopped.",
+					content: "🔹 Stream stopped.",
 				});
 				return;
 			}

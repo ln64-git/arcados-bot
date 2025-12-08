@@ -15,7 +15,7 @@ export class VoiceLogger {
 	 * Log session-related events
 	 */
 	static session(message: string, data?: any): void {
-		console.log(`✅ [SESSION] ${message}`, data || "");
+		console.log(`🔹 [SESSION] ${message}`, data || "");
 	}
 
 	/**
@@ -29,7 +29,7 @@ export class VoiceLogger {
 	 * Log moderation events
 	 */
 	static moderation(message: string, data?: any): void {
-		console.log(`✅ [MODERATION] ${message}`, data || "");
+		console.log(`🔹 [MODERATION] ${message}`, data || "");
 	}
 
 	/**
@@ -43,7 +43,7 @@ export class VoiceLogger {
 	 * Log spawn channel events
 	 */
 	static spawn(message: string, data?: any): void {
-		console.log(`✅ [SPAWN] ${message}`, data || "");
+		console.log(`🔹 [SPAWN] ${message}`, data || "");
 	}
 
 	/**

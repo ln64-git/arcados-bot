@@ -756,7 +756,7 @@ export class VoiceAssistantManager {
       }
 
       this.logger.debug(
-        `✅ Audio chunk accepted for transcription (guild ${session.guildId}, speaker ${userId})`
+        `🔹 Audio chunk accepted for transcription (guild ${session.guildId}, speaker ${userId})`
       );
 
       // Convert stereo to mono for better Whisper transcription

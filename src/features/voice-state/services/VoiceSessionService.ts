@@ -109,7 +109,7 @@ export class VoiceSessionService {
 
 		const displayName = voiceState.member?.displayName || "Unknown";
 		const channelName = voiceState.channel?.name || "Unknown";
-		console.log(`✅ [SESSION] ${displayName} joined ${channelName}`);
+		console.log(`🔹 [SESSION] ${displayName} joined ${channelName}`);
 
 		return sessionId;
 	}
@@ -225,7 +225,7 @@ export class VoiceSessionService {
 		}
 
 		console.log(
-			`✅ [SESSION] ${displayName} left ${channelName} (${duration}s)`,
+			`🔹 [SESSION] ${displayName} left ${channelName} (${duration}s)`,
 		);
 
 		return summary;
@@ -303,11 +303,11 @@ export class VoiceSessionService {
 			const toName = toChannel?.name || toChannelId;
 
 			console.log(
-				`✅ [SESSION] ${displayName} switched from ${fromName} to ${toName}`,
+				`🔹 [SESSION] ${displayName} switched from ${fromName} to ${toName}`,
 			);
 		} else {
 			console.log(
-				`✅ [SESSION] User ${userId} switched from ${fromChannelId} to ${toChannelId}`,
+				`🔹 [SESSION] User ${userId} switched from ${fromChannelId} to ${toChannelId}`,
 			);
 		}
 	}
@@ -412,6 +412,6 @@ export class VoiceSessionService {
 		this.stateChangeTimers.clear();
 		this.sessionStartTimes.clear();
 
-		console.log("✅ [SESSION] Cleaned up session service");
+		console.log("🔹 [SESSION] Cleaned up session service");
 	}
 }

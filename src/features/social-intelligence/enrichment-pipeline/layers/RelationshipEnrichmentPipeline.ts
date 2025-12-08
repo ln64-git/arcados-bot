@@ -298,7 +298,7 @@ export class RelationshipEnrichmentPipeline {
 			await this.rateLimiter.trackCost(costEstimate.estimatedCost, "relationship");
 
 			console.log(
-				`✅ Enriched relationship ${normalizedA.slice(0, 8)} & ${normalizedB.slice(0, 8)} (${currentSharedCount} shared conversations)`,
+				`🔹 Enriched relationship ${normalizedA.slice(0, 8)} & ${normalizedB.slice(0, 8)} (${currentSharedCount} shared conversations)`,
 			);
 		} catch (error) {
 			console.error(

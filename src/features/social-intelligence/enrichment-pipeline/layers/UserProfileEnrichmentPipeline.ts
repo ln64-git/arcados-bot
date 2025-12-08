@@ -359,7 +359,7 @@ export class UserProfileEnrichmentPipeline {
 			await this.rateLimiter.trackCost(costEstimate.estimatedCost, "user_profile");
 
 			console.log(
-				`✅ Enriched user ${userId.slice(0, 8)} (version ${newProfileVersion}, ${newConversationCount} new conversations)`,
+				`🔹 Enriched user ${userId.slice(0, 8)} (version ${newProfileVersion}, ${newConversationCount} new conversations)`,
 			);
 
 			return newProfileVersion;

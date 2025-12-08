@@ -251,7 +251,7 @@ export class YouTubeProvider extends BaseProvider {
 				});
 
 				if (isPlaying) {
-					console.log("[YouTubeProvider] ✅ Video is playing successfully!");
+					console.log("[YouTubeProvider] 🔹 Video is playing successfully!");
 					break;
 				} else {
 					console.log(`[YouTubeProvider] Video not playing yet, will retry... (attempt ${attempts}/${maxAttempts})`);

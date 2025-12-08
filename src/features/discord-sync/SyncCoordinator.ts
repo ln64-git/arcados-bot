@@ -161,7 +161,7 @@ export class SyncCoordinator {
 
 			if (this.verbose) {
 				console.log(
-					`✅ SyncCoordinator: Updated watermark for channel ${channelId} (${source}): ${currentWatermark} -> ${newWatermark}`
+					`🔹 SyncCoordinator: Updated watermark for channel ${channelId} (${source}): ${currentWatermark} -> ${newWatermark}`
 				);
 			}
 

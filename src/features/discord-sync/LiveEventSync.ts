@@ -546,7 +546,7 @@ export class LiveEventSync {
 								"Reapplying previous roles on rejoin"
 							);
 							console.log(
-								`✅ Restored ${assignableIds.length} role(s) for ${member.user.username} (${member.user.id})`
+								`🔹 Restored ${assignableIds.length} role(s) for ${member.user.username} (${member.user.id})`
 							);
 						} catch (error) {
 							console.error(

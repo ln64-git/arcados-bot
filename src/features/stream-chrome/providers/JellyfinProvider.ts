@@ -320,7 +320,7 @@ export class JellyfinProvider extends BaseProvider {
 			});
 
 			if (isPlaying && !hasError) {
-				console.log("[JellyfinProvider] ✅ Video is playing successfully!");
+				console.log("[JellyfinProvider] 🔹 Video is playing successfully!");
 			} else if (hasError) {
 				console.warn(
 					"[JellyfinProvider] ⚠️ Playback errors detected but continuing. Video may not play correctly due to transcoding failures."

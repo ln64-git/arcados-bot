@@ -200,7 +200,7 @@ async function main() {
 		};
 	});
 
-	console.log(`\n✅ Loaded ${messages.length} messages\n`);
+	console.log(`\n🔹 Loaded ${messages.length} messages\n`);
 
 	// === SECTION 1: MESSAGE FLOW ANALYSIS ===
 	console.log("📝 MESSAGE FLOW ANALYSIS");
@@ -485,7 +485,7 @@ async function main() {
 	console.log("  Requires: Total duration < 24 hours");
 
 	console.log("\n" + "=".repeat(80));
-	console.log("✅ Analysis complete\n");
+	console.log("🔹 Analysis complete\n");
 
 	await db.disconnect();
 }

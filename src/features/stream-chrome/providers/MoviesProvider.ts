@@ -318,7 +318,7 @@ export class MoviesProvider extends BaseProvider {
 				});
 
 				if (isPlaying) {
-					console.log("[MoviesProvider] ✅ Video is playing successfully!");
+					console.log("[MoviesProvider] 🔹 Video is playing successfully!");
 					break;
 				} else {
 					console.log(`[MoviesProvider] Video not playing yet, will retry... (attempt ${attempts}/${maxAttempts})`);

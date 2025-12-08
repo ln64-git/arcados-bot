@@ -61,7 +61,7 @@ async function main() {
 	console.log(`\n🔄 Processing enrichment queue...\n`);
 	await orchestrator.processPendingEnrichments(1);
 
-	console.log(`\n✅ Enrichment complete!`);
+	console.log(`\n🔹 Enrichment complete!`);
 
 	await db.disconnect();
 }

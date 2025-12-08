@@ -31,7 +31,7 @@ async function main() {
   );
 
   if (existingResult.success && existingResult.data && existingResult.data.length > 0) {
-    console.log("✅ Message already exists in database");
+    console.log("🔹 Message already exists in database");
     await db.disconnect();
     return;
   }
@@ -97,7 +97,7 @@ async function main() {
       return;
     }
 
-    console.log(`✅ Message found in Discord`);
+    console.log(`🔹 Message found in Discord`);
     console.log(`   Channel: #${channelName}`);
     console.log(`   Author: ${message.author.tag} (${message.author.id})`);
     console.log(`   Created: ${message.createdAt.toLocaleString()}`);
@@ -136,7 +136,7 @@ async function main() {
     if (message.content && message.content.trim().length > 0) {
       try {
         embedding = await embeddingService.generateEmbedding(message.content);
-        console.log("   ✅ Generated embedding");
+        console.log("   🔹 Generated embedding");
       } catch (error) {
         console.warn(`   ⚠️  Failed to generate embedding: ${error}`);
       }
@@ -162,7 +162,7 @@ async function main() {
     });
 
     if (result.success) {
-      console.log("✅ Message successfully backfilled to database!");
+      console.log("🔹 Message successfully backfilled to database!");
       
       // Update watermark if this is the newest message in the channel
       const watermarkResult = await db.getChannelWatermark(message.channel.id);
@@ -172,7 +172,7 @@ async function main() {
 
       if (!currentWatermark || BigInt(message.id) > BigInt(currentWatermark)) {
         await db.updateChannelLastMessage(message.channel.id, message.id);
-        console.log("   ✅ Updated channel watermark");
+        console.log("   🔹 Updated channel watermark");
       }
     } else {
       console.error(`❌ Failed to save message: ${result.error}`);
@@ -183,7 +183,7 @@ async function main() {
   }
 
   console.log("\n" + "=".repeat(80));
-  console.log("✅ Backfill complete\n");
+  console.log("🔹 Backfill complete\n");
 
   client.destroy();
   await db.disconnect();

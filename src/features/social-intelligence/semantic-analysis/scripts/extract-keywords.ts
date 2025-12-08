@@ -184,7 +184,7 @@ async function main() {
 		}
 
 		console.log("\n" + "=".repeat(80));
-		console.log("✅ Keyword extraction complete!");
+		console.log("🔹 Keyword extraction complete!");
 		console.log("=".repeat(80));
 		console.log(`   Total processed: ${processed.toLocaleString()}`);
 		console.log(`   Updated: ${updated.toLocaleString()}`);

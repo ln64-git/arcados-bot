@@ -231,7 +231,7 @@ async function main() {
     for (const conv of conversations) {
       const convNum = convIdToNumber.get(conv.id);
       const typeLabel =
-        conv.type === "streaming" ? "🔴 STREAMING" : "✅ FINALIZED";
+        conv.type === "streaming" ? "🔴 STREAMING" : "🔹 FINALIZED";
       const duration = Math.round(conv.duration_minutes);
 
       console.log(`\n[${convNum}] ${typeLabel} - #${conv.channel_name}`);
@@ -340,7 +340,7 @@ async function main() {
   }
 
   console.log("\n" + "=".repeat(80));
-  console.log("✅ Analysis complete\n");
+  console.log("🔹 Analysis complete\n");
 
   await db.disconnect();
 }

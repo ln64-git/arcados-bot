@@ -56,7 +56,7 @@ async function testDiscordStream() {
       contentPage
     );
 
-    console.log("\n✅ SUCCESS! Discord streaming workflow completed");
+    console.log("\n🔹 SUCCESS! Discord streaming workflow completed");
     console.log("The bot should now be streaming in the voice channel.");
     console.log("\nPress Ctrl+C to stop...");
 

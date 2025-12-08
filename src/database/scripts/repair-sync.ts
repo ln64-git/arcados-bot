@@ -127,7 +127,7 @@ async function repairChannel(
     }
   }
 
-  console.log(`   ✅ Complete: Fetched ${totalFetched}, Added ${added} new messages`);
+  console.log(`   🔹 Complete: Fetched ${totalFetched}, Added ${added} new messages`);
   stats.channelsChecked++;
 
   // Update watermark
@@ -181,7 +181,7 @@ async function main() {
   });
 
   await client.login(config.botToken);
-  console.log(`✅ Connected as ${client.user?.tag}\n`);
+  console.log(`🔹 Connected as ${client.user?.tag}\n`);
 
   const guild = await client.guilds.fetch(guildId);
   console.log(`📍 Guild: ${guild.name}\n`);
@@ -214,7 +214,7 @@ async function main() {
   console.log(`Messages Added: ${stats.messagesAdded}`);
   console.log(`Embeddings Generated: ${stats.embeddings}`);
   console.log(`Errors: ${stats.errors}`);
-  console.log("\n✅ Repair complete!");
+  console.log("\n🔹 Repair complete!");
 
   client.destroy();
   await db.disconnect();

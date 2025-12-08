@@ -438,6 +438,6 @@ export class Bot {
       await this.db.disconnect();
     }
 
-    console.log("✅ Bot shutdown complete");
+    console.log("🔹 Bot shutdown complete");
   }
 }

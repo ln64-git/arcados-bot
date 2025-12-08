@@ -51,7 +51,7 @@ async function main() {
     const result = await db.query(migrationSQL);
     
     if (result.success) {
-      console.log("✅ Migration completed successfully!");
+      console.log("🔹 Migration completed successfully!");
       console.log("\n📊 Migration Summary:");
       console.log("   - Created user_profiles table");
       console.log("   - Created indexes for AI retrieval");

@@ -99,7 +99,7 @@ const playCommand: Command = {
 			}
 
 			await interaction.editReply({
-				content: `✅ Added **${track.title}** to the queue!`,
+				content: `🔹 Added **${track.title}** to the queue!`,
 			});
 		} catch (error) {
 			console.error("[PlayCommand] Error:", error);

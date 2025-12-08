@@ -62,7 +62,7 @@ async function main() {
 		await db.query("DELETE FROM conversation_segments WHERE guild_id = $1", [
 			guildId,
 		]);
-		console.log("✅ Cleared existing conversations");
+		console.log("🔹 Cleared existing conversations");
 	}
 
 	// Initialize conversation detector
@@ -103,7 +103,7 @@ async function main() {
 	}
 
 	const messages: Message[] = messagesResult.data || [];
-	console.log(`✅ Found ${messages.length} messages to process`);
+	console.log(`🔹 Found ${messages.length} messages to process`);
 
 	if (messages.length === 0) {
 		console.log("\n⚠️  No messages found in the specified time window");
@@ -147,13 +147,13 @@ async function main() {
 	}
 
 	console.log(
-		`✅ Processed ${processedCount}/${messages.length} messages`
+		`🔹 Processed ${processedCount}/${messages.length} messages`
 	);
 
 	// Flush all inactive buffers to finalize conversations
 	console.log("\n🔄 Finalizing conversations...");
 	await detector.flushInactiveBuffers();
-	console.log("✅ Conversations finalized");
+	console.log("🔹 Conversations finalized");
 
 	// Show summary statistics
 	const streamingResult = await db.query(
@@ -184,7 +184,7 @@ async function main() {
 	);
 	console.log("=".repeat(80));
 
-	console.log("\n✅ Regeneration complete");
+	console.log("\n🔹 Regeneration complete");
 	console.log(
 		"💡 Run 'npm run view-conversations' to view the results\n"
 	);

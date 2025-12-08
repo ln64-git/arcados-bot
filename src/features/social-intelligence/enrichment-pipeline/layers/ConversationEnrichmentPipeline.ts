@@ -387,14 +387,14 @@ BAD EXAMPLES (DO NOT USE):
 ❌ "User <@886340655671046176> said..." (Discord user IDs)
 
 GOOD EXAMPLES (USE THIS STYLE):
-✅ "Trump allegedly performed oral sex on Bill Clinton; Hitler had a micropenis; white supremacists struggling"
-✅ "Boyfriend getting halal food; recent meals included steak, rice, green beans, Hawaiian rolls"
-✅ "Invited to walk to gas station; jokingly called 'a bit gay'"
-✅ "Not invited to watch BattleBots; called friends 'fakes'"
-✅ "Shared flying fish video; joked about fish spinning"
-✅ "Joked about ejaculation ('nuttin'), putting it on someone's face; described 11lb processed ham as unnatural abhorrence"
-✅ "Flirting in public as turn-on; already met up for sex"
-✅ "Masturbation jokes, sexual positions, graphic descriptions; compared sex to Jason Statham's Transporter role"
+🔹 "Trump allegedly performed oral sex on Bill Clinton; Hitler had a micropenis; white supremacists struggling"
+🔹 "Boyfriend getting halal food; recent meals included steak, rice, green beans, Hawaiian rolls"
+🔹 "Invited to walk to gas station; jokingly called 'a bit gay'"
+🔹 "Not invited to watch BattleBots; called friends 'fakes'"
+🔹 "Shared flying fish video; joked about fish spinning"
+🔹 "Joked about ejaculation ('nuttin'), putting it on someone's face; described 11lb processed ham as unnatural abhorrence"
+🔹 "Flirting in public as turn-on; already met up for sex"
+🔹 "Masturbation jokes, sexual positions, graphic descriptions; compared sex to Jason Statham's Transporter role"
 
 RULES:
 1. Use ACTIVE, SPECIFIC language - avoid generic verbs like "discussed", "talked about", "mentioned"

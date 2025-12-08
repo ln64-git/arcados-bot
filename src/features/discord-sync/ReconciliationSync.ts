@@ -101,7 +101,7 @@ export class ReconciliationSync {
       }
 
       this.stats.lastRunTime = new Date();
-      console.log("✅ ReconciliationSync: Reconciliation pass completed");
+      console.log("🔹 ReconciliationSync: Reconciliation pass completed");
     } catch (error) {
       console.error(
         "🔸 ReconciliationSync: Error during reconciliation:",
@@ -157,7 +157,7 @@ export class ReconciliationSync {
     await this.reconcileVoiceStates(guild);
 
     if (this.verbose) {
-      console.log(`✅ ReconciliationSync: Completed for ${guild.name}`);
+      console.log(`🔹 ReconciliationSync: Completed for ${guild.name}`);
     }
   }
 
@@ -628,7 +628,7 @@ export class ReconciliationSync {
 
       if (this.verbose) {
         console.log(
-          `   ✅ ReconciliationSync: Backfilled ${synced} messages in ${channelName}`
+          `   🔹 ReconciliationSync: Backfilled ${synced} messages in ${channelName}`
         );
       }
 
@@ -782,7 +782,7 @@ export class ReconciliationSync {
       const channelName = `#${(channel as any).name || channelId}`;
       if (synced > 0) {
         console.log(
-          `   ✅ ReconciliationSync: Backfilled ${synced} newer messages in ${channelName} (bot downtime recovery)`
+          `   🔹 ReconciliationSync: Backfilled ${synced} newer messages in ${channelName} (bot downtime recovery)`
         );
       }
 
@@ -934,7 +934,7 @@ export class ReconciliationSync {
           if (this.verbose) {
             const channelName = `#${(channel as any).name || channelId}`;
             console.log(
-              `   ✅ ReconciliationSync: ${channelName} verified clean after ${
+              `   🔹 ReconciliationSync: ${channelName} verified clean after ${
                 i + 1
               } batches`
             );
@@ -953,10 +953,10 @@ export class ReconciliationSync {
     const channelName = `#${(channel as any).name || channelId}`;
     if (synced > 0) {
       console.log(
-        `   ✅ ReconciliationSync: Filled ${synced} gap messages in ${channelName}`
+        `   🔹 ReconciliationSync: Filled ${synced} gap messages in ${channelName}`
       );
     } else if (this.verbose) {
-      console.log(`   ✅ ReconciliationSync: No gaps found in ${channelName}`);
+      console.log(`   🔹 ReconciliationSync: No gaps found in ${channelName}`);
     }
 
     // Mark channel as having completed a full sync
@@ -1101,7 +1101,7 @@ export class ReconciliationSync {
 
       if (this.verbose && totalGenerated > 0) {
         console.log(
-          `   ✅ ReconciliationSync: Generated embeddings for ${totalGenerated} messages`
+          `   🔹 ReconciliationSync: Generated embeddings for ${totalGenerated} messages`
         );
       }
     } catch (error) {

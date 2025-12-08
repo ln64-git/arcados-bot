@@ -87,7 +87,7 @@ async function main() {
   );
 
   if (!segmentsResult.success || !segmentsResult.data) {
-    console.log("✅ No segments missing keywords!");
+    console.log("🔹 No segments missing keywords!");
     await db.disconnect();
     return;
   }
@@ -166,7 +166,7 @@ async function main() {
       const msg = messagesWithContent[i];
       const preview = msg.content.substring(0, 80).replace(/\n/g, " ");
       console.log(`      ${i + 1}. [${msg.content_length} chars] ${preview}${msg.content.length > 80 ? "..." : ""}`);
-      console.log(`         Has embedding: ${msg.embedding ? "✅" : "❌"}`);
+      console.log(`         Has embedding: ${msg.embedding ? "🔹" : "❌"}`);
     }
 
     // Attempt keyword extraction
@@ -189,7 +189,7 @@ async function main() {
         console.log("   ❌ ISSUE: Keyword extraction returned empty results");
         console.log("   Result:", JSON.stringify(keywords, null, 2));
       } else {
-        console.log(`   ✅ Successfully extracted ${keywords.terms.length} keywords!`);
+        console.log(`   🔹 Successfully extracted ${keywords.terms.length} keywords!`);
         console.log("   Top keywords:");
         keywords.terms.slice(0, 5).forEach((kw: any) => {
           console.log(`      - ${kw.word} (${Math.round(kw.score * 100)}%)`);
@@ -203,7 +203,7 @@ async function main() {
   }
 
   console.log("\n" + "=".repeat(80));
-  console.log("✅ Diagnosis complete\n");
+  console.log("🔹 Diagnosis complete\n");
 
   await db.disconnect();
 }

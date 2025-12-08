@@ -383,7 +383,7 @@ Server summary:`;
       process.exit(1);
     }
 
-    console.log("✅ Server summary saved to guilds.server_summary\n");
+    console.log("🔹 Server summary saved to guilds.server_summary\n");
     await db.disconnect();
     console.log("🔹 Disconnected from PostgreSQL");
   } catch (error) {

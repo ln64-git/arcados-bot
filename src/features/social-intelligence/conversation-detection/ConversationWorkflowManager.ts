@@ -99,7 +99,7 @@ export class ConversationWorkflowManager {
     this.startSemanticMerging();
 
     this.isRunning = true;
-    this.log("✅ Conversation detection workflow started");
+    this.log("🔹 Conversation detection workflow started");
   }
 
   /**
@@ -136,7 +136,7 @@ export class ConversationWorkflowManager {
     }
 
     this.isRunning = false;
-    this.log("✅ Conversation detection workflow stopped");
+    this.log("🔹 Conversation detection workflow stopped");
   }
 
   /**

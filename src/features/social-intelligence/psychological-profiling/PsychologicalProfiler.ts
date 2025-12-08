@@ -184,7 +184,7 @@ export class PsychologicalProfiler {
 
 			if (updated) {
 				console.log(
-					`   [User ${userId.slice(0, 8)}] ✅ Profile updated (confidence: ${(psychProfile.profile_metadata.confidence_overall * 100).toFixed(0)}%)`
+					`   [User ${userId.slice(0, 8)}] 🔹 Profile updated (confidence: ${(psychProfile.profile_metadata.confidence_overall * 100).toFixed(0)}%)`
 				);
 				this.stats.profiles_updated++;
 				return true;

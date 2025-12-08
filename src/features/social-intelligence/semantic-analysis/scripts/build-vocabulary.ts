@@ -49,7 +49,7 @@ async function main() {
 		const stats = await keywordExtractor.getVocabularyStats(guildId);
 		if (stats) {
 			console.log("\n" + "=".repeat(80));
-			console.log("✅ Vocabulary build complete!");
+			console.log("🔹 Vocabulary build complete!");
 			console.log("=".repeat(80));
 			console.log(`   Total terms: ${stats.total_terms.toLocaleString()}`);
 			console.log(`   Stopwords: ${stats.stopword_count.toLocaleString()}`);
@@ -58,7 +58,7 @@ async function main() {
 			console.log(`   P90 IDF: ${stats.p90_idf.toFixed(3)}`);
 			console.log("=".repeat(80));
 		} else {
-			console.log("\n✅ Vocabulary build complete!");
+			console.log("\n🔹 Vocabulary build complete!");
 		}
 	} catch (error) {
 		console.error("\n❌ Vocabulary build failed:", error);

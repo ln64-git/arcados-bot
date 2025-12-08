@@ -114,7 +114,7 @@ async function main() {
 	console.log(`🔄 Processing enrichment queue...\n`);
 	await orchestrator.processPendingEnrichments(relationships.length);
 
-	console.log(`\n✅ Enrichment complete!`);
+	console.log(`\n🔹 Enrichment complete!`);
 	console.log(`   Relationships processed: ${relationships.length}`);
 
 	await db.disconnect();

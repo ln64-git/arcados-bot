@@ -120,5 +120,5 @@ if (jellyfinProvider) {
 }
 console.log();
 
-console.log("✅ All basic tests completed!");
+console.log("🔹 All basic tests completed!");
 

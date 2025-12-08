@@ -626,11 +626,11 @@ async function main() {
 			console.log(rec);
 		}
 	} else {
-		console.log("\n✅ Grouping appears well-tuned!");
+		console.log("\n🔹 Grouping appears well-tuned!");
 	}
 
 	console.log("\n" + "=".repeat(80));
-	console.log("✅ Analysis complete\n");
+	console.log("🔹 Analysis complete\n");
 
 	await db.disconnect();
 }

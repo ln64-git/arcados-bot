@@ -112,7 +112,7 @@ async function main() {
 	const duration = stats.duration_seconds || 0;
 
 	console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-	console.log("✅ PROFILING COMPLETE");
+	console.log("🔹 PROFILING COMPLETE");
 	console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 	console.log(`   Success Rate: ${successCount}/${users.length} users`);
 	console.log(`   Duration: ${duration.toFixed(1)}s`);

@@ -65,7 +65,7 @@ async function main() {
     const stats = await orchestrator.enhance(guildId);
 
     console.log("\n" + "=".repeat(80));
-    console.log("✅ Summary generation complete!");
+    console.log("🔹 Summary generation complete!");
     console.log("=".repeat(80));
     console.log(`   Summaries Generated: ${stats.summariesGenerated}`);
     console.log(`   Segments Processed: ${stats.segmentsProcessed}`);

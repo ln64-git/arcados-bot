@@ -82,7 +82,7 @@ export class SpawnChannelService {
 					{}, // Empty preferences, just creates the record
 				);
 				console.log(
-					`✅ [SPAWN] Initialized preferences for user ${member.id} in guild ${member.guild.id}`,
+					`🔹 [SPAWN] Initialized preferences for user ${member.id} in guild ${member.guild.id}`,
 				);
 			}
 

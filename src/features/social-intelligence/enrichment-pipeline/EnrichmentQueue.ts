@@ -143,7 +143,7 @@ export class EnrichmentQueue {
 	public complete(jobId: string) {
 		this.processing.delete(jobId);
 		this.failed.delete(jobId); // Clear from failed if it was retried
-		console.log(`✅ Completed enrichment job: ${jobId}`);
+		console.log(`🔹 Completed enrichment job: ${jobId}`);
 	}
 
 	/**

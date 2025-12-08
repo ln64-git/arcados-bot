@@ -118,7 +118,7 @@ async function main() {
 	console.log(`🔄 Processing enrichment queue...\n`);
 	await orchestrator.processPendingEnrichments(userIds.length);
 
-	console.log(`\n✅ Enrichment complete!`);
+	console.log(`\n🔹 Enrichment complete!`);
 	console.log(`   Users processed: ${userIds.length}`);
 
 	await db.disconnect();

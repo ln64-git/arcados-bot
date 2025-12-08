@@ -32,10 +32,10 @@ async function migrate() {
 
 		if (orphanedResult.success && orphanedResult.data) {
 			console.log(
-				`✅ Finalized ${orphanedResult.data.length} orphaned sessions`,
+				`🔹 Finalized ${orphanedResult.data.length} orphaned sessions`,
 			);
 		} else {
-			console.log("✅ No orphaned sessions found");
+			console.log("🔹 No orphaned sessions found");
 		}
 
 		// Step 2: Clean up voice_states that reference inactive sessions
@@ -52,10 +52,10 @@ async function migrate() {
 
 		if (staleStatesResult.success && staleStatesResult.data) {
 			console.log(
-				`✅ Deleted ${staleStatesResult.data.length} stale voice states`,
+				`🔹 Deleted ${staleStatesResult.data.length} stale voice states`,
 			);
 		} else {
-			console.log("✅ No stale voice states found");
+			console.log("🔹 No stale voice states found");
 		}
 
 		// Step 3: Verify data integrity
@@ -77,7 +77,7 @@ async function migrate() {
 					`⚠️  Found ${count} voice_states with no corresponding session`,
 				);
 			} else {
-				console.log("✅ All voice_states have corresponding sessions");
+				console.log("🔹 All voice_states have corresponding sessions");
 			}
 		}
 
@@ -98,7 +98,7 @@ async function migrate() {
 					`⚠️  Found ${count} active sessions with no voice_state`,
 				);
 			} else {
-				console.log("✅ All active sessions have corresponding voice_states");
+				console.log("🔹 All active sessions have corresponding voice_states");
 			}
 		}
 
@@ -121,7 +121,7 @@ async function migrate() {
 			console.log(`  History entries: ${summary.history_entries}`);
 		}
 
-		console.log("✅ Voice state migration completed successfully");
+		console.log("🔹 Voice state migration completed successfully");
 	} catch (error) {
 		console.error("🔸 Migration error:", error);
 		throw error;

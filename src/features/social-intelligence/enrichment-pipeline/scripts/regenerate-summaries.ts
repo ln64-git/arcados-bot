@@ -45,7 +45,7 @@ async function main() {
   // Run enhancement
   const stats = await orchestrator.enhance(guildId);
 
-  console.log("\n✅ Summary regeneration complete!");
+  console.log("\n🔹 Summary regeneration complete!");
   console.log(`   Generated: ${stats.summariesGenerated}`);
   console.log(`   Errors: ${stats.errors}`);
 

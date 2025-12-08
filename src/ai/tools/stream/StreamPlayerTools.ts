@@ -305,7 +305,7 @@ export const stopStreamTool: DatabaseTool = {
 
       return {
         success: true,
-        formatted: "✅ Stream stopped successfully.",
+        formatted: "🔹 Stream stopped successfully.",
         summary: "Stopped the current stream",
       };
     } catch (error) {

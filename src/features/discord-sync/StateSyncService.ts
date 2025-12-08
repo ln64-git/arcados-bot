@@ -86,7 +86,7 @@ export class StateSyncService {
     // Start periodic maintenance
     this.startMaintenance();
 
-    console.log("✅ StateSyncService: Unified sync started");
+    console.log("🔹 StateSyncService: Unified sync started");
   }
 
   /**
@@ -133,7 +133,7 @@ export class StateSyncService {
       await this.reconciliationSync.runMaintenance();
 
       if (this.verbose) {
-        console.log("✅ StateSyncService: Periodic maintenance completed");
+        console.log("🔹 StateSyncService: Periodic maintenance completed");
       }
     } catch (error) {
       console.error("🔸 StateSyncService: Error during maintenance:", error);
@@ -157,7 +157,7 @@ export class StateSyncService {
     // Final reconciliation pass (optional, can be skipped for fast shutdown)
     // await this.reconciliationSync.runOnce();
 
-    console.log("✅ StateSyncService: Unified sync stopped");
+    console.log("🔹 StateSyncService: Unified sync stopped");
   }
 
   /**

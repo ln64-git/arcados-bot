@@ -44,12 +44,12 @@ async function main() {
 
   if (dbResult.success && dbResult.data && dbResult.data.length > 0) {
     const msg = dbResult.data[0];
-    console.log("✅ Message EXISTS in database");
+    console.log("🔹 Message EXISTS in database");
     console.log(`   Guild: ${msg.guild_id}`);
     console.log(`   Channel: ${msg.channel_id}`);
     console.log(`   Author: ${msg.author_id}`);
     console.log(`   Created: ${msg.created_at}`);
-    console.log(`   Has Embedding: ${msg.has_embedding ? '✅' : '❌'}`);
+    console.log(`   Has Embedding: ${msg.has_embedding ? '🔹' : '❌'}`);
     console.log(`   Content: ${msg.content.substring(0, 100)}${msg.content.length > 100 ? '...' : ''}`);
   } else {
     console.log("❌ Message NOT FOUND in database");
@@ -105,7 +105,7 @@ async function main() {
     }
 
     if (foundInDiscord && messageData) {
-      console.log(`✅ Message EXISTS in Discord`);
+      console.log(`🔹 Message EXISTS in Discord`);
       console.log(`   Channel: #${channelName}`);
       console.log(`   Author: ${messageData.author.tag} (${messageData.author.id})`);
       console.log(`   Created: ${messageData.createdAt.toLocaleString()}`);
@@ -157,7 +157,7 @@ async function main() {
   }
 
   console.log("\n" + "=".repeat(80));
-  console.log("✅ Check complete\n");
+  console.log("🔹 Check complete\n");
 
   client.destroy();
   await db.disconnect();

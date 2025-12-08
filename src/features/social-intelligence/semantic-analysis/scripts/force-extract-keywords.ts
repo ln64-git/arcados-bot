@@ -40,7 +40,7 @@ async function main() {
   for (const row of result.data) {
     try {
       await socialIntel.enrichConversation(row.id);
-      console.log(`  ✅ ${row.id}`);
+      console.log(`  🔹 ${row.id}`);
       success++;
     } catch (error) {
       console.log(`  ❌ ${row.id}: ${error}`);
@@ -49,7 +49,7 @@ async function main() {
   }
 
   console.log("");
-  console.log(`✅ Success: ${success}`);
+  console.log(`🔹 Success: ${success}`);
   console.log(`❌ Failed: ${failed}`);
 
   await db.disconnect();

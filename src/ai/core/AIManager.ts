@@ -1307,7 +1307,7 @@ Response style:
         });
 
         if (matched) {
-          console.log(`[HIDDEN BEHAVIOR] ✅ ${behavior.name.toUpperCase()} ACTIVATED for trigger "${behavior.trigger}"`);
+          console.log(`[HIDDEN BEHAVIOR] 🔹 ${behavior.name.toUpperCase()} ACTIVATED for trigger "${behavior.trigger}"`);
           // COMPLETELY REPLACE the system prompt with the hidden behavior prompt
           return behavior.prompt;
         }

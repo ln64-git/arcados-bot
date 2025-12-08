@@ -81,7 +81,7 @@ export class EnrichmentPipelineOrchestrator {
 			);
 		}
 
-		console.log("✅ Enrichment Pipeline Orchestrator initialized");
+		console.log("🔹 Enrichment Pipeline Orchestrator initialized");
 	}
 
 	/**
@@ -444,7 +444,7 @@ export class EnrichmentPipelineOrchestrator {
 			}
 		}
 
-		console.log("\n✅ Enrichment batch processing complete\n");
+		console.log("\n🔹 Enrichment batch processing complete\n");
 	}
 
 	/**
