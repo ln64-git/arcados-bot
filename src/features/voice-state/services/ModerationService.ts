@@ -80,6 +80,246 @@ export class ModerationService {
 	}
 
 	/**
+	 * Apply channel owner's moderation preferences to a user
+	 * Called when users join or switch channels to enforce owner preferences
+	 */
+	async applyChannelPreferences(
+		channelId: string,
+		userId: string,
+		guildId: string,
+	): Promise<void> {
+		try {
+			// Get channel owner
+			const ownerId = await this.repository.getCurrentOwner(channelId);
+			if (!ownerId) {
+				// No owner = not a user channel, ensure user is unmuted
+				await this.clearModeration(channelId, userId);
+				return;
+			}
+
+			// Don't apply preferences to the owner themselves
+			// Clear any existing moderation from when they were in another user's channel
+			if (ownerId === userId) {
+				await this.clearModeration(channelId, userId);
+				return;
+			}
+
+			// Check if user is grandfathered (from ownership transfer)
+			// Grandfathered users keep their current moderation state
+			const session = await this.repository.getActiveSession(userId, guildId);
+			if (session?.is_grandfathered) {
+				console.log(
+					`✅ [MODERATION] User ${userId} is grandfathered - skipping moderation preferences`,
+				);
+				return;
+			}
+
+			// Load owner's preferences
+			const prefs = await this.repository.getUserPreferences(ownerId, guildId);
+
+			// Check if user should be muted
+			const shouldBeMuted = (prefs.muted_users || []).includes(userId);
+			const shouldBeDeafened = (prefs.deafened_users || []).includes(userId);
+
+			// Apply state
+			const channel = await this.getVoiceChannel(channelId);
+			const member = channel.members.get(userId);
+
+			if (!member) {
+				return; // User not in channel
+			}
+
+			// Apply mute state
+			if (shouldBeMuted && !member.voice.serverMute) {
+				await member.voice.setMute(true);
+			} else if (!shouldBeMuted && member.voice.serverMute) {
+				await member.voice.setMute(false);
+			}
+
+			// Apply deafen state
+			if (shouldBeDeafened && !member.voice.serverDeaf) {
+				await member.voice.setDeaf(true);
+			} else if (!shouldBeDeafened && member.voice.serverDeaf) {
+				await member.voice.setDeaf(false);
+			}
+
+			const displayName = member.displayName || userId;
+			const channelName = channel.name || channelId;
+			console.log(
+				`✅ [MODERATION] Applied preferences for ${displayName} in ${channelName}`,
+			);
+		} catch (error) {
+			console.error("🔸 [MODERATION] Failed to apply preferences:", error);
+		}
+	}
+
+	/**
+	 * Clear all moderation from a user (unmute/undeafen)
+	 */
+	private async clearModeration(
+		channelId: string,
+		userId: string,
+	): Promise<void> {
+		try {
+			const channel = await this.getVoiceChannel(channelId);
+			const member = channel.members.get(userId);
+
+			if (!member) return;
+
+			if (member.voice.serverMute) {
+				await member.voice.setMute(false);
+			}
+			if (member.voice.serverDeaf) {
+				await member.voice.setDeaf(false);
+			}
+		} catch (error) {
+			console.error("🔸 [MODERATION] Failed to clear moderation:", error);
+		}
+	}
+
+	/**
+	 * Apply ban permission to a user across all channels owned by the moderator
+	 * Uses Discord's permission overrides to prevent the user from connecting
+	 */
+	async applyBanPermissions(
+		userId: string,
+		moderatorId: string,
+		guildId: string,
+	): Promise<void> {
+		try {
+			// Get all channels owned by the moderator
+			const channels = await this.repository.getChannelsByOwner(
+				guildId,
+				moderatorId,
+			);
+
+			// Apply CONNECT = false permission to each channel
+			for (const channelData of channels) {
+				try {
+					const channel = await this.getVoiceChannel(channelData.id);
+
+					// Set permission override to deny CONNECT
+					await channel.permissionOverwrites.edit(userId, {
+						Connect: false,
+					});
+
+					// Get human-readable names for logging
+					const member = channel.guild.members.cache.get(userId);
+					const displayName = member?.displayName || userId;
+					const channelName = channel.name || channelData.id;
+
+					console.log(
+						`✅ [MODERATION] Applied ban permission for ${displayName} in ${channelName}`,
+					);
+				} catch (error) {
+					console.error(
+						`🔸 [MODERATION] Failed to apply ban permission in ${channelData.id}:`,
+						error,
+					);
+				}
+			}
+		} catch (error) {
+			console.error("🔸 [MODERATION] Failed to apply ban permissions:", error);
+		}
+	}
+
+	/**
+	 * Remove ban permission from a user across all channels owned by the moderator
+	 */
+	async removeBanPermissions(
+		userId: string,
+		moderatorId: string,
+		guildId: string,
+	): Promise<void> {
+		try {
+			// Get all channels owned by the moderator
+			const channels = await this.repository.getChannelsByOwner(
+				guildId,
+				moderatorId,
+			);
+
+			// Remove permission override for each channel
+			for (const channelData of channels) {
+				try {
+					const channel = await this.getVoiceChannel(channelData.id);
+
+					// Delete the permission override entirely
+					await channel.permissionOverwrites.delete(userId);
+
+					// Get human-readable names for logging
+					const member = channel.guild.members.cache.get(userId);
+					const displayName = member?.displayName || userId;
+					const channelName = channel.name || channelData.id;
+
+					console.log(
+						`✅ [MODERATION] Removed ban permission for ${displayName} in ${channelName}`,
+					);
+				} catch (error) {
+					console.error(
+						`🔸 [MODERATION] Failed to remove ban permission in ${channelData.id}:`,
+						error,
+					);
+				}
+			}
+		} catch (error) {
+			console.error(
+				"🔸 [MODERATION] Failed to remove ban permissions:",
+				error,
+			);
+		}
+	}
+
+	/**
+	 * Sync ban permissions for a new channel created by an owner
+	 * Applies all the owner's banned_users to the new channel
+	 */
+	async syncBanPermissionsForNewChannel(
+		channelId: string,
+		ownerId: string,
+		guildId: string,
+	): Promise<void> {
+		try {
+			// Load owner's preferences
+			const prefs = await this.repository.getUserPreferences(ownerId, guildId);
+			const bannedUsers = (prefs.banned_users as string[]) || [];
+
+			if (bannedUsers.length === 0) {
+				return; // No banned users to sync
+			}
+
+			const channel = await this.getVoiceChannel(channelId);
+
+			// Apply ban permission to each banned user
+			const channelName = channel.name || channelId;
+			for (const userId of bannedUsers) {
+				try {
+					await channel.permissionOverwrites.edit(userId, {
+						Connect: false,
+					});
+
+					// Get human-readable name for logging
+					const member = channel.guild.members.cache.get(userId);
+					const displayName = member?.displayName || userId;
+
+					console.log(
+						`✅ [MODERATION] Synced ban permission for ${displayName} in new channel ${channelName}`,
+					);
+				} catch (error) {
+					console.error(
+						`🔸 [MODERATION] Failed to sync ban permission for ${userId}:`,
+						error,
+					);
+				}
+			}
+		} catch (error) {
+			console.error(
+				"🔸 [MODERATION] Failed to sync ban permissions for new channel:",
+				error,
+			);
+		}
+	}
+
+	/**
 	 * Apply moderation action (CONSOLIDATED)
 	 *
 	 * This replaces 4 near-identical methods in the legacy VoiceStateManager,

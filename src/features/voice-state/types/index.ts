@@ -99,6 +99,7 @@ export interface VoiceChannelPreferences {
 	banned_users?: string[];
 	muted_users?: string[];
 	deafened_users?: string[];
+	blocked_users?: string[];
 }
 
 // ============================================================================
@@ -113,6 +114,7 @@ export interface MemberJoinTime {
 	user_id: string;
 	joined_at: Date;
 	is_owner: boolean;
+	session_id: string;
 }
 
 /**
@@ -137,6 +139,7 @@ export interface SessionUpdate {
 	time_deafened?: number;
 	time_streaming?: number;
 	active?: boolean;
+	is_grandfathered?: boolean;
 }
 
 /**

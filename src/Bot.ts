@@ -7,7 +7,7 @@
 
 import { PostgreSQLManager } from "./database/PostgreSQLManager";
 import { Client, Collection, GatewayIntentBits } from "discord.js";
-import type { Interaction, VoiceState } from "discord.js";
+import type { Interaction, VoiceState, VoiceChannel } from "discord.js";
 import { config } from "./config";
 import type { Command } from "./types";
 import { CommandDeployer } from "./utils/CommandDeployer";
@@ -174,6 +174,23 @@ export class Bot {
 
         // Then handle bot auto-disconnect
         await this.handleVoiceStateUpdate(oldState, newState);
+      }
+    );
+
+    // Channel updates (sync Discord UI changes to preferences)
+    this.client.on(
+      "channelUpdate",
+      async (oldChannel, newChannel) => {
+        if (this.voiceStateCoordinator && oldChannel.isVoiceBased() && newChannel.isVoiceBased()) {
+          try {
+            await this.voiceStateCoordinator.handleChannelUpdate(
+              oldChannel as VoiceChannel,
+              newChannel as VoiceChannel
+            );
+          } catch (error) {
+            console.error("🔸 Channel update handling error:", error);
+          }
+        }
       }
     );
 

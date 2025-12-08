@@ -129,6 +129,11 @@ export class SpawnChannelService {
 		// Position above spawn channel
 		await newChannel.setPosition(spawnChannel.position - 1);
 
+		// Grant owner Manage Channel permission so they can edit settings in Discord UI
+		await newChannel.permissionOverwrites.edit(member.id, {
+			ManageChannels: true,
+		});
+
 		// Insert into database (required for foreign key constraints)
 		const channelData: ChannelData = {
 			id: newChannel.id,
@@ -234,6 +239,7 @@ export class SpawnChannelService {
 
 		try {
 			await channel.delete();
+			console.log(`✅ [SPAWN] Deleted empty channel ${channel.name}`);
 			return true;
 		} catch (error: any) {
 			// Ignore "Unknown Channel" errors (channel already deleted)
@@ -243,6 +249,64 @@ export class SpawnChannelService {
 			}
 			console.error(`🔸 [SPAWN] Failed to delete channel ${channel.name}:`, error);
 			return false;
+		}
+	}
+
+	/**
+	 * Handle owner leaving a channel that still has members
+	 * Transfers ownership to the next longest-tenured member
+	 */
+	async handleOwnerLeave(channel: VoiceChannel, leavingOwnerId: string): Promise<void> {
+		try {
+			// Check if there are still members in the channel (using Discord API, not DB)
+			if (channel.members.size === 0) {
+				console.log(`🔹 [OWNERSHIP] Channel ${channel.name} is empty, will be deleted`);
+				return;
+			}
+
+			console.log(
+				`🔄 [OWNERSHIP] Owner ${leavingOwnerId} left ${channel.name} with ${channel.members.size} members remaining`,
+			);
+
+			// Find the longest-tenured member from the remaining members
+			// We need to query each member's session to find who joined earliest
+			let oldestMember: { userId: string; joinedAt: Date } | null = null;
+
+			for (const [userId, member] of channel.members) {
+				// Skip the leaving owner
+				if (userId === leavingOwnerId) continue;
+
+				// Get their active session
+				const session = await this.repository.getActiveSession(userId, channel.guild.id);
+				if (!session) {
+					console.log(`🔸 [OWNERSHIP] No active session found for ${member.displayName}`);
+					continue;
+				}
+
+				console.log(`🔍 [OWNERSHIP] ${member.displayName} joined at ${session.joined_at.toISOString()}`);
+
+				// Check if this is the oldest
+				if (!oldestMember || session.joined_at < oldestMember.joinedAt) {
+					oldestMember = { userId, joinedAt: session.joined_at };
+				}
+			}
+
+			if (oldestMember) {
+				const newOwner = channel.members.get(oldestMember.userId);
+				const newOwnerName = newOwner?.displayName || oldestMember.userId;
+				console.log(`🔄 [OWNERSHIP] Transferring ownership to ${newOwnerName} (joined at ${oldestMember.joinedAt.toISOString()})`);
+
+				// Import ChannelOwnershipService to handle the transfer
+				const { ChannelOwnershipService } = await import("./ChannelOwnershipService");
+				const ownershipService = new ChannelOwnershipService(this.client, this.repository);
+
+				// Transfer ownership (this will also handle grandfathering and renaming)
+				await ownershipService.transferOwnership(channel.id, oldestMember.userId);
+			} else {
+				console.log(`🔸 [OWNERSHIP] No eligible members to transfer ownership to (${channel.members.size} members in channel)`);
+			}
+		} catch (error) {
+			console.error(`🔸 [OWNERSHIP] Failed to handle owner leave:`, error);
 		}
 	}
 

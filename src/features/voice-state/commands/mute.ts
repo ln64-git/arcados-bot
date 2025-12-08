@@ -130,21 +130,55 @@ export const muteCommand: Command = {
       // Get toggle option (true = unmute, false/default = mute)
       const shouldUnmute = interaction.options.getBoolean("unmute") ?? false;
 
-      // Apply mute or unmute
+      // Load current preferences
+      const preferences = await coordinator.getSpawnChannelService().getPreferences(
+        member.user.id,
+        interaction.guild.id
+      );
+
+      const mutedUsers = (preferences.muted_users as string[]) || [];
+
       if (shouldUnmute) {
+        // Remove from mute list (de-duped)
+        const updatedMutedUsers = mutedUsers.filter(id => id !== targetUser.id);
+        const updatedPreferences = {
+          ...preferences,
+          muted_users: updatedMutedUsers,
+        };
+
+        await coordinator.getSpawnChannelService().updatePreferences(
+          member.user.id,
+          interaction.guild.id,
+          updatedPreferences
+        );
+
+        // Apply unmute
         await coordinator.getModerationService().unmute(
           voiceChannel.id,
           targetUser.id,
           member.user.id
         );
-        await sendMessage(`🔹 Unmuted **${targetUser.displayName}** in this channel.`);
+
+        await sendMessage(`🔹 **${targetUser.displayName}** is now unmuted in your channels.`);
       } else {
+        // Add to mute list (de-duped using Set)
+        const updatedMutedUsers = Array.from(new Set([...mutedUsers, targetUser.id]));
+        const updatedPreferences = { ...preferences, muted_users: updatedMutedUsers };
+
+        await coordinator.getSpawnChannelService().updatePreferences(
+          member.user.id,
+          interaction.guild.id,
+          updatedPreferences
+        );
+
+        // Apply mute
         await coordinator.getModerationService().mute(
           voiceChannel.id,
           targetUser.id,
           member.user.id
         );
-        await sendMessage(`🔹 Muted **${targetUser.displayName}** in this channel.`);
+
+        await sendMessage(`🔹 **${targetUser.displayName}** is now muted in your channels.`);
       }
     } catch (error) {
       console.error("🔸 Error in mute command:", error);

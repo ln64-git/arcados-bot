@@ -95,17 +95,11 @@ export const banCommand: Command = {
 
       const bannedUsers = (preferences.banned_users as string[]) || [];
 
-      if (shouldUnban) {
-        // Check if user is banned
-        if (!bannedUsers.includes(targetUser.id)) {
-          await interaction.reply({
-            content: `🔸 **${targetUser.displayName}** is not banned from your channels.`,
-            ephemeral: true,
-          });
-          return;
-        }
+      // Defer reply since permission updates can take time
+      await interaction.deferReply({ ephemeral: false });
 
-        // Remove from ban list
+      if (shouldUnban) {
+        // Remove from ban list (de-duped)
         const updatedBannedUsers = bannedUsers.filter(
           (id) => id !== targetUser.id
         );
@@ -120,23 +114,20 @@ export const banCommand: Command = {
           updatedPreferences
         );
 
-        await interaction.reply({
-          content: `🔹 Unbanned **${targetUser.displayName}** from your voice channels.`,
-          ephemeral: false,
+        // Remove Discord permission overrides from all owner's channels
+        await coordinator.getModerationService().removeBanPermissions(
+          targetUser.id,
+          member.user.id,
+          interaction.guild.id
+        );
+
+        await interaction.editReply({
+          content: `🔹 **${targetUser.displayName}** is now unbanned from your voice channels.`,
         });
       } else {
-        // Check if already banned
-        if (bannedUsers.includes(targetUser.id)) {
-          await interaction.reply({
-            content: `🔸 **${targetUser.displayName}** is already banned from your channels.`,
-            ephemeral: true,
-          });
-          return;
-        }
-
-        // Add to ban list
-        bannedUsers.push(targetUser.id);
-        const updatedPreferences = { ...preferences, banned_users: bannedUsers };
+        // Add to ban list (de-duped using Set)
+        const updatedBannedUsers = Array.from(new Set([...bannedUsers, targetUser.id]));
+        const updatedPreferences = { ...preferences, banned_users: updatedBannedUsers };
 
         await coordinator.getSpawnChannelService().updatePreferences(
           member.user.id,
@@ -144,7 +135,14 @@ export const banCommand: Command = {
           updatedPreferences
         );
 
-        // Kick user if currently in channel
+        // Apply Discord permission overrides to all owner's channels
+        await coordinator.getModerationService().applyBanPermissions(
+          targetUser.id,
+          member.user.id,
+          interaction.guild.id
+        );
+
+        // Kick user if currently in any of the owner's channels
         const targetMember = voiceChannel.members.get(targetUser.id);
         if (targetMember) {
           await targetMember.voice.disconnect(
@@ -152,9 +150,8 @@ export const banCommand: Command = {
           );
         }
 
-        await interaction.reply({
-          content: `🔹 Banned **${targetUser.displayName}** from your voice channels.`,
-          ephemeral: false,
+        await interaction.editReply({
+          content: `🔹 **${targetUser.displayName}** is now banned from your voice channels.`,
         });
       }
     } catch (error) {

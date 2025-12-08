@@ -16,6 +16,12 @@ export const deafenCommand: Command = {
         .setName("user")
         .setDescription("The user to deafen")
         .setRequired(true)
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName("undeafen")
+        .setDescription("Set to true to undeafen instead")
+        .setRequired(false)
     ),
 
   async execute(interaction) {
@@ -91,17 +97,65 @@ export const deafenCommand: Command = {
         return;
       }
 
-      // Apply deafen
-      await coordinator.getModerationService().deafen(
-        voiceChannel.id,
-        targetUser.id,
-        member.user.id
+      // Get toggle option (true = undeafen, false/default = deafen)
+      const shouldUndeafen = interaction.options.getBoolean("undeafen") ?? false;
+
+      // Load current preferences
+      const preferences = await coordinator.getSpawnChannelService().getPreferences(
+        member.user.id,
+        interaction.guild.id
       );
 
-      await interaction.reply({
-        content: `🔹 Deafened **${targetUser.displayName}** in this channel.`,
-        ephemeral: false,
-      });
+      const deafenedUsers = (preferences.deafened_users as string[]) || [];
+
+      if (shouldUndeafen) {
+        // Remove from deafen list (de-duped)
+        const updatedDeafenedUsers = deafenedUsers.filter(id => id !== targetUser.id);
+        const updatedPreferences = {
+          ...preferences,
+          deafened_users: updatedDeafenedUsers,
+        };
+
+        await coordinator.getSpawnChannelService().updatePreferences(
+          member.user.id,
+          interaction.guild.id,
+          updatedPreferences
+        );
+
+        // Apply undeafen
+        await coordinator.getModerationService().undeafen(
+          voiceChannel.id,
+          targetUser.id,
+          member.user.id
+        );
+
+        await interaction.reply({
+          content: `🔹 **${targetUser.displayName}** is now undeafened in your channels.`,
+          ephemeral: false,
+        });
+      } else {
+        // Add to deafen list (de-duped using Set)
+        const updatedDeafenedUsers = Array.from(new Set([...deafenedUsers, targetUser.id]));
+        const updatedPreferences = { ...preferences, deafened_users: updatedDeafenedUsers };
+
+        await coordinator.getSpawnChannelService().updatePreferences(
+          member.user.id,
+          interaction.guild.id,
+          updatedPreferences
+        );
+
+        // Apply deafen
+        await coordinator.getModerationService().deafen(
+          voiceChannel.id,
+          targetUser.id,
+          member.user.id
+        );
+
+        await interaction.reply({
+          content: `🔹 **${targetUser.displayName}** is now deafened in your channels.`,
+          ephemeral: false,
+        });
+      }
     } catch (error) {
       console.error("🔸 Error in deafen command:", error);
       await interaction.reply({

@@ -266,9 +266,25 @@ export class VoiceSessionService {
 			timestamp: new Date(),
 		});
 
-		console.log(
-			`✅ [SESSION] User ${userId} switched from ${fromChannelId} to ${toChannelId}`,
-		);
+		// Get human-readable names for logging
+		const guild = this.client.guilds.cache.get(guildId);
+		if (guild) {
+			const member = guild.members.cache.get(userId);
+			const fromChannel = guild.channels.cache.get(fromChannelId);
+			const toChannel = guild.channels.cache.get(toChannelId);
+
+			const displayName = member?.displayName || userId;
+			const fromName = fromChannel?.name || fromChannelId;
+			const toName = toChannel?.name || toChannelId;
+
+			console.log(
+				`✅ [SESSION] ${displayName} switched from ${fromName} to ${toName}`,
+			);
+		} else {
+			console.log(
+				`✅ [SESSION] User ${userId} switched from ${fromChannelId} to ${toChannelId}`,
+			);
+		}
 	}
 
 	/**

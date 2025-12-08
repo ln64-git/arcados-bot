@@ -44,8 +44,17 @@ export class ChannelOwnershipService {
 
 	/**
 	 * Transfer ownership to a new user
+	 *
+	 * Handles:
+	 * 1. Updating database ownership
+	 * 2. Updating Discord permissions
+	 * 3. Marking existing members as grandfathered
+	 * 4. Renaming channel to new owner's preference
 	 */
 	async transferOwnership(channelId: string, newOwnerId: string): Promise<void> {
+		// Get current owner before updating
+		const currentOwnerId = await this.repository.getCurrentOwner(channelId);
+
 		// Update channel owner in database
 		await this.repository.updateChannel(channelId, {
 			current_owner_id: newOwnerId,
@@ -60,11 +69,47 @@ export class ChannelOwnershipService {
 				channelId,
 				newOwnerId,
 			);
+
+			// Update Discord permissions: remove from old owner, grant to new owner
+			try {
+				// Remove Manage Channel permission from previous owner
+				if (currentOwnerId) {
+					await voiceChannel.permissionOverwrites.delete(currentOwnerId);
+
+					const oldOwner = voiceChannel.guild.members.cache.get(currentOwnerId);
+					const oldOwnerName = oldOwner?.displayName || currentOwnerId;
+					console.log(
+						`✅ [OWNERSHIP] Removed Manage Channel from previous owner ${oldOwnerName}`,
+					);
+				}
+
+				// Grant Manage Channel permission to new owner
+				await voiceChannel.permissionOverwrites.edit(newOwnerId, {
+					ManageChannels: true,
+				});
+
+				const newOwner = voiceChannel.guild.members.cache.get(newOwnerId);
+				const newOwnerName = newOwner?.displayName || newOwnerId;
+				console.log(
+					`✅ [OWNERSHIP] Granted Manage Channel to new owner ${newOwnerName}`,
+				);
+
+				console.log(
+					`✅ [OWNERSHIP] Transferred ownership of ${voiceChannel.name} to ${newOwnerName}`,
+				);
+			} catch (error) {
+				console.error(
+					"🔸 [OWNERSHIP] Failed to update channel permissions:",
+					error,
+				);
+			}
 		}
 
-		console.log(
-			`✅ [OWNERSHIP] Transferred ownership of ${channelId} to ${newOwnerId}`,
-		);
+		// Mark existing members as grandfathered (preserves their moderation state)
+		await this.markCurrentMembersAsGrandfathered(channelId);
+
+		// Rename channel to new owner's preferred name
+		await this.renameChannelToOwnerPreference(channelId, newOwnerId);
 	}
 
 	/**
@@ -159,5 +204,79 @@ export class ChannelOwnershipService {
 	async isOwner(channelId: string, userId: string): Promise<boolean> {
 		const currentOwner = await this.repository.getCurrentOwner(channelId);
 		return currentOwner === userId;
+	}
+
+	/**
+	 * Mark all current members in a channel as grandfathered
+	 *
+	 * Called during ownership transfer to preserve existing members' moderation state.
+	 * Grandfathered members keep their current mute/deafen state until they leave.
+	 */
+	async markCurrentMembersAsGrandfathered(channelId: string): Promise<void> {
+		try {
+			// Get all active sessions in channel
+			const members = await this.repository.getChannelMembersWithJoinTimes(channelId);
+
+			// Update each session to set is_grandfathered = true
+			for (const member of members) {
+				await this.repository.updateSession(member.session_id, {
+					is_grandfathered: true,
+				});
+			}
+
+			console.log(
+				`✅ [OWNERSHIP] Marked ${members.length} members as grandfathered in channel ${channelId}`,
+			);
+		} catch (error) {
+			console.error(
+				"🔸 [OWNERSHIP] Failed to mark members as grandfathered:",
+				error,
+			);
+		}
+	}
+
+	/**
+	 * Rename channel to new owner's preference
+	 *
+	 * Retrieves the new owner's preferred channel name from preferences,
+	 * or uses a default format like "Username's Channel".
+	 */
+	async renameChannelToOwnerPreference(
+		channelId: string,
+		ownerId: string,
+	): Promise<void> {
+		try {
+			const channel = this.client.channels.cache.get(channelId) as VoiceChannel;
+			if (!channel) {
+				console.warn(
+					`🔸 [OWNERSHIP] Channel ${channelId} not found for renaming`,
+				);
+				return;
+			}
+
+			// Get owner's preferred channel name (from preferences or default)
+			const prefs = await this.repository.getUserPreferences(
+				ownerId,
+				channel.guild.id,
+			);
+
+			// Use preference name if set, otherwise use default format
+			let channelName: string;
+			if (prefs.channel_name) {
+				channelName = prefs.channel_name;
+			} else {
+				// Get owner's display name for default format
+				const owner = channel.guild.members.cache.get(ownerId);
+				const ownerName = owner?.displayName || "User";
+				channelName = `${ownerName}'s Channel`;
+			}
+
+			await channel.setName(channelName);
+			console.log(
+				`✅ [OWNERSHIP] Renamed channel to "${channelName}" for new owner ${ownerId}`,
+			);
+		} catch (error) {
+			console.error("🔸 [OWNERSHIP] Failed to rename channel:", error);
+		}
 	}
 }

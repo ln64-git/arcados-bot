@@ -101,6 +101,10 @@ export class VoiceDataRepository {
 			fields.push(`active = $${paramIndex++}`);
 			values.push(updates.active);
 		}
+		if (updates.is_grandfathered !== undefined) {
+			fields.push(`is_grandfathered = $${paramIndex++}`);
+			values.push(updates.is_grandfathered);
+		}
 
 		if (fields.length === 0) {
 			return; // No updates to perform
@@ -503,6 +507,39 @@ export class VoiceDataRepository {
 	}
 
 	/**
+	 * Get all channels owned by a specific user in a guild
+	 */
+	async getChannelsByOwner(
+		guildId: string,
+		ownerId: string,
+	): Promise<ChannelData[]> {
+		const result = await this.db.query(
+			`SELECT id, guild_id, name, type, parent_id, position, is_user_channel, current_owner_id
+			 FROM channels
+			 WHERE guild_id = $1 AND current_owner_id = $2 AND is_user_channel = true`,
+			[guildId, ownerId],
+		);
+
+		if (!result.success) {
+			throw new VoiceDataError(
+				"Failed to get channels by owner",
+				result.error,
+			);
+		}
+
+		return (result.data || []).map((row) => ({
+			id: row.id,
+			guild_id: row.guild_id,
+			name: row.name,
+			type: row.type,
+			parent_id: row.parent_id,
+			position: row.position,
+			is_user_channel: row.is_user_channel,
+			current_owner_id: row.current_owner_id,
+		}));
+	}
+
+	/**
 	 * Get channel members with join times (OPTIMIZED - single query)
 	 *
 	 * This replaces N+1 query pattern where we previously queried each member individually.
@@ -515,7 +552,8 @@ export class VoiceDataRepository {
 			`SELECT
 				vs.user_id,
 				sess.joined_at,
-				(ch.current_owner_id = vs.user_id) as is_owner
+				(ch.current_owner_id = vs.user_id) as is_owner,
+				sess.id as session_id
 			 FROM voice_states vs
 			 JOIN voice_sessions sess ON sess.id = vs.session_id AND sess.active = true
 			 JOIN channels ch ON ch.id = vs.channel_id
@@ -535,6 +573,7 @@ export class VoiceDataRepository {
 			user_id: row.user_id,
 			joined_at: row.joined_at,
 			is_owner: row.is_owner,
+			session_id: row.session_id,
 		}));
 	}
 
