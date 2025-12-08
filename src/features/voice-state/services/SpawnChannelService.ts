@@ -251,7 +251,7 @@ export class SpawnChannelService {
 		try {
 			// Delete from Discord first
 			await channel.delete();
-			
+
 			// Delete from database to prevent ghost channels
 			try {
 				await this.repository.deleteChannel(channel.id);
@@ -259,7 +259,7 @@ export class SpawnChannelService {
 				// Log but don't fail - Discord deletion succeeded
 				VoiceLogger.error("SPAWN", `Failed to delete channel ${channel.name} from database`, dbError);
 			}
-			
+
 			return true;
 		} catch (error: any) {
 			// Ignore "Unknown Channel" errors (channel already deleted)
@@ -350,14 +350,14 @@ export class SpawnChannelService {
 
 		// Find channels by name (for backwards compatibility)
 		const channelsByName = guild.channels.cache.filter(
-			(ch) =>
+			(ch): ch is VoiceChannel =>
 				ch.isVoiceBased() && ch.name === `${member.displayName}'s Channel`,
 		);
 
 		// Also find channels owned by this user in the database
 		const allVoiceChannels = guild.channels.cache.filter(
-			(ch) => ch.isVoiceBased(),
-		) as Map<string, VoiceChannel>;
+			(ch): ch is VoiceChannel => ch.isVoiceBased(),
+		);
 
 		const channelsToDelete: VoiceChannel[] = [];
 
