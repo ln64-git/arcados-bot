@@ -96,6 +96,15 @@ export const blockCommand: Command = {
 						interaction.guild.id,
 					);
 
+				// Also remove from any channel where blocker is currently present
+				await coordinator
+					.getBlockEnforcementService()
+					.removeBlockFromActiveChannels(
+						interaction.user.id,
+						targetUser.id,
+						interaction.guild.id,
+					);
+
 				await interaction.editReply({
 					content: `🔹 **${targetUser.displayName}** is now unblocked.`,
 				});
@@ -119,6 +128,15 @@ export const blockCommand: Command = {
 				await coordinator
 					.getBlockEnforcementService()
 					.applyBlockPermissions(
+						interaction.user.id,
+						targetUser.id,
+						interaction.guild.id,
+					);
+
+				// Also apply to any channel where blocker is currently present
+				await coordinator
+					.getBlockEnforcementService()
+					.applyBlockToActiveChannels(
 						interaction.user.id,
 						targetUser.id,
 						interaction.guild.id,

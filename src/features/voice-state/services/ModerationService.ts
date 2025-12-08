@@ -18,6 +18,7 @@ import type { Client, VoiceChannel } from "discord.js";
 import type { VoiceDataRepository } from "../repositories/VoiceDataRepository";
 import type { ModerationEvent } from "../types/index";
 import { ModerationError } from "../types/index";
+import { PermissionOverrideHelper } from "./helpers/PermissionOverrideHelper";
 
 export class ModerationService {
 	constructor(
@@ -188,36 +189,32 @@ export class ModerationService {
 	): Promise<void> {
 		try {
 			// Get all channels owned by the moderator
-			const channels = await this.repository.getChannelsByOwner(
+			const channelData = await this.repository.getChannelsByOwner(
 				guildId,
 				moderatorId,
 			);
 
-			// Apply CONNECT = false permission to each channel
-			for (const channelData of channels) {
+			// Resolve channel objects
+			const channels: VoiceChannel[] = [];
+			for (const data of channelData) {
 				try {
-					const channel = await this.getVoiceChannel(channelData.id);
-
-					// Set permission override to deny CONNECT
-					await channel.permissionOverwrites.edit(userId, {
-						Connect: false,
-					});
-
-					// Get human-readable names for logging
-					const member = channel.guild.members.cache.get(userId);
-					const displayName = member?.displayName || userId;
-					const channelName = channel.name || channelData.id;
-
-					console.log(
-						`✅ [MODERATION] Applied ban permission for ${displayName} in ${channelName}`,
-					);
+					const channel = await this.getVoiceChannel(data.id);
+					channels.push(channel);
 				} catch (error) {
 					console.error(
-						`🔸 [MODERATION] Failed to apply ban permission in ${channelData.id}:`,
+						`🔸 [MODERATION] Could not find channel ${data.id}:`,
 						error,
 					);
 				}
 			}
+
+			// Apply permissions using helper
+			await PermissionOverrideHelper.applyToChannels(
+				channels,
+				userId,
+				{ Connect: false },
+				"MODERATION",
+			);
 		} catch (error) {
 			console.error("🔸 [MODERATION] Failed to apply ban permissions:", error);
 		}
@@ -233,34 +230,31 @@ export class ModerationService {
 	): Promise<void> {
 		try {
 			// Get all channels owned by the moderator
-			const channels = await this.repository.getChannelsByOwner(
+			const channelData = await this.repository.getChannelsByOwner(
 				guildId,
 				moderatorId,
 			);
 
-			// Remove permission override for each channel
-			for (const channelData of channels) {
+			// Resolve channel objects
+			const channels: VoiceChannel[] = [];
+			for (const data of channelData) {
 				try {
-					const channel = await this.getVoiceChannel(channelData.id);
-
-					// Delete the permission override entirely
-					await channel.permissionOverwrites.delete(userId);
-
-					// Get human-readable names for logging
-					const member = channel.guild.members.cache.get(userId);
-					const displayName = member?.displayName || userId;
-					const channelName = channel.name || channelData.id;
-
-					console.log(
-						`✅ [MODERATION] Removed ban permission for ${displayName} in ${channelName}`,
-					);
+					const channel = await this.getVoiceChannel(data.id);
+					channels.push(channel);
 				} catch (error) {
 					console.error(
-						`🔸 [MODERATION] Failed to remove ban permission in ${channelData.id}:`,
+						`🔸 [MODERATION] Could not find channel ${data.id}:`,
 						error,
 					);
 				}
 			}
+
+			// Remove permissions using helper
+			await PermissionOverrideHelper.removeFromChannels(
+				channels,
+				userId,
+				"MODERATION",
+			);
 		} catch (error) {
 			console.error(
 				"🔸 [MODERATION] Failed to remove ban permissions:",
@@ -289,28 +283,13 @@ export class ModerationService {
 
 			const channel = await this.getVoiceChannel(channelId);
 
-			// Apply ban permission to each banned user
-			const channelName = channel.name || channelId;
-			for (const userId of bannedUsers) {
-				try {
-					await channel.permissionOverwrites.edit(userId, {
-						Connect: false,
-					});
-
-					// Get human-readable name for logging
-					const member = channel.guild.members.cache.get(userId);
-					const displayName = member?.displayName || userId;
-
-					console.log(
-						`✅ [MODERATION] Synced ban permission for ${displayName} in new channel ${channelName}`,
-					);
-				} catch (error) {
-					console.error(
-						`🔸 [MODERATION] Failed to sync ban permission for ${userId}:`,
-						error,
-					);
-				}
-			}
+			// Apply ban permissions using helper
+			await PermissionOverrideHelper.applyToUsers(
+				channel,
+				bannedUsers,
+				{ Connect: false },
+				"MODERATION",
+			);
 		} catch (error) {
 			console.error(
 				"🔸 [MODERATION] Failed to sync ban permissions for new channel:",

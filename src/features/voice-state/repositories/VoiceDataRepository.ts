@@ -591,7 +591,7 @@ export class VoiceDataRepository {
 		try {
 			const result = await this.db.query(
 				`SELECT channel_name, default_user_limit, privacy_mode,
-				        banned_users, muted_users, deafened_users
+				        banned_users, muted_users, deafened_users, blocked_users
 				 FROM voice_channel_preferences
 				 WHERE user_id = $1 AND guild_id = $2`,
 				[userId, guildId],
@@ -610,11 +610,63 @@ export class VoiceDataRepository {
 				banned_users: row.banned_users || undefined,
 				muted_users: row.muted_users || undefined,
 				deafened_users: row.deafened_users || undefined,
+				blocked_users: row.blocked_users || undefined,
 			};
 		} catch (error) {
 			// Table doesn't exist or query error, return defaults
 			console.error("🔸 Failed to get user preferences:", error);
 			return {};
+		}
+	}
+
+	/**
+	 * Get user preferences for multiple users in a single query
+	 *
+	 * Returns a Map of userId -> VoiceChannelPreferences.
+	 * Users without preferences will not be in the map (use .get() with default).
+	 * This eliminates N+1 query patterns when checking multiple users.
+	 */
+	async getUserPreferencesBatch(
+		userIds: string[],
+		guildId: string,
+	): Promise<Map<string, VoiceChannelPreferences>> {
+		if (userIds.length === 0) {
+			return new Map();
+		}
+
+		try {
+			// Build placeholders for IN clause
+			const placeholders = userIds.map((_, i) => `$${i + 2}`).join(", ");
+			const query = `
+				SELECT user_id, channel_name, default_user_limit, privacy_mode,
+				       banned_users, muted_users, deafened_users, blocked_users
+				FROM voice_channel_preferences
+				WHERE guild_id = $1 AND user_id IN (${placeholders})
+			`;
+
+			const result = await this.db.query(query, [guildId, ...userIds]);
+
+			const prefsMap = new Map<string, VoiceChannelPreferences>();
+
+			if (result.success && result.data) {
+				for (const row of result.data) {
+					prefsMap.set(row.user_id, {
+						channel_name: row.channel_name || undefined,
+						default_user_limit: row.default_user_limit || undefined,
+						privacy_mode: row.privacy_mode || undefined,
+						banned_users: row.banned_users || undefined,
+						muted_users: row.muted_users || undefined,
+						deafened_users: row.deafened_users || undefined,
+						blocked_users: row.blocked_users || undefined,
+					});
+				}
+			}
+
+			return prefsMap;
+		} catch (error) {
+			// Table doesn't exist or query error, return empty map
+			console.error("🔸 Failed to get user preferences batch:", error);
+			return new Map();
 		}
 	}
 
@@ -677,6 +729,13 @@ export class VoiceDataRepository {
 			insertValues.push(`$${paramCount}`);
 			updateFields.push(`deafened_users = $${paramCount}`);
 			values.push(prefs.deafened_users);
+		}
+		if (prefs.blocked_users !== undefined) {
+			paramCount++;
+			insertFields.push("blocked_users");
+			insertValues.push(`$${paramCount}`);
+			updateFields.push(`blocked_users = $${paramCount}`);
+			values.push(prefs.blocked_users);
 		}
 
 		// Always update the timestamp on conflict

@@ -31,6 +31,7 @@ import { SpawnChannelService } from "./services/SpawnChannelService";
 import { ModerationService } from "./services/ModerationService";
 import { ChannelOwnershipService } from "./services/ChannelOwnershipService";
 import { BlockEnforcementService } from "./services/BlockEnforcementService";
+import { VoiceLogger } from "./services/helpers/VoiceLogger";
 
 export class VoiceStateCoordinator {
 	// Services
@@ -52,17 +53,20 @@ export class VoiceStateCoordinator {
 
 		// Create services
 		this.sessionService = new VoiceSessionService(this.repository, client);
-		this.spawnChannelService = new SpawnChannelService(
-			client,
-			this.repository,
-			coordinator,
-			spawnChannelId,
-		);
 		this.moderationService = new ModerationService(client, this.repository);
 		this.ownershipService = new ChannelOwnershipService(client, this.repository);
 		this.blockEnforcementService = new BlockEnforcementService(
 			client,
 			this.repository,
+		);
+		// Create spawn channel service with injected dependencies
+		this.spawnChannelService = new SpawnChannelService(
+			client,
+			this.repository,
+			coordinator,
+			this.ownershipService,
+			this.blockEnforcementService,
+			spawnChannelId,
 		);
 	}
 
@@ -95,6 +99,29 @@ export class VoiceStateCoordinator {
 	}
 
 	/**
+	 * Sync all moderation permissions for a newly created channel
+	 *
+	 * Applies bans, blocks, and other restrictions when a channel is created.
+	 * This consolidates duplicate sync calls across join/switch handlers.
+	 */
+	private async syncModerationsForNewChannel(
+		channelId: string,
+		ownerId: string,
+		guildId: string,
+	): Promise<void> {
+		await this.moderationService.syncBanPermissionsForNewChannel(
+			channelId,
+			ownerId,
+			guildId,
+		);
+		await this.blockEnforcementService.syncBlockPermissionsForChannel(
+			channelId,
+			ownerId,
+			guildId,
+		);
+	}
+
+	/**
 	 * Handle voice join event
 	 */
 	private async handleVoiceJoin(newState: VoiceState): Promise<void> {
@@ -105,9 +132,9 @@ export class VoiceStateCoordinator {
 		if (this.spawnChannelService.isSpawnChannel(channelId)) {
 			const newChannel = await this.spawnChannelService.handleSpawnChannelJoin(newState.member!);
 
-			// Sync ban permissions for the newly created channel
+			// Sync ban and block permissions for the newly created channel
 			if (newChannel) {
-				await this.moderationService.syncBanPermissionsForNewChannel(
+				await this.syncModerationsForNewChannel(
 					newChannel.id,
 					user.id,
 					newState.guild.id,
@@ -125,15 +152,13 @@ export class VoiceStateCoordinator {
 		);
 
 		if (!blockCheck.allowed) {
-			console.log(
-				`🚫 [BLOCK] User ${user.displayName} blocked from joining channel: ${blockCheck.reason}`,
-			);
+			VoiceLogger.block(`User ${user.displayName} blocked from joining channel: ${blockCheck.reason}`);
 
 			// Disconnect user with reason
 			try {
 				await newState.disconnect();
 			} catch (error) {
-				console.error("🔸 [BLOCK] Failed to disconnect user:", error);
+				VoiceLogger.error("BLOCK", "Failed to disconnect user", error);
 			}
 
 			// Send DM explaining why they can't join
@@ -142,9 +167,7 @@ export class VoiceStateCoordinator {
 					`❌ You cannot join this voice channel because ${blockCheck.reason}.`,
 				);
 			} catch (error) {
-				console.log(
-					`🔸 [BLOCK] Could not DM user ${user.displayName} about block`,
-				);
+				VoiceLogger.warn("BLOCK", `Could not DM user ${user.displayName} about block`);
 			}
 
 			return;
@@ -152,22 +175,11 @@ export class VoiceStateCoordinator {
 
 		// Ensure the channel exists in database before creating session
 		// This prevents foreign key constraint violations
-		// Check if channel already exists to preserve ownership and user_channel flag
 		if (newState.channel?.isVoiceBased()) {
-			const channel = newState.channel as VoiceChannel;
-			const isUserChannel = await this.repository.isUserChannel(channel.id);
-			const existingOwner = await this.repository.getCurrentOwner(channel.id);
-
-			await this.repository.insertChannel({
-				id: channel.id,
-				guild_id: newState.guild.id,
-				name: channel.name,
-				type: channel.type,
-				parent_id: channel.parentId,
-				position: channel.position,
-				is_user_channel: isUserChannel, // Preserve existing value if it's a user channel
-				current_owner_id: existingOwner, // Preserve existing owner if set
-			});
+			await this.sessionService.ensureChannelExists(
+				newState.channel as VoiceChannel,
+				newState.guild.id,
+			);
 		}
 
 		// Start session
@@ -186,6 +198,14 @@ export class VoiceStateCoordinator {
 			user.id,
 			newState.guild.id,
 		);
+
+		// Apply block permissions to this channel for users blocked by the joiner
+		// This ensures the channel shows as locked for blocked users
+		await this.blockEnforcementService.applyBlocksOnChannelEntry(
+			user.id,
+			channelId,
+			newState.guild.id,
+		);
 	}
 
 	/**
@@ -200,6 +220,15 @@ export class VoiceStateCoordinator {
 
 		// Finalize session (if one exists)
 		await this.sessionService.finalizeSession(user.id, oldState.guild.id);
+
+		// Clean up block permissions if user was in a non-owned channel
+		if (oldState.channelId) {
+			await this.blockEnforcementService.cleanupBlockPermissionsOnLeave(
+				user.id,
+				oldState.channelId,
+				oldState.guild.id,
+			);
+		}
 
 		// Only cleanup if this is NOT a spawn channel
 		// Spawn channel leaves happen when users are moved to new channels, so we shouldn't cleanup
@@ -221,7 +250,7 @@ export class VoiceStateCoordinator {
 				// Check if the leaving user was the owner
 				const ownerId = await this.repository.getCurrentOwner(channel.id);
 				if (ownerId === user.id) {
-					console.log(`🔄 [OWNERSHIP] Channel owner ${user.displayName} left ${channel.name}`);
+					VoiceLogger.ownership(`Channel owner ${user.displayName} left ${channel.name}`);
 					// Handle ownership transfer if channel still has members
 					if (channel.members.size > 0) {
 						await this.spawnChannelService.handleOwnerLeave(channel, user.id);
@@ -255,9 +284,9 @@ export class VoiceStateCoordinator {
 			// User is joining spawn channel - should trigger channel creation
 			const newChannel = await this.spawnChannelService.handleSpawnChannelJoin(newState.member!);
 
-			// Sync ban permissions for the newly created channel
+			// Sync ban and block permissions for the newly created channel
 			if (newChannel) {
-				await this.moderationService.syncBanPermissionsForNewChannel(
+				await this.syncModerationsForNewChannel(
 					newChannel.id,
 					user.id,
 					newState.guild.id,
@@ -284,15 +313,13 @@ export class VoiceStateCoordinator {
 			);
 
 			if (!blockCheck.allowed) {
-				console.log(
-					`🚫 [BLOCK] User ${user.displayName} blocked from switching to channel: ${blockCheck.reason}`,
-				);
+				VoiceLogger.block(`User ${user.displayName} blocked from switching to channel: ${blockCheck.reason}`);
 
 				// Disconnect user with reason
 				try {
 					await newState.disconnect();
 				} catch (error) {
-					console.error("🔸 [BLOCK] Failed to disconnect user:", error);
+					VoiceLogger.error("BLOCK", "Failed to disconnect user", error);
 				}
 
 				// Send DM explaining why they can't join
@@ -301,9 +328,7 @@ export class VoiceStateCoordinator {
 						`❌ You cannot join this voice channel because ${blockCheck.reason}.`,
 					);
 				} catch (error) {
-					console.log(
-						`🔸 [BLOCK] Could not DM user ${user.displayName} about block`,
-					);
+					VoiceLogger.warn("BLOCK", `Could not DM user ${user.displayName} about block`);
 				}
 
 				return;
@@ -328,22 +353,11 @@ export class VoiceStateCoordinator {
 			if (session) {
 				// Ensure the new channel exists in database before updating session
 				// This prevents foreign key constraint violations
-				// Check if channel already exists to preserve ownership and user_channel flag
 				if (newState.channel?.isVoiceBased()) {
-					const channel = newState.channel as VoiceChannel;
-					const isUserChannel = await this.repository.isUserChannel(channel.id);
-					const existingOwner = await this.repository.getCurrentOwner(channel.id);
-
-					await this.repository.insertChannel({
-						id: channel.id,
-						guild_id: newState.guild.id,
-						name: channel.name,
-						type: channel.type,
-						parent_id: channel.parentId,
-						position: channel.position,
-						is_user_channel: isUserChannel, // Preserve existing value if it's a user channel
-						current_owner_id: existingOwner, // Preserve existing owner if set
-					});
+					await this.sessionService.ensureChannelExists(
+						newState.channel as VoiceChannel,
+						newState.guild.id,
+					);
 				}
 
 				await this.sessionService.recordChannelSwitch(
@@ -363,6 +377,24 @@ export class VoiceStateCoordinator {
 					newState.guild.id,
 				);
 			}
+		}
+
+		// Clean up block permissions from old channel
+		if (oldState.channelId && !isFromSpawn) {
+			await this.blockEnforcementService.cleanupBlockPermissionsOnLeave(
+				user.id,
+				oldState.channelId,
+				oldState.guild.id,
+			);
+		}
+
+		// Apply block permissions to new channel for users blocked by the switcher
+		if (newState.channelId) {
+			await this.blockEnforcementService.applyBlocksOnChannelEntry(
+				user.id,
+				newState.channelId,
+				newState.guild.id,
+			);
 		}
 
 		// Cleanup old channel if empty (but not if it's spawn channel)
@@ -456,17 +488,13 @@ export class VoiceStateCoordinator {
 			// Channel name changed
 			if (oldChannel.name !== newChannel.name) {
 				preferencesToUpdate.channel_name = newChannel.name;
-				console.log(
-					`🔄 [VOICE] Channel name changed: "${oldChannel.name}" → "${newChannel.name}"`,
-				);
+				VoiceLogger.info("VOICE", `Channel name changed: "${oldChannel.name}" → "${newChannel.name}"`);
 			}
 
 			// User limit changed
 			if (oldChannel.userLimit !== newChannel.userLimit) {
 				preferencesToUpdate.default_user_limit = newChannel.userLimit;
-				console.log(
-					`🔄 [VOICE] User limit changed: ${oldChannel.userLimit} → ${newChannel.userLimit}`,
-				);
+				VoiceLogger.info("VOICE", `User limit changed: ${oldChannel.userLimit} → ${newChannel.userLimit}`);
 			}
 
 			// If any preferences changed, update them
@@ -488,9 +516,7 @@ export class VoiceStateCoordinator {
 					updatedPrefs,
 				);
 
-				console.log(
-					`✅ [VOICE] Updated preferences for user ${ownerId} based on Discord UI changes`,
-				);
+				VoiceLogger.info("VOICE", `Updated preferences for user ${ownerId} based on Discord UI changes`);
 			}
 
 			// Also update channel in database to keep it in sync
@@ -498,7 +524,7 @@ export class VoiceStateCoordinator {
 				name: newChannel.name,
 			});
 		} catch (error) {
-			console.error("🔸 [VOICE] Failed to handle channel update:", error);
+			VoiceLogger.error("VOICE", "Failed to handle channel update", error);
 		}
 	}
 
@@ -507,6 +533,6 @@ export class VoiceStateCoordinator {
 	 */
 	async cleanup(): Promise<void> {
 		await this.sessionService.cleanup();
-		console.log("✅ [VOICE] Voice state coordinator cleaned up");
+		VoiceLogger.info("VOICE", "Voice state coordinator cleaned up");
 	}
 }

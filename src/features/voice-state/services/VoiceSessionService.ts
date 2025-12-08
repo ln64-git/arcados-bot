@@ -14,7 +14,7 @@
  * - Uses repository for all database operations
  */
 
-import type { VoiceState, Client } from "discord.js";
+import type { VoiceState, Client, VoiceChannel } from "discord.js";
 import { v4 as uuidv4 } from "uuid";
 import type { VoiceDataRepository } from "../repositories/VoiceDataRepository";
 import type {
@@ -112,6 +112,31 @@ export class VoiceSessionService {
 		console.log(`✅ [SESSION] ${displayName} joined ${channelName}`);
 
 		return sessionId;
+	}
+
+	/**
+	 * Ensure channel exists in database before creating session
+	 *
+	 * Preserves existing ownership and user_channel flags if channel already exists.
+	 * Called before session creation to prevent foreign key constraint violations.
+	 */
+	async ensureChannelExists(
+		channel: VoiceChannel,
+		guildId: string,
+	): Promise<void> {
+		const isUserChannel = await this.repository.isUserChannel(channel.id);
+		const existingOwner = await this.repository.getCurrentOwner(channel.id);
+
+		await this.repository.insertChannel({
+			id: channel.id,
+			guild_id: guildId,
+			name: channel.name,
+			type: channel.type,
+			parent_id: channel.parentId,
+			position: channel.position,
+			is_user_channel: isUserChannel,
+			current_owner_id: existingOwner,
+		});
 	}
 
 	/**

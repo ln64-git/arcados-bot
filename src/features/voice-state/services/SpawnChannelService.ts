@@ -24,6 +24,8 @@ import type { VoiceDataRepository } from "../repositories/VoiceDataRepository";
 import type { SyncCoordinator } from "../../discord-sync/SyncCoordinator";
 import type { VoiceChannelPreferences, ChannelData } from "../types/index";
 import { SpawnChannelError } from "../types/index";
+import type { ChannelOwnershipService } from "./ChannelOwnershipService";
+import type { BlockEnforcementService } from "./BlockEnforcementService";
 
 export class SpawnChannelService {
 	private spawnChannelId?: string;
@@ -34,6 +36,8 @@ export class SpawnChannelService {
 		private client: Client,
 		private repository: VoiceDataRepository,
 		private coordinator: SyncCoordinator,
+		private ownershipService: ChannelOwnershipService,
+		private blockEnforcementService: BlockEnforcementService,
 		spawnChannelId?: string,
 	) {
 		this.spawnChannelId = spawnChannelId;
@@ -296,12 +300,15 @@ export class SpawnChannelService {
 				const newOwnerName = newOwner?.displayName || oldestMember.userId;
 				console.log(`🔄 [OWNERSHIP] Transferring ownership to ${newOwnerName} (joined at ${oldestMember.joinedAt.toISOString()})`);
 
-				// Import ChannelOwnershipService to handle the transfer
-				const { ChannelOwnershipService } = await import("./ChannelOwnershipService");
-				const ownershipService = new ChannelOwnershipService(this.client, this.repository);
-
 				// Transfer ownership (this will also handle grandfathering and renaming)
-				await ownershipService.transferOwnership(channel.id, oldestMember.userId);
+				await this.ownershipService.transferOwnership(channel.id, oldestMember.userId);
+
+				// Sync block permissions for new owner
+				await this.blockEnforcementService.syncBlockPermissionsForChannel(
+					channel.id,
+					oldestMember.userId,
+					channel.guild.id,
+				);
 			} else {
 				console.log(`🔸 [OWNERSHIP] No eligible members to transfer ownership to (${channel.members.size} members in channel)`);
 			}
