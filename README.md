@@ -1,213 +1,218 @@
-# Arcados Discord Bot
+## Description
 
-A comprehensive Discord bot with real-time PostgreSQL integration and relationship networks, built with TypeScript and Discord.js v14.
+A social intelligence engine with LLM interface—maps relationship networks across servers, builds behavioral profiles, and makes the intelligence queryable through natural language with context-aware RAG pipelines.
+
+## Skills / Tools / Stack
+
+- TypeScript
+- Retrieval Augmented Generation
+- Context Engineering
+- PostgreSQL / pgvector
+- Multi-Provider LLM Orchestration
+
+# Summary
+
+Social Intelligence gives moderators visibility they've never had: who's connected to whom across servers, how influence flows through communities, and behavioral patterns that predict problems before they surface.
+
+Platforms fragment social data by design. You can't see a user's connections outside your server. You can't see who they talk to elsewhere. You can't see the network topology that explains why certain users show up together, why drama spreads the way it does, or how bad actors coordinate across communities.
+
+This system infers what platforms hide. It tracks interaction patterns across every server where it's deployed, correlates user behavior across contexts, and builds traversable network maps. The result: relationship intelligence that extends beyond any single moderator's view.
+
+Think of it as:
+
+- **Cross-server visibility** — relationship networks inferred from interaction patterns
+- **Behavioral early warning** — predictive profiles that surface concerning patterns
+- **Network forensics** — trace how users, content, and influence move between communities
+- **RAG over social graphs** — LLM queries grounded in live relational data, not static documents
+
+## The Problem
+
+Moderators are blind outside their own servers.
+
+- A user causing problems might be coordinating with others you can't see
+- Raids and brigades originate from communities you have no visibility into
+- Bad actors build influence networks that span dozens of servers
+- By the time harmful behavior surfaces in your community, it's already organized elsewhere
+
+Without cross-context visibility, moderation is reactive. You're always cleaning up after damage is done.
+
+## The Solution
+
+Deploy across multiple communities. Correlate everything. See the network.
+
+**Cross-Server Correlation**
+
+- Track the same users across different contexts
+- Infer relationships from co-membership and interaction patterns
+- Build network topology that extends beyond any single server
+
+**Behavioral Profiling**
+
+- Communication patterns, timing, triggers, engagement preferences
+- Predict how users will behave based on observed patterns
+- Surface anomalies—sudden changes in behavior or relationship patterns
+
+**Access Path Mapping**
+
+- Who connects to whom through what intermediaries
+- Identify bridging nodes between isolated communities
+- Understand how influence and information propagate through networks
+
+**Influence Flow Analysis**
+
+- Who shapes conversation, who amplifies, who follows
+- Map information propagation paths
+- Identify key nodes for community health or harm
+
+## Who It's For
+
+- Trust & safety teams managing communities at scale
+- Moderation teams needing visibility beyond their own servers
+- Platform safety researchers studying cross-community dynamics
+- Organizations protecting communities from coordinated harm
+
+## LLM Interface & Context Engineering
+
+The intelligence layer is accessed through natural language. Ask questions, get answers grounded in the full social graph.
+
+This is RAG at its most complex—not retrieving static documents, but dynamically assembling context from live relational data: user profiles, relationship networks, conversation history, behavioral patterns. The challenge isn't retrieval. It's knowing what context matters for each query and fitting it within token limits.
+
+**Context Assembly**
+
+Every query triggers a retrieval pipeline:
+
+- Identify relevant users from the query
+- Pull behavioral profiles for each
+- Retrieve relationship data between them
+- Fetch recent conversation segments they participated in
+- Score and rank by relevance to the query
+- Compress to fit context window
+
+**Multi-Provider Orchestration**
+
+Switch between Grok, Gemini, OpenAI, or Ollama without changing application code. Each provider has different strengths—cost, speed, reasoning depth, tool use. The orchestration layer abstracts this, letting you optimize per-query.
+
+**Dynamic Tool Registry**
+
+The LLM doesn't just answer questions—it can query the intelligence layer directly through function calling:
+
+- `get_user_profile(user_id)` — full behavioral profile
+- `get_relationship(user_a, user_b)` — connection strength and history
+- `find_path(source, target)` — access path through network
+- `search_conversations(query)` — semantic search over history
+- `get_network_position(user_id)` — influence metrics and bridging score
+
+Tools are registered dynamically based on available data and query type.
+
+**Managed Disclosure**
+
+Not all context should surface in every response. The system applies disclosure rules:
+
+- Privacy boundaries between users
+- Relevance filtering for current conversation
+- Sensitivity scoring for behavioral data
+- Context budgeting to prioritize high-value information
+
+This is context engineering in practice—managing what an LLM knows and when it's appropriate to use it.
+
+## Architecture
+
+**Ingestion Layer**
+
+- Every observable interaction feeds the intelligence engine
+- Cross-server user matching via platform ID
+- Real-time enrichment—no batch delays
+
+**Inference Layer**
+
+- Relationship strength scoring from interaction patterns
+- Cross-context behavioral correlation
+- Network topology inference from partial observations
+- Access path calculation between any two users
+
+**Intelligence Layer**
+
+- pgvector semantic search over profiles and relationships
+- Predictive profile generation from accumulated behavior
+- Traversable graph queries for network analysis
+- LLM interface for natural language intelligence queries
 
 ## Features
 
-- 🔹 Dynamic command registration
-- 🔹 TypeScript support
-- 🔹 Error handling
-- 🔹 Guild-specific or global command deployment
-- 🔹 Clean, extensible architecture
-- 🔹 **Real-time PostgreSQL synchronization**
-- 🔹 **Incremental relationship network updates**
-- 🔹 **Multi-participant conversation segments**
-- 🔹 **Full Discord data sync (guilds, channels, members, roles, messages)**
-- 🔹 **Boot-time database healing and maintenance**
-- 🔹 **Voice Channel Manager** - Self-organizing voice channels with owner-based moderation
+- Cross-server relationship inference from observable interactions
+- Behavioral profiles with communication patterns, triggers, and engagement preferences
+- Access path mapping between users across fragmented networks
+- Monolateral relationship audits—detect interest asymmetry from one side
+- Bridging node identification between communities
+- Influence flow mapping across network topology
+- Anomaly detection for behavioral shifts
+- Multi-provider LLM orchestration (Grok, Gemini, OpenAI, Ollama)
+- Real-time RAG pipelines with zero-lag retrieval
+- Dynamic tool registry for programmatic intelligence access
+- Conversation detection with multi-strategy grouping
+- Graceful degradation—core inference works with partial data
 
-## Setup
+## Data Model
 
-1. **Install dependencies:**
+**User Profiles**
 
-   ```bash
-   npm install
-   ```
+- Cross-server behavioral fingerprint
+- Relationship network (inferred and observed)
+- Communication patterns and timing
+- Engagement triggers and preferences
 
-2. **Create a `.env` file:**
+**Relationship Edges**
 
-   ```env
-   # Required Discord settings
-   BOT_TOKEN=your_discord_bot_token_here
-   GUILD_ID=your_guild_id_for_testing  # Optional, for guild-specific commands
+- Directed interactions (A→B tracked separately from B→A)
+- Cross-server correlation confidence
+- Relationship trajectory over time
+- Path utility scoring
 
-   # PostgreSQL settings (optional - bot works without database)
-   POSTGRES_URL=your_postgres_connection_string
+**Network Topology**
 
-   # Optional Discord settings
-   BOT_PREFIX=!
-   BOT_OWNER_ID=your_user_id
-   SPAWN_CHANNEL_ID=your_spawn_channel_id  # Required for Voice Channel Manager
-   ```
+- Inferred connections beyond direct observation
+- Bridging nodes and community boundaries
+- Influence propagation paths
+- Traversal mapping
 
-3. **Get your Discord bot token:**
-
-   - Go to [Discord Developer Portal](https://discord.com/developers/applications)
-   - Create a new application
-   - Go to "Bot" section and create a bot
-   - Copy the token and add it to your `.env` file
-
-4. **Set up PostgreSQL (optional):**
-
-   - Use any PostgreSQL database (local or cloud like Neon, Supabase, etc.)
-   - Get your connection string
-   - Add `POSTGRES_URL` to your `.env` file
-   - **Note:** The bot will work without PostgreSQL, but you'll miss out on relationship networks and conversation tracking
-
-5. **Invite your bot to a server:**
-   - In the Discord Developer Portal, go to "OAuth2" > "URL Generator"
-   - Select "bot" and "applications.commands" scopes
-   - Select necessary permissions (Send Messages, Use Slash Commands, Manage Roles, etc.)
-   - Use the generated URL to invite your bot
-
-## Usage
-
-### Running the bot:
-
-```bash
-npm start
-```
-
-### Development mode (with auto-restart):
-
-```bash
-npm run dev
-```
-
-## PostgreSQL Integration & Relationship Networks
-
-This bot features comprehensive PostgreSQL integration with real-time relationship tracking:
-
-### What Gets Synced
-
-- **Guilds**: Server information, member counts, settings
-- **Channels**: All text/voice channels with metadata and watermarks
-- **Members**: User data, roles, join dates, relationship networks
-- **Roles**: Role permissions, colors, positions
-- **Messages**: Message content, timestamps, attachments
-- **Relationship Edges**: Directed dyads with interaction counters
-- **Conversation Segments**: Multi-participant conversation tracking
-
-### Real-time Features
-
-- **Incremental Updates**: O(1) edge counter updates on messages/reactions
-- **Streaming Segments**: Auto-finalized conversation segments (5m inactivity, min 3 msgs)
-- **Boot-time Healing**: Database consistency checks and backfill on startup
-- **Periodic Maintenance**: Rolling window updates, segment compaction
-
-### Relationship Networks
-
-- **Directed Edges**: Track interactions between any two users
-- **Multi-participant Conversations**: Support for group chats
-- **Bot Memory**: Bot maintains relationship summaries per user
-- **Peer Context**: Understands relationships between active conversation participants
-
-### Graceful Degradation
-
-- Bot continues functioning if PostgreSQL is unavailable
-- All Discord features work without database connection
-- Automatic reconnection with retry/backoff
-- Error logging without crashes
-
-## Adding Commands
-
-The bot supports dynamic command registration. Here's how to add a command:
-
-```typescript
-import { SlashCommandBuilder } from "discord.js";
-import { Command } from "./Bot";
-
-const pingCommand: Command = {
-  data: new SlashCommandBuilder()
-    .setName("ping")
-    .setDescription("Replies with Pong!"),
-
-  async execute(interaction) {
-    await interaction.reply("Pong!");
-  },
-};
-
-// Add the command to your bot
-bot.addCommand(pingCommand);
-```
-
-## Project Structure
+## How It Works
 
 ```
-src/
-├── Bot.ts                    # Main bot class
-├── main.ts                   # Entry point
-├── config/                   # Configuration management
-├── database/                 # PostgreSQL integration
-│   └── PostgreSQLManager.ts  # Database connection and operations
-├── features/                # Bot features
-│   ├── guild-sync/          # Guild synchronization
-│   │   ├── DatabaseHealer.ts  # Boot-time healing and maintenance
-│   │   └── LiveSyncWatcher.ts # Real-time event watcher
-│   ├── relationship-network/ # Relationship tracking
-│   │   ├── NetworkManager.ts  # Relationship network builder
-│   │   └── ConversationManager.ts # Conversation segment manager
-│   ├── ai-assistant/        # AI features
-│   ├── server-lore/         # Server lore features
-│   └── speak-voice-call/    # Voice call features
-├── commands/                # Slash commands
-├── types/                   # TypeScript type definitions
-└── utils/                   # Utility functions
+Interaction observed
+    ↓
+Update behavioral fingerprint
+    ↓
+Correlate with same user across other servers
+    ↓
+Update relationship edges (direction, strength, type)
+    ↓
+Recalculate network topology and access paths
+    ↓
+Query triggered? → Retrieve:
+    - User profile and behavioral patterns
+    - Network position and relationships
+    - Cross-server activity correlation
+    - Relevant conversation history
+    ↓
+Generate contextual intelligence
 ```
 
-## Environment Variables
+### Roadmap
 
-### Required
+1. Cross-platform correlation (Discord + Slack + Telegram)
+2. Automated anomaly alerting for behavioral shifts
+3. Influence propagation simulation
+4. Coordinated behavior detection
+5. Export pipelines for external analysis tools
 
-- `BOT_TOKEN`: Your Discord bot token
+### Instructions
 
-### Optional Discord Settings
+1. Clone repository and install with `bun install`
+2. Configure PostgreSQL with pgvector extension
+3. Deploy to multiple servers for cross-context correlation
+4. Set environment variables for bot token and LLM providers
+5. Intelligence builds automatically from observable interactions
 
-- `GUILD_ID`: Guild ID for testing commands locally
-- `BOT_PREFIX`: Command prefix (default: "!")
-- `BOT_OWNER_ID`: Bot owner user ID
-
-### PostgreSQL Settings (Optional)
-
-- `POSTGRES_URL`: PostgreSQL connection string
-- `DB_NAME`: Database name (default: "arcados")
-
-## Voice Channel Manager
-
-The Voice Channel Manager is a powerful feature that creates a self-organizing voice channel ecosystem. Users can spawn personal voice channels by joining a designated spawn channel, with full ownership and moderation capabilities.
-
-### How It Works
-
-1. **Channel Spawning**: When a user joins the spawn channel, a new voice channel is automatically created for them
-2. **Ownership**: The first user in a channel becomes the owner and can moderate other users
-3. **Ownership Transfer**: When the owner leaves, ownership passes to the longest resident
-4. **Auto-Deletion**: Channels are automatically deleted when empty
-5. **Grandfather Protection**: Users present during ownership changes are protected from immediate disruption
-
-### Commands
-
-- `/claim` - Reclaim a voice channel you previously owned
-- `/renounce` - Drop ownership of your current voice channel
-- `/mute @user` - Mute a user in your channel (owner only)
-- `/unmute @user` - Remove mute from a user (owner only)
-- `/deafen @user` - Deafen a user in your channel (owner only)
-- `/undeafen @user` - Remove deafen from a user (owner only)
-- `/ban @user` - Ban a user from your channels (owner only)
-- `/unban @user` - Remove a user from your ban list (owner only)
-- `/channel-prefs` - Configure your voice channel preferences
-
-### Configuration
-
-Set the `SPAWN_CHANNEL_ID` environment variable to the ID of the voice channel where users should join to spawn new channels.
-
-### Features
-
-- **Scoped Moderation**: All moderation is limited to your owned channels
-- **User Preferences**: Customize channel names, user limits, and privacy settings
-- **Ban Lists**: Maintain personal ban lists that apply to all your channels
-- **Grandfather Protection**: Prevents disruption during ownership changes
-- **Real-time Updates**: Changes apply instantly via PostgreSQL triggers and live sync watchers
-
-## License
+### License
 
 MIT
