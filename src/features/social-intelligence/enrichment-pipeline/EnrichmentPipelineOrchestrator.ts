@@ -99,6 +99,13 @@ export class EnrichmentPipelineOrchestrator {
 		if (pipelines.server) this.serverPipeline = pipelines.server;
 	}
 
+	/**
+	 * Get the enrichment queue (for direct access by healing/reconciliation systems)
+	 */
+	public getQueue(): EnrichmentQueue {
+		return this.queue;
+	}
+
 	// ============================================================================
 	// Layer 1: Conversation Enrichment Entry Points
 	// ============================================================================

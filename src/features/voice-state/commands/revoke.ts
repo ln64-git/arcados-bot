@@ -81,7 +81,7 @@ export const renounceCommand: Command = {
       );
 
       await interaction.reply({
-        content: `🔹 Successfully renounced ownership of **${voiceChannel.name}**!`,
+        content: ` Successfully renounced ownership of **${voiceChannel.name}**!`,
         ephemeral: false,
       });
     } catch (error) {

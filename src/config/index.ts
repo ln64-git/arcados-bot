@@ -78,6 +78,35 @@ export interface BotConfig {
 
   // Plex settings
   plexServerUrl?: string; // Plex server base URL (e.g., http://localhost:32400)
+
+  // Database healing settings
+  healing: {
+    messageEmbeddings: {
+      enabled: boolean;
+      batchSize: number;
+      maxMessages: number;
+      ageLimit: number | null;
+    };
+    conversationEmbeddings: {
+      enabled: boolean;
+    };
+    userProfiles: {
+      enabled: boolean;
+      minConversations: number;
+      maxUsers: number;
+    };
+    relationships: {
+      enabled: boolean;
+      minInteractions: number;
+      maxRelationships: number;
+      requireUserProfiles: boolean;
+    };
+    guildMetadata: {
+      enabled: boolean;
+      minRelationships: number;
+      minConversations: number;
+    };
+  };
 }
 
 function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
@@ -238,6 +267,37 @@ function validateConfig(): BotConfig {
 
     // Plex settings
     plexServerUrl: process.env.PLEX_SERVER_URL || undefined,
+
+    // Database healing settings
+    healing: {
+      messageEmbeddings: {
+        enabled: parseBoolean(process.env.HEALING_MESSAGE_EMBEDDINGS_ENABLED, true),
+        batchSize: Number.parseInt(process.env.HEALING_MESSAGE_BATCH_SIZE || "32", 10),
+        maxMessages: Number.parseInt(process.env.HEALING_MESSAGE_MAX || "2000", 10),
+        ageLimit: process.env.HEALING_MESSAGE_AGE_LIMIT
+          ? Number.parseInt(process.env.HEALING_MESSAGE_AGE_LIMIT, 10)
+          : null,
+      },
+      conversationEmbeddings: {
+        enabled: parseBoolean(process.env.HEALING_CONVERSATION_EMBEDDINGS_ENABLED, true),
+      },
+      userProfiles: {
+        enabled: parseBoolean(process.env.HEALING_USER_PROFILES_ENABLED, true),
+        minConversations: Number.parseInt(process.env.HEALING_USER_MIN_CONVERSATIONS || "5", 10),
+        maxUsers: Number.parseInt(process.env.HEALING_USER_MAX || "20", 10),
+      },
+      relationships: {
+        enabled: parseBoolean(process.env.HEALING_RELATIONSHIPS_ENABLED, true),
+        minInteractions: Number.parseInt(process.env.HEALING_REL_MIN_INTERACTIONS || "100", 10),
+        maxRelationships: Number.parseInt(process.env.HEALING_REL_MAX || "30", 10),
+        requireUserProfiles: parseBoolean(process.env.HEALING_REL_REQUIRE_PROFILES, true),
+      },
+      guildMetadata: {
+        enabled: parseBoolean(process.env.HEALING_GUILD_METADATA_ENABLED, true),
+        minRelationships: Number.parseInt(process.env.HEALING_GUILD_MIN_RELATIONSHIPS || "10", 10),
+        minConversations: Number.parseInt(process.env.HEALING_GUILD_MIN_CONVERSATIONS || "20", 10),
+      },
+    },
   };
 
   // Validate node environment

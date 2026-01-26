@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { config } from "../../../../config/index.js";
 
@@ -13,7 +13,7 @@ export class WhisperServerManager {
 	private startupTimeout: NodeJS.Timeout | null = null;
 
 	// Configuration
-	private readonly WHISPER_BINARY = "whisper-server";
+	private readonly WHISPER_BINARY = "/home/ln64/.voicemode/services/whisper/build/bin/whisper-server";
 	private readonly WHISPER_MODEL_PATH =
 		"/home/ln64/.voicemode/services/whisper/models/ggml-large-v3.bin"; // Using large-v3 for better accuracy
 	private readonly WHISPER_PORT = 8086;
@@ -57,6 +57,19 @@ export class WhisperServerManager {
 		this.isStarting = true;
 
 		try {
+			// Check if whisper-server binary exists
+			const binaryExists = this.checkBinaryExists(this.WHISPER_BINARY);
+			if (!binaryExists) {
+				console.error(
+					`🎤 Whisper server binary not found: ${this.WHISPER_BINARY}`
+				);
+				console.error(
+					"🎤 Please ensure whisper-server is installed at the configured path"
+				);
+				this.isStarting = false;
+				return false;
+			}
+
 			// Check if model file exists
 			if (!existsSync(this.WHISPER_MODEL_PATH)) {
 				console.error(
@@ -298,6 +311,24 @@ export class WhisperServerManager {
 		}
 
 		return false;
+	}
+
+	/**
+	 * Check if a binary exists (handles both full paths and PATH lookups)
+	 */
+	private checkBinaryExists(binary: string): boolean {
+		// If it's a full path, check if file exists
+		if (binary.includes("/") || (process.platform === "win32" && binary.includes("\\"))) {
+			return existsSync(binary);
+		}
+		// Otherwise, check PATH using which/where
+		try {
+			const command = process.platform === "win32" ? `where ${binary}` : `which ${binary}`;
+			execSync(command, { encoding: "utf-8", stdio: "ignore" });
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	/**

@@ -102,7 +102,7 @@ export const disconnectCommand: Command = {
 			await targetMember.voice.disconnect("Disconnected by channel owner");
 
 			await interaction.editReply({
-				content: `🔹 Disconnected **${targetUser.displayName}** from the channel.`,
+				content: ` Disconnected **${targetUser.displayName}** from the channel.`,
 			});
 		} catch (error) {
 			console.error("🔸 Error in disconnect command:", error);

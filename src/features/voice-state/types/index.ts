@@ -96,7 +96,9 @@ export interface VoiceChannelPreferences {
 	channel_name?: string;
 	default_user_limit?: number;
 	privacy_mode?: "public" | "friends_only" | "private";
-	banned_users?: string[];
+	hidden?: boolean;
+	whitelist?: string[];
+	blacklist?: string[];
 	muted_users?: string[];
 	deafened_users?: string[];
 	blocked_users?: string[];

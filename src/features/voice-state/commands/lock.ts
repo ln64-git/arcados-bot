@@ -94,7 +94,7 @@ export const lockCommand: Command = {
 				});
 
 				await interaction.editReply({
-					content: "🔹 Unlocked the channel. Everyone can now join.",
+					content: " Unlocked the channel. Everyone can now join.",
 				});
 			} else {
 				// Lock: Deny Connect permission for @everyone
@@ -103,7 +103,7 @@ export const lockCommand: Command = {
 				});
 
 				await interaction.editReply({
-					content: "🔹 Locked the channel. Only you can allow others to join.",
+					content: " Locked the channel. Only you can allow others to join.",
 				});
 			}
 		} catch (error) {

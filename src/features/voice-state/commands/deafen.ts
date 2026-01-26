@@ -130,7 +130,7 @@ export const deafenCommand: Command = {
         );
 
         await interaction.reply({
-          content: `🔹 **${targetUser.displayName}** is now undeafened in your channels.`,
+          content: ` **${targetUser.displayName}** is now undeafened in your channels.`,
           ephemeral: false,
         });
       } else {
@@ -152,7 +152,7 @@ export const deafenCommand: Command = {
         );
 
         await interaction.reply({
-          content: `🔹 **${targetUser.displayName}** is now deafened in your channels.`,
+          content: ` **${targetUser.displayName}** is now deafened in your channels.`,
           ephemeral: false,
         });
       }

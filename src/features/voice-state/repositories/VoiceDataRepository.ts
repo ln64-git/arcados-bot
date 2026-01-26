@@ -607,8 +607,8 @@ export class VoiceDataRepository {
 	): Promise<VoiceChannelPreferences> {
 		try {
 			const result = await this.db.query(
-				`SELECT channel_name, default_user_limit, privacy_mode,
-				        banned_users, muted_users, deafened_users, blocked_users
+				`SELECT channel_name, default_user_limit, privacy_mode, hidden,
+				        whitelist, blacklist, muted_users, deafened_users, blocked_users
 				 FROM voice_channel_preferences
 				 WHERE user_id = $1 AND guild_id = $2`,
 				[userId, guildId],
@@ -624,7 +624,9 @@ export class VoiceDataRepository {
 				channel_name: row.channel_name || undefined,
 				default_user_limit: row.default_user_limit || undefined,
 				privacy_mode: row.privacy_mode || undefined,
-				banned_users: row.banned_users || undefined,
+				hidden: row.hidden ?? undefined,
+				whitelist: row.whitelist || undefined,
+				blacklist: row.blacklist || undefined,
 				muted_users: row.muted_users || undefined,
 				deafened_users: row.deafened_users || undefined,
 				blocked_users: row.blocked_users || undefined,
@@ -655,8 +657,8 @@ export class VoiceDataRepository {
 			// Build placeholders for IN clause
 			const placeholders = userIds.map((_, i) => `$${i + 2}`).join(", ");
 			const query = `
-				SELECT user_id, channel_name, default_user_limit, privacy_mode,
-				       banned_users, muted_users, deafened_users, blocked_users
+				SELECT user_id, channel_name, default_user_limit, privacy_mode, hidden,
+				       whitelist, blacklist, muted_users, deafened_users, blocked_users
 				FROM voice_channel_preferences
 				WHERE guild_id = $1 AND user_id IN (${placeholders})
 			`;
@@ -671,7 +673,9 @@ export class VoiceDataRepository {
 						channel_name: row.channel_name || undefined,
 						default_user_limit: row.default_user_limit || undefined,
 						privacy_mode: row.privacy_mode || undefined,
-						banned_users: row.banned_users || undefined,
+						hidden: row.hidden ?? undefined,
+						whitelist: row.whitelist || undefined,
+						blacklist: row.blacklist || undefined,
 						muted_users: row.muted_users || undefined,
 						deafened_users: row.deafened_users || undefined,
 						blocked_users: row.blocked_users || undefined,
@@ -726,12 +730,26 @@ export class VoiceDataRepository {
 			updateFields.push(`privacy_mode = $${paramCount}`);
 			values.push(prefs.privacy_mode);
 		}
-		if (prefs.banned_users !== undefined) {
+		if (prefs.hidden !== undefined) {
 			paramCount++;
-			insertFields.push("banned_users");
+			insertFields.push("hidden");
 			insertValues.push(`$${paramCount}`);
-			updateFields.push(`banned_users = $${paramCount}`);
-			values.push(prefs.banned_users);
+			updateFields.push(`hidden = $${paramCount}`);
+			values.push(prefs.hidden);
+		}
+		if (prefs.whitelist !== undefined) {
+			paramCount++;
+			insertFields.push("whitelist");
+			insertValues.push(`$${paramCount}`);
+			updateFields.push(`whitelist = $${paramCount}`);
+			values.push(prefs.whitelist);
+		}
+		if (prefs.blacklist !== undefined) {
+			paramCount++;
+			insertFields.push("blacklist");
+			insertValues.push(`$${paramCount}`);
+			updateFields.push(`blacklist = $${paramCount}`);
+			values.push(prefs.blacklist);
 		}
 		if (prefs.muted_users !== undefined) {
 			paramCount++;

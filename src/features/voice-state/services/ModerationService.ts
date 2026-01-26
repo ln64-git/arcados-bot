@@ -175,10 +175,10 @@ export class ModerationService {
 	}
 
 	/**
-	 * Apply ban permission to a user across all channels owned by the moderator
-	 * Uses Discord's permission overrides to prevent the user from connecting
+	 * Apply blacklist permission to a user across all channels owned by the moderator
+	 * Uses Discord's permission overrides to hide the channel and prevent the user from connecting
 	 */
-	async applyBanPermissions(
+	async applyBlacklistPermissions(
 		userId: string,
 		moderatorId: string,
 		guildId: string,
@@ -204,22 +204,22 @@ export class ModerationService {
 				}
 			}
 
-			// Apply permissions using helper
+			// Apply permissions using helper - deny both Connect and ViewChannel
 			await PermissionOverrideHelper.applyToChannels(
 				channels,
 				userId,
-				{ Connect: false },
+				{ Connect: false, ViewChannel: false },
 				"MODERATION",
 			);
 		} catch (error) {
-			VoiceLogger.error("MODERATION", "Failed to apply ban permissions", error);
+			VoiceLogger.error("MODERATION", "Failed to apply blacklist permissions", error);
 		}
 	}
 
 	/**
-	 * Remove ban permission from a user across all channels owned by the moderator
+	 * Remove blacklist permission from a user across all channels owned by the moderator
 	 */
-	async removeBanPermissions(
+	async removeBlacklistPermissions(
 		userId: string,
 		moderatorId: string,
 		guildId: string,
@@ -251,15 +251,96 @@ export class ModerationService {
 				"MODERATION",
 			);
 		} catch (error) {
-			VoiceLogger.error("MODERATION", "Failed to remove ban permissions", error);
+			VoiceLogger.error("MODERATION", "Failed to remove blacklist permissions", error);
 		}
 	}
 
 	/**
-	 * Sync ban permissions for a new channel created by an owner
-	 * Applies all the owner's banned_users to the new channel
+	 * Apply whitelist permission to a user across all channels owned by the moderator
+	 * Uses Discord's permission overrides to allow the user to connect
 	 */
-	async syncBanPermissionsForNewChannel(
+	async applyWhitelistPermissions(
+		userId: string,
+		moderatorId: string,
+		guildId: string,
+	): Promise<void> {
+		try {
+			// Get all channels owned by the moderator
+			const channelData = await this.repository.getChannelsByOwner(
+				guildId,
+				moderatorId,
+			);
+
+			// Resolve channel objects
+			const channels: VoiceChannel[] = [];
+			for (const data of channelData) {
+				try {
+					const channel = await this.getVoiceChannel(data.id);
+					channels.push(channel);
+				} catch (error) {
+					console.error(
+						`🔸 [MODERATION] Could not find channel ${data.id}:`,
+						error,
+					);
+				}
+			}
+
+			// Apply permissions using helper - allow Connect and ViewChannel
+			await PermissionOverrideHelper.applyToChannels(
+				channels,
+				userId,
+				{ Connect: true, ViewChannel: true },
+				"MODERATION",
+			);
+		} catch (error) {
+			VoiceLogger.error("MODERATION", "Failed to apply whitelist permissions", error);
+		}
+	}
+
+	/**
+	 * Remove whitelist permission from a user across all channels owned by the moderator
+	 */
+	async removeWhitelistPermissions(
+		userId: string,
+		moderatorId: string,
+		guildId: string,
+	): Promise<void> {
+		try {
+			// Get all channels owned by the moderator
+			const channelData = await this.repository.getChannelsByOwner(
+				guildId,
+				moderatorId,
+			);
+
+			// Resolve channel objects, filtering out deleted channels
+			const channels: VoiceChannel[] = [];
+			for (const data of channelData) {
+				try {
+					const channel = await this.getVoiceChannel(data.id);
+					if (channel) {
+						channels.push(channel);
+					}
+				} catch (error) {
+					// Channel was deleted, skip silently
+				}
+			}
+
+			// Remove permissions using helper
+			await PermissionOverrideHelper.removeFromChannels(
+				channels,
+				userId,
+				"MODERATION",
+			);
+		} catch (error) {
+			VoiceLogger.error("MODERATION", "Failed to remove whitelist permissions", error);
+		}
+	}
+
+	/**
+	 * Sync moderation permissions for a new channel created by an owner
+	 * Applies all the owner's blacklist and whitelist to the new channel
+	 */
+	async syncModerationsForNewChannel(
 		channelId: string,
 		ownerId: string,
 		guildId: string,
@@ -267,23 +348,32 @@ export class ModerationService {
 		try {
 			// Load owner's preferences
 			const prefs = await this.repository.getUserPreferences(ownerId, guildId);
-			const bannedUsers = (prefs.banned_users as string[]) || [];
-
-			if (bannedUsers.length === 0) {
-				return; // No banned users to sync
-			}
+			const blacklistedUsers = (prefs.blacklist as string[]) || [];
+			const whitelistedUsers = (prefs.whitelist as string[]) || [];
 
 			const channel = await this.getVoiceChannel(channelId);
 
-			// Apply ban permissions using helper
-			await PermissionOverrideHelper.applyToUsers(
-				channel,
-				bannedUsers,
-				{ Connect: false },
-				"MODERATION",
-			);
+			// Apply blacklist permissions (deny Connect and ViewChannel)
+			if (blacklistedUsers.length > 0) {
+				await PermissionOverrideHelper.applyToUsers(
+					channel,
+					blacklistedUsers,
+					{ Connect: false, ViewChannel: false },
+					"MODERATION",
+				);
+			}
+
+			// Apply whitelist permissions (allow Connect and ViewChannel)
+			if (whitelistedUsers.length > 0) {
+				await PermissionOverrideHelper.applyToUsers(
+					channel,
+					whitelistedUsers,
+					{ Connect: true, ViewChannel: true },
+					"MODERATION",
+				);
+			}
 		} catch (error) {
-			VoiceLogger.error("MODERATION", "Failed to sync ban permissions for new channel", error);
+			VoiceLogger.error("MODERATION", "Failed to sync moderation permissions for new channel", error);
 		}
 	}
 

@@ -99,7 +99,7 @@ const userLimitCommand: Command = {
 			const oldLimitText = oldLimit === 0 ? "unlimited" : oldLimit.toString();
 
 			await interaction.editReply({
-				content: `🔹 Changed user limit from **${oldLimitText}** to **${limitText}**.`,
+				content: ` Changed user limit from **${oldLimitText}** to **${limitText}**.`,
 			});
 		} catch (error) {
 			console.error("🔸 Error in user-limit command:", error);

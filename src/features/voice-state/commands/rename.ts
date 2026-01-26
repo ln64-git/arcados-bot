@@ -95,7 +95,7 @@ const renameCommand: Command = {
 			);
 
 			await interaction.editReply({
-				content: `🔹 Renamed channel from **${oldName}** to **${newName}**.`,
+				content: ` Renamed channel from **${oldName}** to **${newName}**.`,
 			});
 		} catch (error) {
 			console.error("🔸 Error in rename command:", error);

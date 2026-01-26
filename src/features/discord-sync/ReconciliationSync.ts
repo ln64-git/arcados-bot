@@ -5,6 +5,8 @@ import { EmbeddingService } from "../social-intelligence/semantic-analysis/Embed
 import { RelationshipMapper } from "../social-intelligence/relationship-mapping/RelationshipMapper";
 import type { ConversationDetector } from "../social-intelligence/conversation-detection/ConversationDetector";
 import { parseEmbedding } from "../social-intelligence/conversation-detection/messageUtils";
+import { EnrichmentPipelineOrchestrator } from "../social-intelligence/enrichment-pipeline/EnrichmentPipelineOrchestrator";
+import { EnrichmentLayer } from "../social-intelligence/enrichment-pipeline/EnrichmentQueue";
 import { config } from "../../config/index.js";
 import type { SyncCoordinator } from "./SyncCoordinator.js";
 import type { PostgreSQLManager } from "../../database/PostgreSQLManager.js";
@@ -55,6 +57,12 @@ export class ReconciliationSync {
     messagesFilled: 0,
     channelsSynced: 0,
     membersSynced: 0,
+    // Healing stats
+    messageEmbeddingsGenerated: 0,
+    conversationEmbeddingsGenerated: 0,
+    usersQueued: 0,
+    relationshipsQueued: 0,
+    guildsQueued: 0,
   };
 
   constructor(
@@ -144,16 +152,24 @@ export class ReconciliationSync {
       releaseLock();
     }
 
+    // 1. Reconcile base Discord data
     await this.reconcileChannels(guild);
-
     await this.reconcileMembers(guild);
 
+    // 2. Reconcile messages and embeddings
     await this.reconcileMessages(guild);
-
     await this.reconcileMessageEmbeddings(guild);
 
+    // 3. Reconcile conversation data
     await this.reconcileConversationKeywords(guild);
+    await this.reconcileConversationEmbeddings(guild);
 
+    // 4. Reconcile enrichment layers (dependency chain)
+    await this.reconcileUserProfiles(guild);
+    await this.reconcileRelationshipProfiles(guild);
+    await this.reconcileGuildMetadata(guild);
+
+    // 5. Reconcile voice states
     await this.reconcileVoiceStates(guild);
 
     if (this.verbose) {
@@ -1032,9 +1048,27 @@ export class ReconciliationSync {
 
   /**
    * Reconcile message embeddings (backfill missing embeddings)
+   * ENHANCED: No time limit, configurable options, progress tracking
    */
-  private async reconcileMessageEmbeddings(guild: Guild): Promise<void> {
+  private async reconcileMessageEmbeddings(
+    guild: Guild,
+    options: {
+      dryRun?: boolean;
+      batchSize?: number;
+      maxMessages?: number;
+      ageLimit?: number;
+    } = {}
+  ): Promise<{ scanned: number; generated: number; failed: number }> {
+    const batchSize = options.batchSize || 32;
+    const maxMessages = options.maxMessages || 2000;
+    const dryRun = options.dryRun || false;
+
     try {
+      // Build time filter (optional age limit)
+      const ageLimitClause = options.ageLimit
+        ? `AND created_at > NOW() - INTERVAL '${options.ageLimit} days'`
+        : "";
+
       // Find messages without embeddings that have content
       const messagesResult = await this.db.query(
         `
@@ -1044,11 +1078,11 @@ export class ReconciliationSync {
           AND embedding IS NULL
           AND content IS NOT NULL
           AND LENGTH(TRIM(content)) > 0
-          AND created_at > NOW() - INTERVAL '30 days'
+          ${ageLimitClause}
         ORDER BY created_at DESC
-        LIMIT 500
+        LIMIT $2
         `,
-        [guild.id]
+        [guild.id, maxMessages]
       );
 
       if (
@@ -1056,59 +1090,193 @@ export class ReconciliationSync {
         !messagesResult.data ||
         messagesResult.data.length === 0
       ) {
-        return;
+        return { scanned: 0, generated: 0, failed: 0 };
       }
 
       const messages = messagesResult.data;
-      if (this.verbose) {
+      if (this.verbose || dryRun) {
         console.log(
-          `   🧠 ReconciliationSync: Backfilling embeddings for ${messages.length} messages...`
+          `   🧠 ReconciliationSync: ${dryRun ? "[DRY RUN] " : ""}Backfilling embeddings for ${messages.length} messages...`
         );
       }
 
       // Generate embeddings in batches
-      const BATCH_SIZE = 32;
       let totalGenerated = 0;
+      let totalFailed = 0;
 
-      for (let i = 0; i < messages.length; i += BATCH_SIZE) {
-        const batch = messages.slice(i, i + BATCH_SIZE);
+      for (let i = 0; i < messages.length; i += batchSize) {
+        const batch = messages.slice(i, i + batchSize);
         const texts = batch.map((m: any) => m.content);
         const ids = batch.map((m: any) => m.id);
 
         try {
           const embeddings = await this.embeddingService.generateBatch(texts);
 
-          // Update each message with its embedding
-          for (let j = 0; j < batch.length; j++) {
-            const embedding = embeddings[j];
-            if (embedding && embedding.length > 0) {
-              // Format as pgvector string: '[1,2,3]'
-              const embeddingStr = `[${embedding.join(",")}]`;
-              await this.db.query(
-                `UPDATE messages SET embedding = $1::vector WHERE id = $2`,
-                [embeddingStr, ids[j]]
-              );
-              totalGenerated++;
+          if (!dryRun) {
+            // Update each message with its embedding
+            for (let j = 0; j < batch.length; j++) {
+              const embedding = embeddings[j];
+              if (embedding && embedding.length > 0) {
+                try {
+                  // Format as pgvector string: '[1,2,3]'
+                  const embeddingStr = `[${embedding.join(",")}]`;
+                  await this.db.query(
+                    `UPDATE messages SET embedding = $1::vector WHERE id = $2`,
+                    [embeddingStr, ids[j]]
+                  );
+                  totalGenerated++;
+                } catch (updateError) {
+                  console.error(
+                    `🔸 ReconciliationSync: Failed to update embedding for message ${ids[j]}:`,
+                    updateError
+                  );
+                  totalFailed++;
+                }
+              } else {
+                totalFailed++;
+              }
             }
+          } else {
+            // Dry run: just count
+            totalGenerated += embeddings.filter((e) => e && e.length > 0).length;
+            totalFailed += embeddings.filter((e) => !e || e.length === 0).length;
+          }
+
+          // Progress logging every 10 batches (320 messages)
+          if (this.verbose && (i / batchSize + 1) % 10 === 0) {
+            console.log(
+              `      Progress: ${Math.min(i + batchSize, messages.length)}/${messages.length} embeddings...`
+            );
           }
         } catch (error) {
           console.error(
             `🔸 ReconciliationSync: Failed to generate embeddings for batch:`,
             error
           );
+          totalFailed += batch.length;
         }
+      }
+
+      // Update stats
+      if (!dryRun) {
+        this.stats.messageEmbeddingsGenerated += totalGenerated;
       }
 
       if (this.verbose && totalGenerated > 0) {
         console.log(
-          `   🔹 ReconciliationSync: Generated embeddings for ${totalGenerated} messages`
+          `   🔹 ReconciliationSync: ${dryRun ? "[DRY RUN] " : ""}Generated embeddings for ${totalGenerated} messages (${totalFailed} failed)`
         );
       }
+
+      return {
+        scanned: messages.length,
+        generated: totalGenerated,
+        failed: totalFailed,
+      };
     } catch (error) {
       console.error(
         `🔸 ReconciliationSync: Error reconciling message embeddings:`,
         error
       );
+      return { scanned: 0, generated: 0, failed: 0 };
+    }
+  }
+
+  /**
+   * Reconcile conversation segment embeddings (NEW)
+   * Generates embeddings from conversation summaries
+   */
+  private async reconcileConversationEmbeddings(
+    guild: Guild,
+    options: { dryRun?: boolean } = {}
+  ): Promise<{ scanned: number; generated: number; failed: number }> {
+    const dryRun = options.dryRun || false;
+
+    try {
+      // Find segments with summaries but no embeddings
+      const segmentsResult = await this.db.query(
+        `
+        SELECT id, summary
+        FROM conversation_segments
+        WHERE guild_id = $1
+          AND status = 'finalized'
+          AND embedding IS NULL
+          AND summary IS NOT NULL
+          AND LENGTH(TRIM(summary)) > 0
+        ORDER BY end_time DESC
+        `,
+        [guild.id]
+      );
+
+      if (
+        !segmentsResult.success ||
+        !segmentsResult.data ||
+        segmentsResult.data.length === 0
+      ) {
+        return { scanned: 0, generated: 0, failed: 0 };
+      }
+
+      const segments = segmentsResult.data;
+      if (this.verbose || dryRun) {
+        console.log(
+          `   🧠 ReconciliationSync: ${dryRun ? "[DRY RUN] " : ""}Generating embeddings for ${segments.length} conversation summaries...`
+        );
+      }
+
+      let totalGenerated = 0;
+      let totalFailed = 0;
+
+      for (const segment of segments) {
+        try {
+          // Generate embedding from summary
+          const embedding = await this.embeddingService.generateEmbedding(
+            segment.summary
+          );
+
+          if (embedding && embedding.length > 0) {
+            if (!dryRun) {
+              // Format as pgvector string: '[1,2,3]'
+              const embeddingStr = `[${embedding.join(",")}]`;
+              await this.db.query(
+                `UPDATE conversation_segments SET embedding = $1::vector WHERE id = $2`,
+                [embeddingStr, segment.id]
+              );
+            }
+            totalGenerated++;
+          } else {
+            totalFailed++;
+          }
+        } catch (error) {
+          console.error(
+            `🔸 ReconciliationSync: Failed to generate embedding for segment ${segment.id}:`,
+            error
+          );
+          totalFailed++;
+        }
+      }
+
+      // Update stats
+      if (!dryRun) {
+        this.stats.conversationEmbeddingsGenerated += totalGenerated;
+      }
+
+      if (this.verbose && totalGenerated > 0) {
+        console.log(
+          `   🔹 ReconciliationSync: ${dryRun ? "[DRY RUN] " : ""}Generated embeddings for ${totalGenerated} conversation segments (${totalFailed} failed)`
+        );
+      }
+
+      return {
+        scanned: segments.length,
+        generated: totalGenerated,
+        failed: totalFailed,
+      };
+    } catch (error) {
+      console.error(
+        `🔸 ReconciliationSync: Error reconciling conversation embeddings:`,
+        error
+      );
+      return { scanned: 0, generated: 0, failed: 0 };
     }
   }
 
@@ -1251,6 +1419,315 @@ export class ReconciliationSync {
         `   🔸 ReconciliationSync: Error reconciling conversation keywords for ${guild.name}:`,
         error
       );
+    }
+  }
+
+  /**
+   * Reconcile user profiles (NEW)
+   * Queues unenriched users for AI enrichment via enrichment pipeline
+   */
+  private async reconcileUserProfiles(
+    guild: Guild,
+    options: {
+      dryRun?: boolean;
+      minConversations?: number;
+      maxUsers?: number;
+    } = {}
+  ): Promise<{ scanned: number; queued: number; skipped: number }> {
+    const minConversations = options.minConversations || 5;
+    const maxUsers = options.maxUsers || 20;
+    const dryRun = options.dryRun || false;
+
+    try {
+      // Find users without summaries who have participated in conversations
+      const usersResult = await this.db.query(
+        `
+        SELECT up.user_id, up.guild_id, COUNT(DISTINCT cs.id) as conversation_count
+        FROM user_profiles up
+        LEFT JOIN conversation_segments cs
+          ON cs.guild_id = up.guild_id
+          AND up.user_id = ANY(cs.participants)
+          AND cs.status = 'finalized'
+          AND cs.summary IS NOT NULL
+        WHERE up.guild_id = $1
+          AND (up.summary IS NULL OR LENGTH(TRIM(up.summary)) = 0)
+        GROUP BY up.user_id, up.guild_id
+        HAVING COUNT(DISTINCT cs.id) >= $2
+        ORDER BY COUNT(DISTINCT cs.id) DESC
+        LIMIT $3
+        `,
+        [guild.id, minConversations, maxUsers]
+      );
+
+      if (
+        !usersResult.success ||
+        !usersResult.data ||
+        usersResult.data.length === 0
+      ) {
+        return { scanned: 0, queued: 0, skipped: 0 };
+      }
+
+      const users = usersResult.data;
+      if (this.verbose || dryRun) {
+        console.log(
+          `   👤 ReconciliationSync: ${dryRun ? "[DRY RUN] " : ""}Queuing ${users.length} users for enrichment...`
+        );
+      }
+
+      // Queue users via EnrichmentPipelineOrchestrator
+      const orchestrator = EnrichmentPipelineOrchestrator.getInstance();
+      const queue = orchestrator.getQueue();
+      let queued = 0;
+
+      for (const user of users) {
+        if (!dryRun) {
+          queue.enqueue({
+            layer: EnrichmentLayer.USER,
+            entityId: user.user_id,
+            guildId: user.guild_id,
+            priority: 7, // High priority for initial healing
+          });
+        }
+        queued++;
+      }
+
+      // Update stats
+      if (!dryRun) {
+        this.stats.usersQueued += queued;
+      }
+
+      if (this.verbose || dryRun) {
+        console.log(
+          `   🔹 ReconciliationSync: ${dryRun ? "[DRY RUN] " : ""}Queued ${queued} users (avg ${Math.round(users.reduce((sum: number, u: any) => sum + Number(u.conversation_count), 0) / users.length)} conversations per user)`
+        );
+      }
+
+      return {
+        scanned: users.length,
+        queued: queued,
+        skipped: 0,
+      };
+    } catch (error) {
+      console.error(
+        `🔸 ReconciliationSync: Error reconciling user profiles:`,
+        error
+      );
+      return { scanned: 0, queued: 0, skipped: 0 };
+    }
+  }
+
+  /**
+   * Reconcile relationship profiles (NEW)
+   * Generates relationship profiles from relationship_edges data
+   */
+  private async reconcileRelationshipProfiles(
+    guild: Guild,
+    options: {
+      dryRun?: boolean;
+      minInteractions?: number;
+      maxRelationships?: number;
+      requireUserProfiles?: boolean;
+    } = {}
+  ): Promise<{ scanned: number; queued: number; skipped: number }> {
+    const minInteractions = options.minInteractions || 100;
+    const maxRelationships = options.maxRelationships || 30;
+    const requireUserProfiles = options.requireUserProfiles !== false; // default true
+    const dryRun = options.dryRun || false;
+
+    try {
+      // Build user profile join requirement
+      const profileCheckJoin = requireUserProfiles
+        ? `INNER JOIN user_profiles up_a ON up_a.guild_id = re.guild_id AND up_a.user_id = re.user_a AND up_a.summary IS NOT NULL
+           INNER JOIN user_profiles up_b ON up_b.guild_id = re.guild_id AND up_b.user_id = re.user_b AND up_b.summary IS NOT NULL`
+        : "";
+
+      // Find significant relationships without profiles
+      const relationshipsResult = await this.db.query(
+        `
+        SELECT re.guild_id, re.user_a, re.user_b, re.total,
+               COUNT(DISTINCT cs.id) as shared_conversations
+        FROM relationship_edges re
+        ${profileCheckJoin}
+        LEFT JOIN relationship_profiles rp
+          ON rp.guild_id = re.guild_id AND rp.user_a = re.user_a AND rp.user_b = re.user_b
+        LEFT JOIN conversation_segments cs
+          ON cs.guild_id = re.guild_id
+          AND re.user_a = ANY(cs.participants)
+          AND re.user_b = ANY(cs.participants)
+          AND cs.status = 'finalized'
+        WHERE re.guild_id = $1 AND re.total >= $2
+          AND rp.guild_id IS NULL
+        GROUP BY re.guild_id, re.user_a, re.user_b, re.total
+        HAVING COUNT(DISTINCT cs.id) >= 3
+        ORDER BY re.total DESC
+        LIMIT $3
+        `,
+        [guild.id, minInteractions, maxRelationships]
+      );
+
+      if (
+        !relationshipsResult.success ||
+        !relationshipsResult.data ||
+        relationshipsResult.data.length === 0
+      ) {
+        return { scanned: 0, queued: 0, skipped: 0 };
+      }
+
+      const relationships = relationshipsResult.data;
+      if (this.verbose || dryRun) {
+        console.log(
+          `   🤝 ReconciliationSync: ${dryRun ? "[DRY RUN] " : ""}Queuing ${relationships.length} relationships for enrichment...`
+        );
+      }
+
+      // Queue via EnrichmentPipelineOrchestrator
+      const orchestrator = EnrichmentPipelineOrchestrator.getInstance();
+      const queue = orchestrator.getQueue();
+      let queued = 0;
+
+      for (const rel of relationships) {
+        if (!dryRun) {
+          queue.enqueue({
+            layer: EnrichmentLayer.RELATIONSHIP,
+            entityId: `${rel.user_a}:${rel.user_b}`,
+            guildId: rel.guild_id,
+            priority: 6, // Medium-high priority for initial healing
+          });
+        }
+        queued++;
+      }
+
+      // Update stats
+      if (!dryRun) {
+        this.stats.relationshipsQueued += queued;
+      }
+
+      if (this.verbose || dryRun) {
+        console.log(
+          `   🔹 ReconciliationSync: ${dryRun ? "[DRY RUN] " : ""}Queued ${queued} relationships (avg ${Math.round(relationships.reduce((sum: number, r: any) => sum + Number(r.total), 0) / relationships.length)} interactions per pair)`
+        );
+      }
+
+      return {
+        scanned: relationships.length,
+        queued: queued,
+        skipped: 0,
+      };
+    } catch (error) {
+      console.error(
+        `🔸 ReconciliationSync: Error reconciling relationship profiles:`,
+        error
+      );
+      return { scanned: 0, queued: 0, skipped: 0 };
+    }
+  }
+
+  /**
+   * Reconcile guild metadata (NEW)
+   * Initializes guild_metadata and triggers enrichment
+   */
+  private async reconcileGuildMetadata(
+    guild: Guild,
+    options: {
+      dryRun?: boolean;
+      minRelationships?: number;
+      minConversations?: number;
+    } = {}
+  ): Promise<{ initialized: boolean; queued: boolean; skipped: boolean }> {
+    const minRelationships = options.minRelationships || 10;
+    const minConversations = options.minConversations || 20;
+    const dryRun = options.dryRun || false;
+
+    try {
+      // Check if metadata row exists
+      const metadataExists = await this.db.query(
+        `SELECT guild_id FROM guild_metadata WHERE guild_id = $1`,
+        [guild.id]
+      );
+
+      let initialized = false;
+      if (
+        (!metadataExists.success ||
+          !metadataExists.data ||
+          metadataExists.data.length === 0) &&
+        !dryRun
+      ) {
+        // Initialize metadata row if missing
+        await this.db.query(
+          `INSERT INTO guild_metadata (guild_id, community_clusters, influence_rankings, top_topics, enrichment_history)
+           VALUES ($1, '[]'::jsonb, '{}'::jsonb, '[]'::jsonb, '[]'::jsonb)
+           ON CONFLICT (guild_id) DO NOTHING`,
+          [guild.id]
+        );
+        initialized = true;
+
+        if (this.verbose) {
+          console.log(
+            `   🏛️ ReconciliationSync: Initialized guild_metadata for ${guild.name}`
+          );
+        }
+      }
+
+      // Check if guild has enough data for enrichment
+      const dataCheck = await this.db.query(
+        `SELECT
+           (SELECT COUNT(*) FROM relationship_profiles WHERE guild_id = $1) as rel_count,
+           (SELECT COUNT(*) FROM conversation_segments WHERE guild_id = $1 AND status = 'finalized') as conv_count`,
+        [guild.id]
+      );
+
+      if (
+        !dataCheck.success ||
+        !dataCheck.data ||
+        dataCheck.data.length === 0
+      ) {
+        return { initialized, queued: false, skipped: true };
+      }
+
+      const { rel_count, conv_count } = dataCheck.data[0];
+
+      if (
+        Number(rel_count) < minRelationships ||
+        Number(conv_count) < minConversations
+      ) {
+        if (this.verbose || dryRun) {
+          console.log(
+            `   ⏭️ ReconciliationSync: ${dryRun ? "[DRY RUN] " : ""}Skipping guild enrichment (${rel_count} relationships, ${conv_count} conversations - need ${minRelationships}/${minConversations})`
+          );
+        }
+        return { initialized, queued: false, skipped: true };
+      }
+
+      // Queue for enrichment
+      let queued = false;
+      if (!dryRun) {
+        const orchestrator = EnrichmentPipelineOrchestrator.getInstance();
+        const queue = orchestrator.getQueue();
+        queue.enqueue({
+          layer: EnrichmentLayer.SERVER,
+          entityId: guild.id,
+          guildId: guild.id,
+          priority: 5, // Medium priority
+        });
+        queued = true;
+        this.stats.guildsQueued += 1;
+      } else {
+        queued = true; // Would have queued
+      }
+
+      if (this.verbose || dryRun) {
+        console.log(
+          `   🔹 ReconciliationSync: ${dryRun ? "[DRY RUN] " : ""}Queued guild for enrichment (${rel_count} relationships, ${conv_count} conversations)`
+        );
+      }
+
+      return { initialized, queued, skipped: false };
+    } catch (error) {
+      console.error(
+        `🔸 ReconciliationSync: Error reconciling guild metadata:`,
+        error
+      );
+      return { initialized: false, queued: false, skipped: true };
     }
   }
 
@@ -1609,11 +2086,21 @@ export class ReconciliationSync {
     lastRunTime: Date | null;
     gapsDetected: number;
     messagesFilled: number;
+    messageEmbeddingsGenerated: number;
+    conversationEmbeddingsGenerated: number;
+    usersQueued: number;
+    relationshipsQueued: number;
+    guildsQueued: number;
   } {
     return {
       lastRunTime: this.stats.lastRunTime,
       gapsDetected: this.stats.gapsDetected,
       messagesFilled: this.stats.messagesFilled,
+      messageEmbeddingsGenerated: this.stats.messageEmbeddingsGenerated,
+      conversationEmbeddingsGenerated: this.stats.conversationEmbeddingsGenerated,
+      usersQueued: this.stats.usersQueued,
+      relationshipsQueued: this.stats.relationshipsQueued,
+      guildsQueued: this.stats.guildsQueued,
     };
   }
 }

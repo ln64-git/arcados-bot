@@ -82,7 +82,7 @@ export const claimCommand: Command = {
       }
 
       await interaction.reply({
-        content: `🔹 Successfully claimed **${voiceChannel.name}**!`,
+        content: ` Successfully claimed **${voiceChannel.name}**!`,
         ephemeral: false,
       });
     } catch (error) {

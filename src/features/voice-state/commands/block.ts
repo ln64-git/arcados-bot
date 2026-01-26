@@ -106,7 +106,7 @@ export const blockCommand: Command = {
 					);
 
 				await interaction.editReply({
-					content: `🔹 **${targetUser.displayName}** is now unblocked.`,
+					content: ` **${targetUser.displayName}** is now unblocked.`,
 				});
 			} else {
 				// Add to block list (de-duped using Set)
@@ -143,7 +143,7 @@ export const blockCommand: Command = {
 					);
 
 				await interaction.editReply({
-					content: `🔹 **${targetUser.displayName}** is now blocked. Neither of you can join voice channels with each other.`,
+					content: ` **${targetUser.displayName}** is now blocked. Neither of you can join voice channels with each other.`,
 				});
 			}
 		} catch (error) {

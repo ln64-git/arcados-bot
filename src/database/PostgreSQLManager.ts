@@ -84,7 +84,6 @@ export interface RelationshipEntry {
   interaction_count: number;
   last_interaction: Date;
   summary?: string;
-  keywords?: string[];
   emojis?: string[];
   notes?: string[];
   conversations?: ConversationEntry[];
@@ -564,13 +563,38 @@ export class PostgreSQLManager {
 					channel_name VARCHAR(100),
 					default_user_limit INTEGER,
 					privacy_mode VARCHAR(20) DEFAULT 'public',
-					banned_users TEXT[] DEFAULT '{}',
+					hidden BOOLEAN DEFAULT false,
+					whitelist TEXT[] DEFAULT '{}',
+					blacklist TEXT[] DEFAULT '{}',
 					muted_users TEXT[] DEFAULT '{}',
 					deafened_users TEXT[] DEFAULT '{}',
 					created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
 					updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
 					PRIMARY KEY (guild_id, user_id)
 				)
+			`);
+			
+			// Add hidden column if it doesn't exist (migration)
+			await client.query(`
+				ALTER TABLE voice_channel_preferences
+				ADD COLUMN IF NOT EXISTS hidden BOOLEAN DEFAULT false
+			`);
+			
+			// Migrate banned_users to blacklist and add whitelist column
+			await client.query(`
+				ALTER TABLE voice_channel_preferences
+				ADD COLUMN IF NOT EXISTS whitelist TEXT[] DEFAULT '{}'
+			`);
+			await client.query(`
+				ALTER TABLE voice_channel_preferences
+				ADD COLUMN IF NOT EXISTS blacklist TEXT[] DEFAULT '{}'
+			`);
+			// Migrate data from banned_users to blacklist if blacklist is empty
+			await client.query(`
+				UPDATE voice_channel_preferences
+				SET blacklist = banned_users
+				WHERE (blacklist IS NULL OR blacklist = '{}')
+				AND banned_users IS NOT NULL AND banned_users != '{}'
 			`);
 
       // Voice channel ownership history - track ownership changes

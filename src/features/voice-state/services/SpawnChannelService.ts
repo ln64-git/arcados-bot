@@ -139,6 +139,41 @@ export class SpawnChannelService {
 			ManageChannels: true,
 		});
 
+		// Apply hidden preference if set
+		if (preferences.hidden === true) {
+			const everyoneRole = guild.roles.everyone;
+			
+			// Hide channel from @everyone
+			await newChannel.permissionOverwrites.create(everyoneRole.id, {
+				ViewChannel: false,
+			});
+
+			// Ensure owner can see the channel
+			await newChannel.permissionOverwrites.edit(member.id, {
+				ViewChannel: true,
+			});
+
+			// Ensure bot can see the channel
+			if (this.client.user) {
+				await newChannel.permissionOverwrites.create(this.client.user.id, {
+					ViewChannel: true,
+				});
+			}
+
+			// Deny ViewChannel for all roles that have it allowed (from category or server)
+			for (const [id, overwrite] of newChannel.permissionOverwrites.cache) {
+				if (overwrite.type === 0 && id !== everyoneRole.id && overwrite.allow.has("ViewChannel")) {
+					try {
+						await newChannel.permissionOverwrites.edit(id, {
+							ViewChannel: false,
+						});
+					} catch (error) {
+						// Ignore errors for role permission updates
+					}
+				}
+			}
+		}
+
 		// Insert into database (required for foreign key constraints)
 		const channelData: ChannelData = {
 			id: newChannel.id,

@@ -227,7 +227,8 @@ export class Bot {
         this.client,
         this.db,
         this.syncCoordinator,
-        config.spawnChannelId
+        config.spawnChannelId,
+        config.botOwnerId
       );
       (this.client as any).voiceStateCoordinator = this.voiceStateCoordinator;
     }

@@ -31,6 +31,7 @@ import { SpawnChannelService } from "./services/SpawnChannelService";
 import { ModerationService } from "./services/ModerationService";
 import { ChannelOwnershipService } from "./services/ChannelOwnershipService";
 import { BlockEnforcementService } from "./services/BlockEnforcementService";
+import { AutoAfkService } from "./services/AutoAfkService";
 import { VoiceLogger } from "./services/helpers/VoiceLogger";
 
 export class VoiceStateCoordinator {
@@ -41,12 +42,14 @@ export class VoiceStateCoordinator {
 	private moderationService: ModerationService;
 	private ownershipService: ChannelOwnershipService;
 	private blockEnforcementService: BlockEnforcementService;
+	private autoAfkService: AutoAfkService;
 
 	constructor(
 		client: Client,
 		db: PostgreSQLManager,
 		coordinator: SyncCoordinator,
 		spawnChannelId?: string,
+		botOwnerId?: string,
 	) {
 		// Create repository
 		this.repository = new VoiceDataRepository(db);
@@ -59,6 +62,7 @@ export class VoiceStateCoordinator {
 			client,
 			this.repository,
 		);
+		this.autoAfkService = new AutoAfkService(client, botOwnerId);
 		// Create spawn channel service with injected dependencies
 		this.spawnChannelService = new SpawnChannelService(
 			client,
@@ -96,6 +100,9 @@ export class VoiceStateCoordinator {
 			// State changed (mute, deaf, streaming, etc.)
 			await this.handleVoiceStateChange(newState);
 		}
+
+		// Check auto-AFK for affected members
+		await this.checkAutoAfkForVoiceStateUpdate(oldState, newState);
 	}
 
 	/**
@@ -109,7 +116,7 @@ export class VoiceStateCoordinator {
 		ownerId: string,
 		guildId: string,
 	): Promise<void> {
-		await this.moderationService.syncBanPermissionsForNewChannel(
+		await this.moderationService.syncModerationsForNewChannel(
 			channelId,
 			ownerId,
 			guildId,
@@ -132,7 +139,7 @@ export class VoiceStateCoordinator {
 		if (this.spawnChannelService.isSpawnChannel(channelId)) {
 			const newChannel = await this.spawnChannelService.handleSpawnChannelJoin(newState.member!);
 
-			// Sync ban and block permissions for the newly created channel
+			// Sync moderation (blacklist/whitelist) and block permissions for the newly created channel
 			if (newChannel) {
 				await this.syncModerationsForNewChannel(
 					newChannel.id,
@@ -191,8 +198,8 @@ export class VoiceStateCoordinator {
 		);
 
 		// Apply channel owner's moderation preferences (mute/deafen)
-		// Note: Ban enforcement is now handled via Discord permission overrides
-		// Users who are banned won't be able to join in the first place
+		// Note: Blacklist/whitelist enforcement is handled via Discord permission overrides
+		// Users who are blacklisted won't be able to join in the first place
 		await this.moderationService.applyChannelPreferences(
 			channelId,
 			user.id,
@@ -283,7 +290,7 @@ export class VoiceStateCoordinator {
 			// User is joining spawn channel - should trigger channel creation
 			const newChannel = await this.spawnChannelService.handleSpawnChannelJoin(newState.member!);
 
-			// Sync ban and block permissions for the newly created channel
+			// Sync moderation (blacklist/whitelist) and block permissions for the newly created channel
 			if (newChannel) {
 				await this.syncModerationsForNewChannel(
 					newChannel.id,
@@ -530,10 +537,45 @@ export class VoiceStateCoordinator {
 	}
 
 	/**
+	 * Check auto-AFK for members affected by voice state update
+	 * This checks both the user who changed state and any members in affected channels
+	 */
+	private async checkAutoAfkForVoiceStateUpdate(
+		oldState: VoiceState,
+		newState: VoiceState,
+	): Promise<void> {
+		// Check the user who changed state
+		if (newState.member) {
+			this.autoAfkService.handleVoiceStateUpdate(newState.member);
+		}
+
+		// Check members in the old channel (someone might have become alone)
+		if (oldState.channelId && oldState.channel?.isVoiceBased()) {
+			const oldChannel = oldState.channel;
+			for (const member of oldChannel.members.values()) {
+				if (!member.user.bot) {
+					this.autoAfkService.handleVoiceStateUpdate(member);
+				}
+			}
+		}
+
+		// Check members in the new channel (someone might have become alone)
+		if (newState.channelId && newState.channel?.isVoiceBased()) {
+			const newChannel = newState.channel;
+			for (const member of newChannel.members.values()) {
+				if (!member.user.bot) {
+					this.autoAfkService.handleVoiceStateUpdate(member);
+				}
+			}
+		}
+	}
+
+	/**
 	 * Cleanup on shutdown
 	 */
 	async cleanup(): Promise<void> {
 		await this.sessionService.cleanup();
+		this.autoAfkService.cleanup();
 		VoiceLogger.info("VOICE", "Voice state coordinator cleaned up");
 	}
 }

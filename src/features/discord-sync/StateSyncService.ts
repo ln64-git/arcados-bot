@@ -173,15 +173,30 @@ export class StateSyncService {
       lastRunTime: Date | null;
       gapsDetected: number;
       messagesFilled: number;
+      messageEmbeddingsGenerated: number;
+      conversationEmbeddingsGenerated: number;
+      usersQueued: number;
+      relationshipsQueued: number;
+      guildsQueued: number;
     };
     coordinator: {
       activeLocks: number;
       totalConflicts: number;
     };
   } {
+    const reconciliationStats = this.reconciliationSync.getStats();
     return {
       liveEvents: this.liveEventSync.getStats(),
-      reconciliation: this.reconciliationSync.getStats(),
+      reconciliation: {
+        lastRunTime: reconciliationStats.lastRunTime,
+        gapsDetected: reconciliationStats.gapsDetected,
+        messagesFilled: reconciliationStats.messagesFilled,
+        messageEmbeddingsGenerated: reconciliationStats.messageEmbeddingsGenerated || 0,
+        conversationEmbeddingsGenerated: reconciliationStats.conversationEmbeddingsGenerated || 0,
+        usersQueued: reconciliationStats.usersQueued || 0,
+        relationshipsQueued: reconciliationStats.relationshipsQueued || 0,
+        guildsQueued: reconciliationStats.guildsQueued || 0,
+      },
       coordinator: this.coordinator.getStats(),
     };
   }

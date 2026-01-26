@@ -159,7 +159,7 @@ export const muteCommand: Command = {
           member.user.id
         );
 
-        await sendMessage(`🔹 **${targetUser.displayName}** is now unmuted in your channels.`);
+        await sendMessage(` **${targetUser.displayName}** is now unmuted in your channels.`);
       } else {
         // Add to mute list (de-duped using Set)
         const updatedMutedUsers = Array.from(new Set([...mutedUsers, targetUser.id]));
@@ -178,7 +178,7 @@ export const muteCommand: Command = {
           member.user.id
         );
 
-        await sendMessage(`🔹 **${targetUser.displayName}** is now muted in your channels.`);
+        await sendMessage(` **${targetUser.displayName}** is now muted in your channels.`);
       }
     } catch (error) {
       console.error("🔸 Error in mute command:", error);
