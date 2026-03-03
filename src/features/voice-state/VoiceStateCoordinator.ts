@@ -213,6 +213,9 @@ export class VoiceStateCoordinator {
 			channelId,
 			newState.guild.id,
 		);
+
+		// Grant ViewChannel if this is a hidden channel so user can see the sidechat
+		await this.grantViewChannelIfHidden(newState);
 	}
 
 	/**
@@ -236,6 +239,9 @@ export class VoiceStateCoordinator {
 				oldState.guild.id,
 			);
 		}
+
+		// Remove ViewChannel override if this was a hidden channel
+		await this.revokeViewChannelIfHidden(oldState);
 
 		// Only cleanup if this is NOT a spawn channel
 		// Spawn channel leaves happen when users are moved to new channels, so we shouldn't cleanup
@@ -403,6 +409,10 @@ export class VoiceStateCoordinator {
 			);
 		}
 
+		// Handle hidden channel ViewChannel permissions on switch
+		await this.revokeViewChannelIfHidden(oldState);
+		await this.grantViewChannelIfHidden(newState);
+
 		// Cleanup old channel if empty (but not if it's spawn channel)
 		if (oldState.channel?.isVoiceBased() && !isFromSpawn) {
 			// Verify channel is actually empty before cleanup
@@ -566,6 +576,69 @@ export class VoiceStateCoordinator {
 				if (!member.user.bot) {
 					this.autoAfkService.handleVoiceStateUpdate(member);
 				}
+			}
+		}
+	}
+
+	/**
+	 * Grant ViewChannel to a user if the channel is hidden
+	 * This allows users to see the voice channel sidechat when they join
+	 */
+	private async grantViewChannelIfHidden(state: VoiceState): Promise<void> {
+		const channel = state.channel as VoiceChannel | null;
+		const user = state.member?.user;
+		if (!channel || !user) return;
+
+		const everyoneRole = state.guild.roles.everyone;
+		const everyoneOverwrite = channel.permissionOverwrites.cache.get(everyoneRole.id);
+
+		// Channel is hidden if @everyone has ViewChannel denied
+		if (everyoneOverwrite?.deny.has("ViewChannel")) {
+			try {
+				await channel.permissionOverwrites.edit(user.id, {
+					ViewChannel: true,
+				});
+			} catch (error) {
+				VoiceLogger.error("VOICE", `Failed to grant ViewChannel for ${user.displayName}`, error);
+			}
+		}
+	}
+
+	/**
+	 * Remove ViewChannel override for a user leaving a hidden channel
+	 * Only removes if the user is not the channel owner
+	 */
+	private async revokeViewChannelIfHidden(state: VoiceState): Promise<void> {
+		const channel = state.channel as VoiceChannel | null;
+		const user = state.member?.user;
+		if (!channel || !user) return;
+
+		const everyoneRole = state.guild.roles.everyone;
+		const everyoneOverwrite = channel.permissionOverwrites.cache.get(everyoneRole.id);
+
+		// Channel is hidden if @everyone has ViewChannel denied
+		if (everyoneOverwrite?.deny.has("ViewChannel")) {
+			// Don't remove override for channel owner
+			const ownerId = await this.repository.getCurrentOwner(channel.id);
+			if (ownerId === user.id) return;
+
+			try {
+				const memberOverwrite = channel.permissionOverwrites.cache.get(user.id);
+				if (memberOverwrite) {
+					// If the only permission is ViewChannel, remove the entire override
+					// Otherwise just remove the ViewChannel allow
+					const allowBits = memberOverwrite.allow.remove("ViewChannel");
+					const denyBits = memberOverwrite.deny;
+					if (allowBits.bitfield === 0n && denyBits.bitfield === 0n) {
+						await channel.permissionOverwrites.delete(user.id);
+					} else {
+						await channel.permissionOverwrites.edit(user.id, {
+							ViewChannel: null,
+						});
+					}
+				}
+			} catch (error) {
+				VoiceLogger.error("VOICE", `Failed to revoke ViewChannel for ${user.displayName}`, error);
 			}
 		}
 	}

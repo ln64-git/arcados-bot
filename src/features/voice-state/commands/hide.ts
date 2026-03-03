@@ -147,6 +147,20 @@ export const hideCommand: Command = {
 					}
 				}
 
+				// Grant ViewChannel to all members currently in the voice channel
+				// so they can still see the sidechat
+				for (const [memberId] of voiceChannel.members) {
+					if (memberId === member.id) continue; // Owner already handled
+					if (memberId === interaction.client.user?.id) continue; // Bot already handled
+					try {
+						await voiceChannel.permissionOverwrites.edit(memberId, {
+							ViewChannel: true,
+						});
+					} catch (error) {
+						console.error(`🔸 [HIDE] Failed to grant ViewChannel for member ${memberId}:`, error);
+					}
+				}
+
 				// Deny ViewChannel for all roles that currently have it allowed
 				// This ensures the channel is truly hidden from everyone except the owner
 				for (const [id, overwrite] of voiceChannel.permissionOverwrites.cache) {
